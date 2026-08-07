@@ -9,6 +9,11 @@
   Championships, Time Trials), 7 squads, 4 venues, 4 page templates, club settings.
 - **`.env` filled in** with the Supabase URL and both keys.
 
+- **Club content loaded** from the existing carnforthotters.co.uk: the full
+  committee (13), the coaching team (13), 29 training sessions across 7 squads,
+  4 venues, 10 policy documents and the supporter/accreditation logos.
+  Re-runnable at any time with `npm run seed`.
+
 ## Still to do — two values
 
 Open a terminal in this folder and run:

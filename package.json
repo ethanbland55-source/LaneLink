@@ -11,7 +11,8 @@
     "typecheck": "tsc --noEmit",
     "test:lenex": "node scripts/test-lenex.mts",
     "test:sportsys": "node scripts/test-sportsys.mts",
-    "test:supabase": "node scripts/test-supabase.mts"
+    "test:supabase": "node scripts/test-supabase.mts",
+    "seed": "node scripts/seed-club-content.mts"
   },
   "dependencies": {
     "@supabase/supabase-js": "^2.45.4",
