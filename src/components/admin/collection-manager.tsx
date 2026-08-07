@@ -27,6 +27,8 @@ export default function CollectionManager({
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [flash, setFlash] = useState<string | null>(null);
+  /** Row awaiting a second click to confirm deletion — no browser dialog. */
+  const [confirming, setConfirming] = useState<string | null>(null);
 
   const startNew = () => { setError(null); setEditing(blankRecord(fields)); };
   const startEdit = (row: Row) => { setError(null); setEditing({ ...row }); };
@@ -67,10 +69,9 @@ export default function CollectionManager({
   };
 
   const remove = async (row: Row) => {
-    const label = String(row[titleField] ?? singular);
-    if (!confirm(`Delete "${label}"? This can't be undone.`)) return;
     setBusy(true);
     setError(null);
+    setConfirming(null);
     try {
       const response = await fetch(
         `/api/admin/records/${table}?id=${encodeURIComponent(String(row.id))}`,
@@ -164,22 +165,45 @@ export default function CollectionManager({
                   </span>
                 )}
               </span>
-              <button
-                type="button"
-                onClick={() => startEdit(row)}
-                className="inline-flex h-9 w-9 items-center justify-center rounded-lg text-ink-500 hover:bg-brand-50 hover:text-brand-700"
-                aria-label={`Edit ${String(row[titleField] ?? "")}`}
-              >
-                <Pencil className="h-4 w-4" />
-              </button>
-              <button
-                type="button"
-                onClick={() => remove(row)}
-                className="inline-flex h-9 w-9 items-center justify-center rounded-lg text-ink-400 hover:bg-red-50 hover:text-red-700"
-                aria-label={`Delete ${String(row[titleField] ?? "")}`}
-              >
-                <Trash2 className="h-4 w-4" />
-              </button>
+              {confirming === String(row.id) ? (
+                <span className="flex items-center gap-2">
+                  <span className="text-[0.82rem] text-red-800 hidden sm:inline">Delete?</span>
+                  <button
+                    type="button"
+                    onClick={() => remove(row)}
+                    disabled={busy}
+                    className="btn btn-sm bg-red-600 text-white hover:bg-red-700 disabled:opacity-60"
+                  >
+                    Yes, delete
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => setConfirming(null)}
+                    className="btn btn-ghost btn-sm"
+                  >
+                    Cancel
+                  </button>
+                </span>
+              ) : (
+                <>
+                  <button
+                    type="button"
+                    onClick={() => startEdit(row)}
+                    className="inline-flex h-9 w-9 items-center justify-center rounded-lg text-ink-500 hover:bg-brand-50 hover:text-brand-700"
+                    aria-label={`Edit ${String(row[titleField] ?? "")}`}
+                  >
+                    <Pencil className="h-4 w-4" />
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => setConfirming(String(row.id))}
+                    className="inline-flex h-9 w-9 items-center justify-center rounded-lg text-ink-400 hover:bg-red-50 hover:text-red-700"
+                    aria-label={`Delete ${String(row[titleField] ?? "")}`}
+                  >
+                    <Trash2 className="h-4 w-4" />
+                  </button>
+                </>
+              )}
             </li>
           ))}
         </ul>
@@ -315,6 +339,17 @@ export function FieldInput({
           />
           {uploadError && <p className="text-sm text-red-700">{uploadError}</p>}
         </div>
+      ) : field.type === "month" ? (
+        // Month and year only — nobody publishes a newsletter "on the 14th".
+        // Stored as the 1st of the month so it stays a proper date column.
+        <input
+          id={id}
+          type="month"
+          value={value ? String(value).slice(0, 7) : ""}
+          onChange={(e) => onChange(e.target.value ? `${e.target.value}-01` : null)}
+          required={field.required}
+          className={inputClass}
+        />
       ) : (
         <input
           id={id}

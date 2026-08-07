@@ -44,6 +44,7 @@ export default function GalaEditor({
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [saved, setSaved] = useState(false);
+  const [confirmingDelete, setConfirmingDelete] = useState(false);
 
   const FIELDS: Field[] = [
     { name: "name", label: "Gala name", type: "text", required: true,
@@ -142,7 +143,6 @@ export default function GalaEditor({
 
   const remove = async () => {
     if (!values.id) return;
-    if (!confirm(`Delete "${values.name}" and every result attached to it? This cannot be undone.`)) return;
     setBusy(true);
     await fetch(`/api/admin/records/galas?id=${values.id}`, { method: "DELETE" });
     router.push("/admin/galas");
@@ -195,10 +195,10 @@ export default function GalaEditor({
           {busy && <LoaderCircle className="h-4 w-4 animate-spin" aria-hidden />}
           {isNew ? "Create gala" : "Save changes"}
         </button>
-        {!isNew && (
+        {!isNew && !confirmingDelete && (
           <button
             type="button"
-            onClick={remove}
+            onClick={() => setConfirmingDelete(true)}
             className="btn btn-ghost text-red-700 border-red-200 hover:bg-red-50 hover:border-red-300 ml-auto"
           >
             <Trash2 className="h-4 w-4" aria-hidden />
@@ -206,6 +206,36 @@ export default function GalaEditor({
           </button>
         )}
       </div>
+
+      {confirmingDelete && (
+        <div className="mt-5 rounded-xl border border-red-200 bg-red-50 p-4">
+          <p className="font-semibold text-red-900 text-[0.94rem]">
+            Delete &ldquo;{String(values.name)}&rdquo;?
+          </p>
+          <p className="mt-1 text-[0.88rem] text-red-800/85">
+            Every session, event and result attached to this gala goes with it. Other galas are
+            unaffected. This cannot be undone.
+          </p>
+          <div className="mt-4 flex flex-wrap gap-3">
+            <button
+              type="button"
+              onClick={remove}
+              disabled={busy}
+              className="btn btn-sm bg-red-600 text-white hover:bg-red-700 disabled:opacity-60"
+            >
+              {busy && <LoaderCircle className="h-4 w-4 animate-spin" aria-hidden />}
+              Yes, delete this gala
+            </button>
+            <button
+              type="button"
+              onClick={() => setConfirmingDelete(false)}
+              className="btn btn-ghost btn-sm"
+            >
+              Keep it
+            </button>
+          </div>
+        </div>
+      )}
     </form>
   );
 }

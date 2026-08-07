@@ -24,10 +24,14 @@ update newsletters
  where period_start is null or period_end is null;
 
 -- Keep issue_date in step as the sort key: an issue is "current" from the
--- month it covers up to.
+-- month it covers up to. Without this trigger, saving a newsletter fails on
+-- issue_date's not-null constraint, because the admin form only asks for the
+-- months the issue covers.
 create or replace function newsletters_sync_dates() returns trigger as $$
 begin
-  if new.period_start is null then new.period_start := new.issue_date; end if;
+  if new.period_start is null then
+    new.period_start := coalesce(new.issue_date, current_date);
+  end if;
   if new.period_end is null then new.period_end := new.period_start; end if;
   new.issue_date := new.period_end;
   return new;

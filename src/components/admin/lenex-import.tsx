@@ -36,16 +36,16 @@ export default function LenexImport({
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [summary, setSummary] = useState<Summary | null>(null);
+  const [confirmedReplace, setConfirmedReplace] = useState(false);
 
   const submit = async (e: React.FormEvent) => {
     e.preventDefault();
     if (!file) return;
-    if (
-      importedAt &&
-      !confirm(
-        `This will replace all existing results for "${galaName}". Other galas are unaffected. Continue?`
-      )
-    ) {
+
+    // Re-importing replaces this gala's results, so ask once — inline, not in a
+    // browser dialog.
+    if (importedAt && !confirmedReplace) {
+      setConfirmedReplace(true);
       return;
     }
 
@@ -134,13 +134,32 @@ export default function LenexImport({
           </label>
         </div>
 
-        <button type="submit" disabled={!file || busy} className="btn btn-primary disabled:opacity-50">
+        {confirmedReplace && !busy && (
+          <p className="rounded-xl border border-amber-300 bg-amber-50 px-4 py-3 text-sm text-amber-900">
+            This replaces all existing results for <strong>{galaName}</strong>. Other galas are
+            untouched. Press the button again to go ahead, or{" "}
+            <button
+              type="button"
+              onClick={() => setConfirmedReplace(false)}
+              className="underline underline-offset-2 font-semibold"
+            >
+              cancel
+            </button>
+            .
+          </p>
+        )}
+
+        <button
+          type="submit"
+          disabled={!file || busy}
+          className={`btn disabled:opacity-50 ${confirmedReplace ? "bg-amber-500 text-brand-950 hover:bg-amber-400" : "btn-primary"}`}
+        >
           {busy ? (
             <LoaderCircle className="h-4 w-4 animate-spin" aria-hidden />
           ) : (
             <FileUp className="h-4 w-4" aria-hidden />
           )}
-          {busy ? "Importing…" : "Import results"}
+          {busy ? "Importing…" : confirmedReplace ? "Yes, replace the results" : "Import results"}
         </button>
       </form>
 

@@ -29,6 +29,7 @@ export default function GalaDayPanel({
   const [copied, setCopied] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
   const [open, setOpen] = useState(true);
+  const [confirmingRotate, setConfirmingRotate] = useState(false);
   const [currentToken, setCurrentToken] = useState(token);
 
   const siteUrl =
@@ -47,7 +48,8 @@ export default function GalaDayPanel({
   };
 
   const rotate = async () => {
-    if (!confirm("Issue a new upload token? The old one stops working immediately.")) return;
+    if (!confirmingRotate) { setConfirmingRotate(true); return; }
+    setConfirmingRotate(false);
     setBusy(true);
     const fresh =
       crypto.randomUUID().replace(/-/g, "") +
@@ -170,12 +172,21 @@ export default function GalaDayPanel({
                 type="button"
                 onClick={rotate}
                 disabled={busy}
-                className="btn btn-ghost btn-sm text-ink-500"
+                className={`btn btn-sm ${confirmingRotate ? "bg-amber-500 text-brand-950 hover:bg-amber-400" : "btn-ghost text-ink-500"}`}
                 title="Issue a new token and invalidate the old one"
               >
                 <RotateCcw className="h-4 w-4" />
-                New
+                {confirmingRotate ? "Confirm — old token stops working" : "New"}
               </button>
+              {confirmingRotate && (
+                <button
+                  type="button"
+                  onClick={() => setConfirmingRotate(false)}
+                  className="btn btn-ghost btn-sm"
+                >
+                  Cancel
+                </button>
+              )}
             </div>
             <p className="mt-2 text-ink-500">
               This token only works for this one gala, so it&rsquo;s safe to hand to whoever runs

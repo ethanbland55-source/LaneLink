@@ -1,6 +1,8 @@
 export type FieldType =
   | "text" | "textarea" | "markdown" | "number" | "date" | "boolean"
-  | "select" | "tags" | "file" | "url" | "email" | "time";
+  | "select" | "tags" | "file" | "url" | "email" | "time"
+  /** Month and year only — stored as the 1st of that month. */
+  | "month";
 
 export type Field = {
   name: string;
