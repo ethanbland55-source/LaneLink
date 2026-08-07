@@ -12,3 +12,6 @@ build/
 .vercel
 *.tsbuildinfo
 next-env.d.ts
+
+dev.log
+out.txt
