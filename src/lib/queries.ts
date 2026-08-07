@@ -18,7 +18,14 @@ const DEFAULT_CLUB: ClubSettings = {
   shortName: "Carnforth Otters",
   tagline: "Lancaster's competitive swimming club",
   strapline: "SwimMark accredited. Volunteer run. Swimmers aged 4 to masters.",
-  email: "info@carnforthotters.co.uk",
+  // Role addresses taken from the club's own contact page — not invented.
+  email: "secretary@carnforthotters.co.uk",
+  emailChair: "chair@carnforthotters.co.uk",
+  emailSecretary: "secretary@carnforthotters.co.uk",
+  emailMembership: "membership@carnforthotters.co.uk",
+  emailCompetitions: "competitions@carnforthotters.co.uk",
+  emailWelfare: "welfare@carnforthotters.co.uk",
+  emailWebsite: "website@carnforthotters.co.uk",
   facebook: "https://www.facebook.com/CARNFORTHOTTERS/",
   youtube: "https://www.youtube.com/@carnforth_otters",
   swimManager: "https://carnforth.swimmanager.co.uk",
@@ -126,13 +133,17 @@ export async function getGalaEvent(galaId: string, eventNumber: number): Promise
   return (data as GalaEvent) ?? null;
 }
 
-export async function getEventResults(eventId: string): Promise<GalaResult[]> {
+export async function getEventResults(
+  eventId: string,
+  kind: "result" | "startlist" = "result"
+): Promise<GalaResult[]> {
   const client = db();
   if (!client) return [];
   const { data } = await client
     .from("gala_results")
     .select("*")
     .eq("event_id", eventId)
+    .eq("kind", kind)
     .order("sort_order");
   return (data as GalaResult[]) ?? [];
 }
@@ -145,6 +156,7 @@ export async function getGalaResults(galaId: string): Promise<GalaResult[]> {
     .from("gala_results")
     .select("*")
     .eq("gala_id", galaId)
+    .eq("kind", "result")
     .order("sort_order")
     .limit(20000);
   return (data as GalaResult[]) ?? [];

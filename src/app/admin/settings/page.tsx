@@ -1,6 +1,6 @@
 import CollectionManager from "@/components/admin/collection-manager";
 import SettingsForm from "@/components/admin/settings-form";
-import type { Field } from "@/components/admin/fields";
+import { withSubtitle, type Field } from "@/components/admin/fields";
 import { adminList } from "@/lib/admin-queries";
 import { getClubSettings } from "@/lib/queries";
 import { DAY_NAMES } from "@/lib/format";
@@ -103,9 +103,11 @@ export default async function AdminSettingsPage() {
           table="squads"
           singular="Squad"
           fields={SQUAD_FIELDS}
-          rows={squads as unknown as Record<string, unknown>[]}
+          rows={withSubtitle(
+            squads as unknown as Record<string, unknown>[],
+            (row) => String(row.hours_guide ?? "")
+          )}
           titleField="name"
-          subtitle={(row) => String(row.hours_guide ?? "")}
         />
       </section>
 
@@ -118,11 +120,10 @@ export default async function AdminSettingsPage() {
           table="training_sessions"
           singular="Session"
           fields={sessionFields}
-          rows={sessions}
-          titleField="venue"
-          subtitle={(row) =>
+          rows={withSubtitle(sessions, (row) =>
             `${squadName(row.squad_id)} · ${DAY_NAMES[Number(row.day_of_week)] ?? ""} ${row.starts_at}–${row.ends_at}`
-          }
+          )}
+          titleField="venue"
           emptyMessage="No training sessions added yet."
         />
       </section>
@@ -133,9 +134,8 @@ export default async function AdminSettingsPage() {
           table="venues"
           singular="Venue"
           fields={VENUE_FIELDS}
-          rows={venues}
+          rows={withSubtitle(venues, (row) => String(row.address ?? ""))}
           titleField="name"
-          subtitle={(row) => String(row.address ?? "")}
         />
       </section>
 
@@ -148,9 +148,8 @@ export default async function AdminSettingsPage() {
           table="documents"
           singular="Document"
           fields={DOCUMENT_FIELDS}
-          rows={documents}
+          rows={withSubtitle(documents, (row) => String(row.category ?? ""))}
           titleField="title"
-          subtitle={(row) => String(row.category ?? "")}
         />
       </section>
 
@@ -160,9 +159,8 @@ export default async function AdminSettingsPage() {
           table="sponsors"
           singular="Supporter"
           fields={SPONSOR_FIELDS}
-          rows={sponsors}
+          rows={withSubtitle(sponsors, (row) => String(row.tier ?? ""))}
           titleField="name"
-          subtitle={(row) => String(row.tier ?? "")}
         />
       </section>
     </div>

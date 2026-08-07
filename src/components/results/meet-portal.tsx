@@ -211,6 +211,24 @@ export default function MeetPortal({
                           .filter(Boolean)
                           .join(" · ")}
                       </p>
+                      {sessionEvents.length > 0 && (
+                        <p className="mt-2">
+                          {sessionEvents.every((e) => e.has_results) ? (
+                            <span className="badge badge-muted">Complete</span>
+                          ) : sessionEvents.some((e) => e.has_results) ? (
+                            <span className="badge badge-live">
+                              <span className="live-dot" aria-hidden />
+                              Results coming in
+                            </span>
+                          ) : sessionEvents.some((e) => e.has_start_list) ? (
+                            <span className="badge badge-gold">Heats published</span>
+                          ) : (
+                            <span className="badge badge-brand">
+                              Heats published at the warm-up
+                            </span>
+                          )}
+                        </p>
+                      )}
                     </div>
                     <div className="flex flex-wrap gap-2">
                       {session.start_list_url && (
@@ -283,7 +301,14 @@ export default function MeetPortal({
                                 )}
                               </td>
                               <td className="px-4 py-3 text-right">
-                                {event.start_list_url ? (
+                                {event.has_start_list ? (
+                                  <Link
+                                    href={`/results/${galaSlug}/events/${event.number}?view=start`}
+                                    className="text-[0.88rem] font-semibold text-brand-600 hover:text-gold-700 hover:underline underline-offset-4"
+                                  >
+                                    Start
+                                  </Link>
+                                ) : event.start_list_url ? (
                                   <a
                                     href={event.start_list_url}
                                     target="_blank"
@@ -293,7 +318,12 @@ export default function MeetPortal({
                                     Start
                                   </a>
                                 ) : (
-                                  <span className="text-ink-300 text-[0.88rem]">—</span>
+                                  <span
+                                    className="text-ink-300 text-[0.88rem]"
+                                    title="Heats are drawn at the warm-up for that session"
+                                  >
+                                    —
+                                  </span>
                                 )}
                               </td>
                               <td className="px-4 py-3 text-right">

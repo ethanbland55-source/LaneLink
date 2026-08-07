@@ -1,7 +1,7 @@
 import Link from "next/link";
 import { ArrowRight, Plus } from "lucide-react";
 import CollectionManager from "@/components/admin/collection-manager";
-import type { Field } from "@/components/admin/fields";
+import { withSubtitle, type Field } from "@/components/admin/fields";
 import { adminList } from "@/lib/admin-queries";
 import { formatDateRange } from "@/lib/format";
 import type { Gala, GalaSeries } from "@/lib/types";
@@ -94,9 +94,11 @@ export default async function AdminGalasPage() {
           table="gala_series"
           singular="Series"
           fields={SERIES_FIELDS}
-          rows={series as unknown as Record<string, unknown>[]}
+          rows={withSubtitle(
+            series as unknown as Record<string, unknown>[],
+            (row) => `/results/series/${String(row.slug ?? "")}`
+          )}
           titleField="name"
-          subtitle={(row) => `/results/series/${String(row.slug ?? "")}`}
           emptyMessage="No series yet — add Winter Gala, Summer Gala and any others you run."
         />
       </section>

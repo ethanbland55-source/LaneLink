@@ -42,5 +42,4 @@ export const FOOTER_EXTRA: NavLink[] = [
   { href: "/results", label: "Gala results archive" },
   { href: "/about/policies", label: "Policies & safeguarding" },
   { href: "/privacy", label: "Privacy & data protection" },
-  { href: "/admin", label: "Club admin" },
 ];

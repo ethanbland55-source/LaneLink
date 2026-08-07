@@ -86,9 +86,12 @@ Fees are paid monthly and cover pool hire, coaching and club running costs. Meet
               right session. No pressure, no sales pitch.
             </p>
             <div className="mt-6 flex flex-wrap gap-2.5">
-              <a href={`mailto:${club.email}`} className="btn btn-primary btn-sm">
+              <a
+                href={`mailto:${club.emailMembership ?? club.email}`}
+                className="btn btn-primary btn-sm"
+              >
                 <Mail className="h-4 w-4" aria-hidden />
-                Email the club
+                Email membership
               </a>
               <Link href="/training" className="btn btn-onDark btn-sm">
                 Squad times

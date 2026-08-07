@@ -1,5 +1,5 @@
 import Link from "next/link";
-import { Facebook, Instagram, Mail, Youtube } from "lucide-react";
+import { Facebook, Instagram, Lock, Mail, Youtube } from "lucide-react";
 import { FOOTER_EXTRA, NAV } from "@/lib/nav";
 import type { ClubSettings } from "@/lib/types";
 import OtterMark from "./otter-mark";
@@ -88,10 +88,20 @@ export default function SiteFooter({ club }: { club: ClubSettings }) {
               </Link>
             ))}
           </div>
-          <p className="text-[0.8rem] text-brand-200/60">
-            Swim England affiliated · SwimMark accredited · Run entirely by volunteers
-          </p>
+
+          {/* Volunteers need to find this without being told the URL each time. */}
+          <Link
+            href="/admin"
+            className="inline-flex items-center gap-2 self-start rounded-full border border-white/25 px-4 py-2 text-[0.85rem] text-white/85 hover:bg-white/15 hover:text-white transition-colors"
+          >
+            <Lock className="h-3.5 w-3.5" aria-hidden />
+            Club admin sign in
+          </Link>
         </div>
+
+        <p className="mt-6 text-[0.8rem] text-brand-200/60">
+          Swim England affiliated · SwimMark accredited · Run entirely by volunteers
+        </p>
       </div>
     </footer>
   );

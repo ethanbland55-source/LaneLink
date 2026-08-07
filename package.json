@@ -9,7 +9,9 @@
     "start": "next start",
     "lint": "next lint",
     "typecheck": "tsc --noEmit",
-    "test:lenex": "node scripts/test-lenex.ts"
+    "test:lenex": "node scripts/test-lenex.mts",
+    "test:sportsys": "node scripts/test-sportsys.mts",
+    "test:supabase": "node scripts/test-supabase.mts"
   },
   "dependencies": {
     "@supabase/supabase-js": "^2.45.4",

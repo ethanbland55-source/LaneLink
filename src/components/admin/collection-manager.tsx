@@ -14,15 +14,13 @@ type Props = {
   rows: Row[];
   /** Column used for the row title in the list. */
   titleField: string;
-  /** Optional secondary line in the list. */
-  subtitle?: (row: Row) => string;
   emptyMessage?: string;
   /** Columns always written on save — e.g. the gala a file belongs to. */
   fixed?: Record<string, unknown>;
 };
 
 export default function CollectionManager({
-  table, singular, fields, rows, titleField, subtitle, emptyMessage, fixed,
+  table, singular, fields, rows, titleField, emptyMessage, fixed,
 }: Props) {
   const router = useRouter();
   const [editing, setEditing] = useState<Row | null>(null);
@@ -160,8 +158,10 @@ export default function CollectionManager({
                     <span className="ml-2 badge badge-muted">Draft</span>
                   )}
                 </span>
-                {subtitle && (
-                  <span className="block text-[0.82rem] text-ink-500 truncate">{subtitle(row)}</span>
+                {row._subtitle && (
+                  <span className="block text-[0.82rem] text-ink-500 truncate">
+                    {row._subtitle}
+                  </span>
                 )}
               </span>
               <button

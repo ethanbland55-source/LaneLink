@@ -2,9 +2,10 @@ import Link from "next/link";
 import { notFound } from "next/navigation";
 import { ArrowLeft } from "lucide-react";
 import CollectionManager from "@/components/admin/collection-manager";
+import GalaDayPanel from "@/components/admin/gala-day-panel";
 import GalaEditor from "@/components/admin/gala-editor";
 import LenexImport from "@/components/admin/lenex-import";
-import type { Field } from "@/components/admin/fields";
+import { withSubtitle, type Field } from "@/components/admin/fields";
 import { adminList, adminOne } from "@/lib/admin-queries";
 import { FILE_GROUPS, type Gala, type GalaSeries, type GalaSession } from "@/lib/types";
 import { formatWeekday } from "@/lib/format";
@@ -75,6 +76,13 @@ export default async function AdminGalaPage({ params }: { params: Promise<{ id: 
 
       <GalaEditor gala={gala as unknown as Record<string, unknown>} series={series} />
 
+      <GalaDayPanel
+        galaId={gala.id}
+        token={gala.ingest_token}
+        lastFileAt={gala.last_file_at}
+        liveUpdatedAt={gala.live_updated_at}
+      />
+
       <LenexImport galaId={gala.id} galaName={gala.name} importedAt={gala.imported_at} />
 
       <section>
@@ -87,15 +95,16 @@ export default async function AdminGalaPage({ params }: { params: Promise<{ id: 
           table="gala_sessions"
           singular="Session"
           fields={SESSION_FIELDS}
-          rows={sessions as unknown as Record<string, unknown>[]}
+          rows={withSubtitle(
+            sessions as unknown as Record<string, unknown>[],
+            (row) =>
+              [
+                row.name ? String(row.name) : null,
+                row.session_date ? formatWeekday(String(row.session_date)) : null,
+                row.start_time ? `starts ${row.start_time}` : null,
+              ].filter(Boolean).join(" · ")
+          )}
           titleField="number"
-          subtitle={(row) =>
-            [
-              row.name ? String(row.name) : null,
-              row.session_date ? formatWeekday(String(row.session_date)) : null,
-              row.start_time ? `starts ${row.start_time}` : null,
-            ].filter(Boolean).join(" · ")
-          }
           fixed={{ gala_id: gala.id }}
           emptyMessage="No sessions yet — import a Lenex file, or add them here to attach PDFs."
         />
@@ -111,11 +120,13 @@ export default async function AdminGalaPage({ params }: { params: Promise<{ id: 
           table="gala_files"
           singular="File"
           fields={FILE_FIELDS}
-          rows={files as unknown as Record<string, unknown>[]}
+          rows={withSubtitle(
+            files as unknown as Record<string, unknown>[],
+            (row) =>
+              FILE_GROUPS.find((g) => g.key === row.group_key)?.label ??
+              String(row.group_key ?? "")
+          )}
           titleField="label"
-          subtitle={(row) =>
-            FILE_GROUPS.find((g) => g.key === row.group_key)?.label ?? String(row.group_key ?? "")
-          }
           fixed={{ gala_id: gala.id }}
           emptyMessage="No files uploaded for this gala yet."
         />

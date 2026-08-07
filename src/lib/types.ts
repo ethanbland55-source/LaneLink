@@ -31,6 +31,12 @@ export type Gala = {
   published: boolean;
   is_live: boolean;
   imported_at: string | null;
+  /** Per-gala upload token used by the gala-day poster script. */
+  ingest_token: string | null;
+  /** Rolling "last race" markup sent by Meet Organisation during a session. */
+  live_html: string | null;
+  live_updated_at: string | null;
+  last_file_at: string | null;
   created_at: string;
   series?: GalaSeries | null;
 };
@@ -45,6 +51,8 @@ export type GalaSession = {
   start_time: string | null;
   start_list_url: string | null;
   results_url: string | null;
+  start_lists_at: string | null;
+  completed_at: string | null;
   sort_order: number;
 };
 
@@ -64,6 +72,8 @@ export type GalaEvent = {
   start_list_url: string | null;
   results_url: string | null;
   has_results: boolean;
+  has_start_list: boolean;
+  results_at: string | null;
   sort_order: number;
 };
 
@@ -87,6 +97,11 @@ export type GalaResult = {
   points: number | null;
   status: string | null;
   dq_code: string | null;
+  /** 'result' rows have times; 'startlist' rows have lanes and seed times. */
+  kind: string;
+  seed_time: string | null;
+  /** 'sportsys' (live during the meet) or 'lenex' (authoritative, after). */
+  source: string;
   splits: Split[];
   relay_members: { name: string; leg: number }[] | null;
   is_home_club: boolean;
@@ -108,9 +123,13 @@ export type Person = {
   id: string;
   name: string;
   roles: string[];
+  /** Every group this person belongs to. */
   sections: string[];
+  /** Where their full card appears; elsewhere they're cross-referenced. */
+  primary_section: string | null;
   bio: string | null;
   email: string | null;
+  phone: string | null;
   photo_url: string | null;
   sort_order: number;
   published: boolean;
@@ -119,11 +138,17 @@ export type Person = {
 export type Newsletter = {
   id: string;
   title: string;
+  /** Kept in step with period_end by a trigger; used for sorting. */
   issue_date: string;
+  /** First month the issue covers. */
+  period_start: string | null;
+  /** Last month it covers — same as period_start for a single-month issue. */
+  period_end: string | null;
   summary: string | null;
   file_url: string;
   file_size: number | null;
   cover_url: string | null;
+  page_count: number | null;
   published: boolean;
 };
 
@@ -212,13 +237,35 @@ export type ClubSettings = {
   shortName: string;
   tagline: string;
   strapline: string;
+  /** General enquiries — the one shown in the footer. */
   email: string;
+  /** Role addresses, as used on the club's own contact page. */
+  emailChair?: string;
+  emailSecretary?: string;
+  emailMembership?: string;
+  emailCompetitions?: string;
+  emailWelfare?: string;
+  emailWebsite?: string;
   facebook?: string;
   youtube?: string;
   instagram?: string;
   swimManager?: string;
   primaryVenue?: string;
 };
+
+/** Drives the contact page and the club settings form — one list, one place. */
+export const CONTACT_ROLES: {
+  key: keyof ClubSettings;
+  label: string;
+  note: string;
+}[] = [
+  { key: "emailMembership", label: "Membership", note: "Joining, fees, changing squad, leaving" },
+  { key: "emailCompetitions", label: "Competitions", note: "Gala entries, withdrawals, licences" },
+  { key: "emailWelfare", label: "Welfare Officer", note: "Any concern about a swimmer's wellbeing or safety" },
+  { key: "emailSecretary", label: "Club Secretary", note: "General enquiries and anything for the committee" },
+  { key: "emailChair", label: "Chair", note: "Club governance and formal matters" },
+  { key: "emailWebsite", label: "Website", note: "Broken links, wrong details, results queries" },
+];
 
 /** Lifecycle derived from dates — never set by hand. */
 export type GalaStatus = "upcoming" | "live" | "recent" | "archived";

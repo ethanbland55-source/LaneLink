@@ -95,6 +95,53 @@ export function formatFileSize(bytes: number | null | undefined): string {
   return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
 }
 
+const MONTHS = [
+  "January", "February", "March", "April", "May", "June",
+  "July", "August", "September", "October", "November", "December",
+];
+
+/**
+ * A newsletter's period as people actually say it:
+ *   "July / August 2026"   an issue covering two months
+ *   "April 2026"           a single month
+ *   "December 2025 / January 2026"  spanning a year end
+ *
+ * Issues that cover two months only appear at the end of the period, so the
+ * archive is grouped by these labels rather than by individual month — no
+ * phantom gap for a month that never had an issue of its own.
+ */
+export function newsletterPeriod(
+  start: string | null | undefined,
+  end: string | null | undefined
+): string {
+  const from = start ? new Date(`${start.slice(0, 10)}T12:00:00Z`) : null;
+  const to = end ? new Date(`${end.slice(0, 10)}T12:00:00Z`) : from;
+  if (!from || Number.isNaN(from.getTime())) return "";
+  if (!to || Number.isNaN(to.getTime())) return `${MONTHS[from.getUTCMonth()]} ${from.getUTCFullYear()}`;
+
+  const sameMonth =
+    from.getUTCMonth() === to.getUTCMonth() && from.getUTCFullYear() === to.getUTCFullYear();
+  if (sameMonth) return `${MONTHS[from.getUTCMonth()]} ${from.getUTCFullYear()}`;
+
+  if (from.getUTCFullYear() === to.getUTCFullYear()) {
+    return `${MONTHS[from.getUTCMonth()]} / ${MONTHS[to.getUTCMonth()]} ${to.getUTCFullYear()}`;
+  }
+  return `${MONTHS[from.getUTCMonth()]} ${from.getUTCFullYear()} / ${MONTHS[to.getUTCMonth()]} ${to.getUTCFullYear()}`;
+}
+
+/** "Out now", "Last month", or the period — used to badge the newest issue. */
+export function newsletterFreshness(end: string | null | undefined): string | null {
+  if (!end) return null;
+  const to = new Date(`${end.slice(0, 10)}T12:00:00Z`);
+  if (Number.isNaN(to.getTime())) return null;
+  const now = new Date();
+  const months =
+    (now.getUTCFullYear() - to.getUTCFullYear()) * 12 + (now.getUTCMonth() - to.getUTCMonth());
+  if (months <= 0) return "Out now";
+  if (months === 1) return "Latest issue";
+  return null;
+}
+
 export const DAY_NAMES = ["", "Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday", "Sunday"];
 export const DAY_SHORT = ["", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"];
 

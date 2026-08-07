@@ -1,5 +1,5 @@
 import CollectionManager from "@/components/admin/collection-manager";
-import type { Field } from "@/components/admin/fields";
+import { withSubtitle, type Field } from "@/components/admin/fields";
 import { adminList } from "@/lib/admin-queries";
 
 export const dynamic = "force-dynamic";
@@ -54,9 +54,8 @@ export default async function AdminPagesPage() {
         table="pages"
         singular="Page"
         fields={FIELDS}
-        rows={rows}
+        rows={withSubtitle(rows, (row) => String(row.slug ?? ""))}
         titleField="title"
-        subtitle={(row) => String(row.slug ?? "")}
         emptyMessage="No pages overridden — every page is using its built-in text."
       />
     </div>

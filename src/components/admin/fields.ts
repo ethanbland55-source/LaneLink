@@ -20,7 +20,23 @@ export type Field = {
   sizeField?: string;
 };
 
-export type Row = Record<string, unknown> & { id?: string };
+export type Row = Record<string, unknown> & {
+  id?: string;
+  /**
+   * Secondary line shown under the title in a list. Computed on the server by
+   * `withSubtitle` — functions can't cross the server/client boundary, so the
+   * string has to be worked out before the data is handed over.
+   */
+  _subtitle?: string;
+};
+
+/** Attach a display subtitle to each row before passing it to the client. */
+export function withSubtitle<T extends Record<string, unknown>>(
+  rows: T[],
+  build: (row: T) => string
+): Row[] {
+  return rows.map((row) => ({ ...row, _subtitle: build(row) }));
+}
 
 export function blankRecord(fields: Field[]): Row {
   const out: Row = {};

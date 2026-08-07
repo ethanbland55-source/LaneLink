@@ -12,7 +12,7 @@ export const WRITABLE: Record<string, readonly string[]> = {
     "series_id", "slug", "name", "edition_year", "start_date", "end_date", "venue",
     "course", "meet_type", "licence", "is_home", "entry_status", "entry_url",
     "stream_url", "promoter", "contact_email", "description", "results_note",
-    "published", "is_live",
+    "published", "is_live", "ingest_token",
   ],
   gala_sessions: [
     "gala_id", "number", "name", "session_date", "warmup_time", "start_time",
@@ -21,13 +21,17 @@ export const WRITABLE: Record<string, readonly string[]> = {
   gala_events: [
     "gala_id", "session_id", "number", "name", "distance", "stroke", "gender",
     "age_group", "round", "is_relay", "scheduled_at", "start_list_url",
-    "results_url", "has_results", "sort_order",
+    "results_url", "has_results", "has_start_list", "sort_order",
   ],
   gala_files: ["gala_id", "group_key", "label", "file_url", "file_size", "sort_order"],
   newsletters: [
-    "title", "issue_date", "summary", "file_url", "file_size", "cover_url", "published",
+    "title", "issue_date", "period_start", "period_end", "summary", "file_url",
+    "file_size", "cover_url", "page_count", "published",
   ],
-  people: ["name", "roles", "sections", "bio", "email", "photo_url", "sort_order", "published"],
+  people: [
+    "name", "roles", "sections", "primary_section", "bio", "email", "phone",
+    "photo_url", "sort_order", "published",
+  ],
   news: ["slug", "title", "excerpt", "body", "image_url", "published_at", "published"],
   pages: ["slug", "title", "intro", "body", "section", "sort_order", "published"],
   squads: ["slug", "name", "tagline", "description", "hours_guide", "sort_order", "published"],

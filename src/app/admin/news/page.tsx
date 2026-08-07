@@ -1,5 +1,5 @@
 import CollectionManager from "@/components/admin/collection-manager";
-import type { Field } from "@/components/admin/fields";
+import { withSubtitle, type Field } from "@/components/admin/fields";
 import { adminList } from "@/lib/admin-queries";
 import { formatDate } from "@/lib/format";
 
@@ -35,9 +35,8 @@ export default async function AdminNewsPage() {
         table="news"
         singular="Post"
         fields={FIELDS}
-        rows={rows}
+        rows={withSubtitle(rows, (row) => formatDate(String(row.published_at ?? "")))}
         titleField="title"
-        subtitle={(row) => formatDate(String(row.published_at ?? ""))}
         emptyMessage="No posts yet."
       />
     </div>
