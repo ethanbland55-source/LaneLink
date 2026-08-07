@@ -90,8 +90,12 @@ export default function SiteFooter({ club }: { club: ClubSettings }) {
           </div>
 
           {/* Volunteers need to find this without being told the URL each time. */}
+          {/* Not prefetched: while signed out this route redirects to the login
+              page, and caching that redirect is what made the first click into
+              the admin area land on a blank screen. */}
           <Link
             href="/admin"
+            prefetch={false}
             className="inline-flex items-center gap-2 self-start rounded-full border border-white/25 px-4 py-2 text-[0.85rem] text-white/85 hover:bg-white/15 hover:text-white transition-colors"
           >
             <Lock className="h-3.5 w-3.5" aria-hidden />

@@ -1,7 +1,7 @@
 "use client";
 
 import Link from "next/link";
-import { usePathname, useRouter } from "next/navigation";
+import { usePathname } from "next/navigation";
 import { useState } from "react";
 import {
   ExternalLink, FileText, Home, LogOut, Menu, Newspaper, Settings, Trophy, Users, X,
@@ -20,13 +20,13 @@ const LINKS = [
 
 export default function AdminShell({ children }: { children: React.ReactNode }) {
   const pathname = usePathname();
-  const router = useRouter();
   const [open, setOpen] = useState(false);
 
   const signOut = async () => {
     await fetch("/api/admin/logout", { method: "POST" });
-    router.push("/admin/login");
-    router.refresh();
+    // Hard navigation for the same reason as signing in — it clears the
+    // router cache along with the cookie.
+    window.location.assign("/admin/login");
   };
 
   const isActive = (href: string, exact?: boolean) =>

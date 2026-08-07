@@ -1,11 +1,9 @@
 "use client";
 
-import { useRouter } from "next/navigation";
 import { useState } from "react";
 import { Eye, EyeOff, LoaderCircle, LogIn } from "lucide-react";
 
 export default function LoginForm({ next }: { next?: string }) {
-  const router = useRouter();
   const [password, setPassword] = useState("");
   const [show, setShow] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -27,8 +25,14 @@ export default function LoginForm({ next }: { next?: string }) {
         setBusy(false);
         return;
       }
-      router.push(next && next.startsWith("/admin") ? next : "/admin");
-      router.refresh();
+      // A full page load, not router.push().
+      //
+      // Signing in changes what every server component returns, and the client
+      // router may already have a cached payload for /admin from before the
+      // cookie existed — which redirects straight back to this page. Pushing
+      // and refreshing at the same time also races. A hard navigation starts
+      // clean with the cookie in place, which is what an auth transition wants.
+      window.location.assign(next && next.startsWith("/admin") ? next : "/admin");
     } catch {
       setError("Couldn't reach the server. Check your connection.");
       setBusy(false);
