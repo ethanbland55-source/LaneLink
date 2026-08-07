@@ -1,94 +1,71 @@
-# Setup checklist
+# Setup — where things stand
 
-Work through this once. Should take about twenty minutes.
+## Already done
 
----
+- **Supabase project** `CarnforthWebsite` (org `CarnforthOttersTest`, eu-west-2).
+- **Schema run.** 16 tables created, Row Level Security enabled on all 16,
+  16 read policies, storage bucket `otters` created.
+- **Seed content in place:** 4 gala series (Winter Gala, Summer Gala, Club
+  Championships, Time Trials), 7 squads, 4 venues, 4 page templates, club settings.
+- **`.env` filled in** with the Supabase URL and both keys.
 
-## 1 · Supabase
+## Still to do — two values
 
-- [ ] Create a free project at **supabase.com**. Pick the London region.
-- [ ] **SQL Editor → New query** → paste all of `supabase/schema.sql` → **Run**.
-      You should see "Success. No rows returned."
-- [ ] **Project Settings → API** → copy these three, keep the tab open:
-  - Project URL
-  - `anon` `public` key
-  - `service_role` key ← **secret, never share or commit**
-
-## 2 · Generate a cookie secret
-
-Run this in a terminal and copy the output:
+Open a terminal in this folder and run:
 
 ```bash
 node -e "console.log(require('crypto').randomBytes(32).toString('hex'))"
 ```
 
-## 3 · Fill in `.env` (local)
+Put that 64-character string into `.env` as `AUTH_SECRET`, and pick an
+`ADMIN_PASSWORD` on the line above it. Four unrelated words beats one mangled
+word.
 
-`.env` is already in this folder and is gitignored — it never leaves your
-machine. Fill in the blanks:
+---
 
-```
-NEXT_PUBLIC_SUPABASE_URL=      ← Project URL
-NEXT_PUBLIC_SUPABASE_ANON_KEY= ← anon public key
-SUPABASE_SERVICE_ROLE_KEY=     ← service_role key
-ADMIN_PASSWORD=                ← pick something long
-AUTH_SECRET=                   ← the string from step 2
-NEXT_PUBLIC_SITE_URL=http://localhost:3000
-```
+## The six variables for Vercel
 
-Then:
+**Settings → Environment Variables.** Tick **Production**, **Preview** and
+**Development** for each. The first three you can copy straight out of `.env`.
 
-```bash
-npm install
-npm run dev
-```
+| Variable | Value |
+|---|---|
+| `NEXT_PUBLIC_SUPABASE_URL` | `https://uaapqfovgyawfalgwrdu.supabase.co` |
+| `NEXT_PUBLIC_SUPABASE_PUBLISHABLE_KEY` | starts `sb_publishable_…` — in `.env` |
+| `SUPABASE_SECRET_KEY` | starts `sb_secret_…` — in `.env`, **keep secret** |
+| `ADMIN_PASSWORD` | whatever you chose |
+| `AUTH_SECRET` | the 64-character string from the command above |
+| `NEXT_PUBLIC_SITE_URL` | your lane-link `.vercel.app` URL for now |
 
-Open <http://localhost:3000/admin> and sign in with your `ADMIN_PASSWORD`.
+Then push this folder to the connected GitHub repo. Vercel builds on push — no
+build settings need changing.
 
-> If `npm install` seems to skip packages, it's this machine's global
-> `NODE_ENV=production`. Use `$env:NODE_ENV="development"; npm install --include=dev`.
-> Vercel is unaffected.
+> **Note on key names.** This project uses Supabase's newer `sb_publishable_` /
+> `sb_secret_` keys rather than the older `anon` / `service_role` JWTs. The code
+> accepts either naming, so if you ever migrate, nothing breaks.
 
-## 4 · GitHub
+---
 
-- [ ] Create a new **private** repo on GitHub (no README, no .gitignore).
-- [ ] Then, in this folder:
+## First run-through once it's live
 
-```bash
-git remote add origin https://github.com/YOUR-USERNAME/YOUR-REPO.git
-git push -u origin main
-```
+1. Open `/admin` on the Vercel URL and sign in with `ADMIN_PASSWORD`.
+2. **Club settings** — check the contact email and socials; add squads and
+   training times.
+3. **Who's Who** — add committee, coaches, team managers, officials.
+4. **Newsletters** — upload the latest issue.
+5. **Galas** — the four series are already there. Create a gala under one.
+6. Export a Lenex file from a past meet in Meet Organisation
+   (**File → Export → Lenex**) and import it. Check the results look right.
 
-## 5 · Vercel
-
-- [ ] **Add New → Project** → import the repo. Leave every build setting alone.
-- [ ] **Settings → Environment Variables** → add the same six variables.
-      Tick **Production**, **Preview** and **Development** for each.
-      `NEXT_PUBLIC_SITE_URL` should be your `.vercel.app` URL for now.
-- [ ] Deploy.
-
-## 6 · First run-through
-
-- [ ] Open `/admin` on the live URL and sign in.
-- [ ] **Club settings** — check the contact email and socials, add the squads
-      and training times.
-- [ ] **Who's Who** — add the committee, coaches, team managers and officials.
-- [ ] **Newsletters** — upload the latest issue.
-- [ ] **Galas** — the four series are already there (Winter Gala, Summer Gala,
-      Club Championships, Time Trials). Create a gala under one of them.
-- [ ] Export a Lenex file from a past meet in Meet Organisation
-      (**File → Export → Lenex**) and import it. Check the results look right.
-
-## 7 · Later: the domain
+## Later: the domain
 
 Only when you're happy with it.
 
-- [ ] **Vercel → Settings → Domains** → add `carnforthotters.co.uk`.
-- [ ] Point the DNS at Vercel. This needs whoever holds the GoDaddy login —
-      the club's WordPress site is on GoDaddy Managed WordPress, so the domain
-      is almost certainly in that same account.
-- [ ] Update `NEXT_PUBLIC_SITE_URL` to `https://carnforthotters.co.uk` and
-      redeploy.
+1. **Vercel → Settings → Domains** → add `carnforthotters.co.uk`.
+2. Point the DNS at Vercel. This needs whoever holds the GoDaddy login — the
+   club's WordPress site is on GoDaddy Managed WordPress, so the domain is
+   almost certainly in that same account.
+3. Update `NEXT_PUBLIC_SITE_URL` to `https://carnforthotters.co.uk` and redeploy.
 
 Nothing changes for anyone until that DNS switch, and it's reversible.
 
@@ -96,17 +73,17 @@ Nothing changes for anyone until that DNS switch, and it's reversible.
 
 ## Things worth knowing
 
-**Re-importing is safe.** Uploading a Lenex file replaces that gala's results
-and nothing else. Last year's Winter Gala can't be clobbered by this year's
-Summer Gala import.
+**Re-importing is safe.** Uploading a Lenex file replaces that gala's results and
+nothing else. Last year's Winter Gala can't be clobbered by this year's Summer
+Gala import.
 
 **Publish as you go.** On gala day you can import after every session. The live
-page refreshes itself every 30 seconds, so people watching just leave it open.
+page refreshes itself every 30 seconds, so people just leave it open.
 
 **Empty is fine.** Any section you haven't filled in shows a tidy "coming soon"
 message rather than breaking.
 
-**Check the parser first.** Before your first real gala:
+**Check the parser before your first real gala:**
 
 ```bash
 npm run test:lenex -- "C:\path\to\a-real-export.lef"
@@ -114,3 +91,12 @@ npm run test:lenex -- "C:\path\to\a-real-export.lef"
 
 It prints every swimmer, time and split it found. Compare against the printed
 results sheet.
+
+**Local install quirk.** This machine has `NODE_ENV=production` set globally,
+which makes `npm install` skip dev dependencies. If a fresh install looks broken:
+
+```powershell
+$env:NODE_ENV="development"; npm install --include=dev
+```
+
+Vercel is unaffected.

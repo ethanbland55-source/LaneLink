@@ -1,8 +1,22 @@
 import { createClient, type SupabaseClient } from "@supabase/supabase-js";
 
 const url = process.env.NEXT_PUBLIC_SUPABASE_URL ?? "";
-const anonKey = process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY ?? "";
-const serviceKey = process.env.SUPABASE_SERVICE_ROLE_KEY ?? "";
+
+/**
+ * Supabase now issues `sb_publishable_…` / `sb_secret_…` keys instead of the
+ * older `anon` / `service_role` JWTs. Both work, so both variable names are
+ * accepted — new name first. If this project is ever migrated, nothing here
+ * needs to change.
+ */
+const anonKey =
+  process.env.NEXT_PUBLIC_SUPABASE_PUBLISHABLE_KEY ??
+  process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY ??
+  "";
+
+const serviceKey =
+  process.env.SUPABASE_SECRET_KEY ??
+  process.env.SUPABASE_SERVICE_ROLE_KEY ??
+  "";
 
 /**
  * True once Supabase env vars are present. The site is built to render
