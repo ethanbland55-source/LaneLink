@@ -2,9 +2,8 @@
 
 import { useCallback, useEffect, useMemo, useState } from "react";
 import Link from "next/link";
-import { MacroChips, MacroRow } from "./macro-ui";
+import { Bar, MacroChips, MacroTile } from "./macro-ui";
 import {
-  DAY_ROLLOVER_HOUR,
   dayKey,
   itemMacros,
   sumMacros,
@@ -46,7 +45,7 @@ export default function TodayPage() {
       setEntries(l);
       setError(null);
     } catch {
-      setError("Couldn't reach the database. Check DATABASE_URL in Vercel.");
+      setError("Can't reach the database.");
     } finally {
       setLoading(false);
     }
@@ -56,7 +55,7 @@ export default function TodayPage() {
     load(day);
   }, [day, load]);
 
-  // Roll the day over at 03:00 without needing a refresh.
+  // The logging day turns over at 03:00; catch it without a refresh.
   useEffect(() => {
     const t = setInterval(() => {
       const k = dayKey();
@@ -65,7 +64,10 @@ export default function TodayPage() {
     return () => clearInterval(t);
   }, []);
 
-  const target = useMemo(() => (profile ? targets(profile) : { ...ZERO, maintenance: 0, bmr: 0 }), [profile]);
+  const target = useMemo(
+    () => (profile ? targets(profile) : { ...ZERO, maintenance: 0, bmr: 0 }),
+    [profile]
+  );
 
   const eaten = useMemo(
     () => sumMacros(entries.filter((e) => e.confirmed).map((e) => totalFor(e.items))),
@@ -112,63 +114,60 @@ export default function TodayPage() {
     );
   }
 
-  if (loading) return <p className="py-20 text-center text-[#8a97ae]">Loading…</p>;
+  if (loading) return <p className="py-24 text-center text-sm text-[var(--color-mut)]">Loading…</p>;
+
+  const left = Math.round(target.kcal - eaten.kcal);
+  const over = left < 0;
 
   return (
-    <div className="space-y-5">
+    <div className="space-y-3">
       {error && (
-        <div className="panel border-[#ff6f91]/40 px-4 py-3 text-sm text-[#ff9db3]">{error}</div>
+        <div className="card px-5 py-3 text-sm text-[var(--color-fat)]">{error}</div>
       )}
 
-      {/* Header bar — the daily targets from your plan / calculator */}
-      <header className="panel overflow-hidden">
-        <div className="flex items-start gap-4 px-5 py-4">
+      {/* Hero — one number, the one that matters */}
+      <section className="card px-5 py-6">
+        <div className="flex items-start">
           <div className="mr-auto">
-            <p className="label">Daily target · {goalLabel(profile)}</p>
-            <p className="mt-1.5 text-4xl font-black leading-none tracking-tight">
-              {target.kcal.toLocaleString()}
-              <span className="ml-1.5 text-base font-semibold text-[#8a97ae]">kcal</span>
+            <p className="label">{over ? "Over by" : "Remaining"}</p>
+            <p
+              className="num mt-2 text-[4rem] sm:text-[4.75rem]"
+              style={{ color: over ? "var(--color-fat)" : "#f2f4f7" }}
+            >
+              {Math.abs(left).toLocaleString()}
             </p>
           </div>
-          <div className="shrink-0 text-right">
-            <p className="text-sm font-semibold">{prettyDay(day)}</p>
-            <p className="mt-0.5 text-[0.7rem] text-[#8a97ae]">
-              resets {String(DAY_ROLLOVER_HOUR).padStart(2, "0")}:00
-            </p>
-          </div>
+          <p className="pt-1 text-right text-xs leading-relaxed text-[var(--color-mut)]">
+            {prettyDay(day)}
+            <br />
+            {Math.round(eaten.kcal).toLocaleString()} of {target.kcal.toLocaleString()} kcal
+          </p>
         </div>
-        <div className="flex flex-wrap gap-x-5 gap-y-1 border-t border-[#1e2637] px-5 py-2.5 text-[0.72rem] text-[#8a97ae]">
-          <span>
-            Protein <b className="text-[#eef2f8]">{target.protein}g</b>
-          </span>
-          <span>
-            Carbs <b className="text-[#eef2f8]">{target.carbs}g</b>
-          </span>
-          <span>
-            Fat <b className="text-[#eef2f8]">{target.fat}g</b>
-          </span>
-          <span className="ml-auto">
-            Maintenance <b className="text-[#eef2f8]">{target.maintenance}</b>
-          </span>
+
+        <div className="mt-5">
+          <Bar value={eaten.kcal} target={target.kcal} color="var(--color-accent)" height={8} />
         </div>
-      </header>
+      </section>
 
-      {/* The live counter */}
-      <MacroRow eaten={eaten} target={target} />
+      {/* Macros */}
+      <section className="grid grid-cols-3 gap-3">
+        <MacroTile k="protein" eaten={eaten.protein} target={target.protein} />
+        <MacroTile k="carbs" eaten={eaten.carbs} target={target.carbs} />
+        <MacroTile k="fat" eaten={eaten.fat} target={target.fat} />
+      </section>
 
-      {/* Meal tabs */}
-      <section>
-        <p className="label mb-2">Add a meal</p>
-        {meals.length === 0 ? (
-          <div className="panel px-4 py-6 text-center text-sm text-[#8a97ae]">
-            No meals yet —{" "}
-            <Link href="/plan" className="text-[#38e2b0] underline">
-              build your plan
-            </Link>{" "}
-            first.
-          </div>
-        ) : (
-          <div className="grid grid-cols-1 gap-2 sm:grid-cols-2 lg:grid-cols-3">
+      {/* Add a meal */}
+      {meals.length === 0 ? (
+        <section className="card px-5 py-10 text-center">
+          <p className="text-sm text-[var(--color-mut)]">No meals in your plan yet.</p>
+          <Link href="/plan" className="btn btn-accent mt-4">
+            Build your plan
+          </Link>
+        </section>
+      ) : (
+        <section className="card px-5 py-4">
+          <p className="label mb-3">Add a meal</p>
+          <div className="flex flex-wrap gap-2">
             {meals.map((m) => {
               const t = totalFor(m.ingredients);
               const used = entries.filter((e) => e.meal_id === m.id).length;
@@ -176,100 +175,92 @@ export default function TodayPage() {
                 <button
                   key={m.id}
                   onClick={() => addMeal(m)}
-                  className="panel flex w-full items-center gap-3 px-3 py-2.5 text-left transition hover:border-[#38e2b0]"
+                  className="sunk group flex items-center gap-2.5 px-3.5 py-2.5 text-left transition hover:bg-[#161a1f]"
                 >
-                  <span className="grid h-7 w-7 shrink-0 place-items-center rounded-lg bg-[#38e2b0] text-base font-bold leading-none text-[#04120d]">
+                  <span className="text-lg font-light leading-none text-[var(--color-accent)]">
                     +
                   </span>
-                  <span className="min-w-0 flex-1">
-                    <span className="flex items-center gap-1.5 text-sm font-semibold">
-                      <span className="truncate">{m.name}</span>
-                      {used > 0 && (
-                        <span className="shrink-0 rounded-full bg-[#38e2b0]/15 px-1.5 py-px text-[0.65rem] text-[#38e2b0]">
-                          ×{used}
-                        </span>
-                      )}
-                    </span>
-                    <span className="mt-0.5 block truncate text-[0.7rem] text-[#8a97ae]">
-                      {Math.round(t.kcal)} kcal · P {Math.round(t.protein)} · C{" "}
-                      {Math.round(t.carbs)} · F {Math.round(t.fat)}
+                  <span>
+                    <span className="block text-sm font-semibold">{m.name}</span>
+                    <span className="block text-xs tabular-nums text-[var(--color-mut)]">
+                      {Math.round(t.kcal)} kcal
                     </span>
                   </span>
+                  {used > 0 && (
+                    <span className="num ml-1 rounded-full bg-[var(--color-accent)] px-1.5 py-0.5 text-[0.65rem] text-[#10160a]">
+                      {used}
+                    </span>
+                  )}
                 </button>
               );
             })}
           </div>
-        )}
-      </section>
+        </section>
+      )}
 
       {/* Today's log */}
-      <section className="space-y-3">
-        <p className="label">Eaten today</p>
-        {entries.length === 0 && (
-          <div className="panel px-4 py-6 text-center text-sm text-[#8a97ae]">
-            Nothing logged yet.
-          </div>
-        )}
-        {entries.map((e) => {
-          const t = totalFor(e.items);
-          return (
-            <div
-              key={e.id}
-              className="panel px-4 py-3"
-              style={e.confirmed ? { borderColor: "rgba(56,226,176,0.45)" } : undefined}
-            >
-              <div className="flex items-center gap-2">
-                <p className="mr-auto font-semibold">
-                  {e.meal_name}
-                  {e.confirmed && <span className="ml-2 text-xs text-[#38e2b0]">✓ confirmed</span>}
-                </p>
-                <button className="btn btn-ghost text-[#8a97ae]" onClick={() => removeEntry(e.id)}>
-                  Remove
-                </button>
-                <button
-                  className={e.confirmed ? "btn" : "btn btn-accent"}
-                  onClick={() => saveEntry(e, !e.confirmed)}
-                >
-                  {e.confirmed ? "Edit" : "Confirm"}
-                </button>
-              </div>
-
-              <div className="mt-3 space-y-1.5">
-                {e.items.map((it, i) => {
-                  const m = itemMacros(it);
-                  return (
-                    <div key={i} className="flex items-center gap-2 text-sm">
-                      <span className="mr-auto truncate">{it.name}</span>
-                      <span className="hidden text-[0.7rem] text-[#8a97ae] sm:inline">
-                        {Math.round(m.kcal)} kcal · P {m.protein.toFixed(1)} · C{" "}
-                        {m.carbs.toFixed(1)} · F {m.fat.toFixed(1)}
-                      </span>
-                      <input
-                        type="number"
-                        inputMode="decimal"
-                        disabled={e.confirmed}
-                        className="field w-20 text-right disabled:opacity-50"
-                        value={it.grams}
-                        onChange={(ev) => setGrams(e.id, i, Number(ev.target.value))}
-                      />
-                      <span className="w-3 text-xs text-[#8a97ae]">g</span>
+      {entries.length > 0 && (
+        <section className="space-y-3">
+          {entries.map((e) => {
+            const t = totalFor(e.items);
+            return (
+              <div key={e.id} className="card overflow-hidden">
+                <div className="flex items-center gap-3 px-5 pt-4">
+                  <div className="mr-auto min-w-0">
+                    <p className="truncate font-semibold">{e.meal_name}</p>
+                    <div className="mt-1">
+                      <MacroChips m={t} />
                     </div>
-                  );
-                })}
-              </div>
-
-              <div className="mt-3 flex items-center justify-between border-t border-[#1e2637] pt-2">
-                <MacroChips m={t} />
-                {!e.confirmed && (
-                  <button className="btn btn-ghost text-xs" onClick={() => saveEntry(e, false)}>
-                    Save amounts
+                  </div>
+                  {e.confirmed ? (
+                    <button className="btn btn-sm btn-quiet" onClick={() => saveEntry(e, false)}>
+                      Edit
+                    </button>
+                  ) : (
+                    <button className="btn btn-sm btn-accent" onClick={() => saveEntry(e, true)}>
+                      Confirm
+                    </button>
+                  )}
+                  <button
+                    className="btn btn-sm btn-quiet px-2"
+                    title="Remove"
+                    onClick={() => removeEntry(e.id)}
+                  >
+                    ✕
                   </button>
+                </div>
+
+                {/* Ingredients are only worth showing while you're adjusting them. */}
+                {!e.confirmed && (
+                  <div className="mt-3 space-y-1.5 px-5 pb-4">
+                    {e.items.map((it, i) => {
+                      const m = itemMacros(it);
+                      return (
+                        <div key={i} className="flex items-center gap-3">
+                          <span className="mr-auto min-w-0 flex-1 truncate text-sm">{it.name}</span>
+                          <span className="hidden text-xs tabular-nums text-[var(--color-mut)] sm:block">
+                            {Math.round(m.kcal)} kcal
+                          </span>
+                          <input
+                            type="number"
+                            inputMode="decimal"
+                            className="field w-[4.5rem] py-1.5 text-right text-sm"
+                            value={it.grams}
+                            onChange={(ev) => setGrams(e.id, i, Number(ev.target.value))}
+                          />
+                          <span className="w-2 text-xs text-[var(--color-mut)]">g</span>
+                        </div>
+                      );
+                    })}
+                  </div>
                 )}
+
+                {e.confirmed && <div className="h-4" />}
               </div>
-            </div>
-          );
-        })}
-      </section>
+            );
+          })}
+        </section>
+      )}
     </div>
   );
 }
@@ -299,14 +290,9 @@ function normalise(p: any): Profile {
   };
 }
 
-function goalLabel(p: Profile | null) {
-  if (!p) return "—";
-  return { cut: "Cutting", maintain: "Maintaining", bulk: "Bulking" }[p.goal];
-}
-
 function prettyDay(d: string) {
   return new Date(d + "T12:00:00").toLocaleDateString("en-GB", {
-    weekday: "long",
+    weekday: "short",
     day: "numeric",
     month: "short",
   });

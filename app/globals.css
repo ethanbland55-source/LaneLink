@@ -1,92 +1,132 @@
 @import "tailwindcss";
 
 @theme inline {
-  --color-ink: #05070d;
-  --color-panel: #0e1320;
-  --color-line: #1e2637;
-  --color-mut: #8a97ae;
-  --color-accent: #38e2b0;
-  --color-protein: #4da3ff;
-  --color-carbs: #ffb547;
-  --color-fat: #ff6f91;
+  --color-bg: #0a0b0d;
+  --color-surface: #131519;
+  --color-raised: #1b1e24;
+  --color-line: #24282f;
+  --color-mut: #868d9b;
+  --color-accent: #c9f24d;
+  --color-protein: #5b9dff;
+  --color-carbs: #ffb13d;
+  --color-fat: #ff5d8f;
 }
 
 html,
 body {
-  background: #05070d;
-  color: #eef2f8;
+  background: #0a0b0d;
+  color: #f2f4f7;
   -webkit-font-smoothing: antialiased;
 }
 
 body {
   font-family: ui-sans-serif, system-ui, -apple-system, "Segoe UI", sans-serif;
-  background-image: radial-gradient(
-      900px 500px at 15% -10%,
-      rgba(56, 226, 176, 0.12),
-      transparent 60%
-    ),
-    radial-gradient(700px 400px at 90% 0%, rgba(77, 163, 255, 0.1), transparent 60%);
-  background-attachment: fixed;
 }
 
-.panel {
-  background: rgba(14, 19, 32, 0.72);
-  border: 1px solid var(--color-line);
-  border-radius: 1rem;
-  backdrop-filter: blur(8px);
+/* Cards are separated by fill, not by outlines — the reference decks all read
+   as solid blocks floating on near-black rather than boxed-in panels. */
+.card {
+  background: var(--color-surface);
+  border-radius: 1.25rem;
 }
 
-/* No width here on purpose — utilities like w-14 would lose to it, since this
-   rule comes after Tailwind's layers. Add w-full where a field should fill. */
+.sunk {
+  background: #0e1013;
+  border-radius: 0.85rem;
+}
+
+/* Display numerals. Tight, heavy, always tabular so they don't jitter. */
+.num {
+  font-weight: 800;
+  letter-spacing: -0.035em;
+  font-variant-numeric: tabular-nums;
+  line-height: 0.95;
+}
+
+.label {
+  font-size: 0.66rem;
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+  color: var(--color-mut);
+  font-weight: 600;
+}
+
 .field {
-  background: #070b14;
-  border: 1px solid var(--color-line);
-  border-radius: 0.6rem;
-  padding: 0.5rem 0.7rem;
-  font-size: 0.9rem;
-  color: #eef2f8;
+  background: #0e1013;
+  border: 1px solid transparent;
+  border-radius: 0.7rem;
+  padding: 0.6rem 0.75rem;
+  font-size: 0.95rem;
+  color: #f2f4f7;
   outline: none;
+  transition: border-color 0.15s;
 }
 .field:focus {
   border-color: var(--color-accent);
 }
+.field:disabled {
+  opacity: 0.45;
+}
+/* No width declared on purpose — this rule sits after Tailwind's layers, so a
+   width here would beat every w-* utility. Add w-full where a field fills. */
 
 .btn {
-  border-radius: 0.6rem;
-  padding: 0.5rem 0.9rem;
-  font-size: 0.85rem;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 0.4rem;
+  border-radius: 999px;
+  padding: 0.55rem 1.1rem;
+  font-size: 0.875rem;
   font-weight: 600;
-  border: 1px solid var(--color-line);
-  background: #131a2a;
-  color: #eef2f8;
+  background: var(--color-raised);
+  color: #f2f4f7;
+  border: none;
   cursor: pointer;
   transition: 0.15s;
+  white-space: nowrap;
 }
 .btn:hover {
-  border-color: #3b475f;
+  background: #262a32;
+}
+.btn:disabled {
+  opacity: 0.4;
+  cursor: default;
 }
 .btn-accent {
   background: var(--color-accent);
-  border-color: var(--color-accent);
-  color: #04120d;
+  color: #10160a;
 }
 .btn-accent:hover {
-  filter: brightness(1.08);
+  background: #d6f96a;
 }
-.btn-ghost {
+.btn-quiet {
   background: transparent;
-}
-
-.label {
-  font-size: 0.68rem;
-  letter-spacing: 0.09em;
-  text-transform: uppercase;
   color: var(--color-mut);
-  font-weight: 600;
+}
+.btn-quiet:hover {
+  background: var(--color-raised);
+  color: #f2f4f7;
+}
+.btn-sm {
+  padding: 0.35rem 0.8rem;
+  font-size: 0.8rem;
 }
 
 input[type="number"]::-webkit-outer-spin-button,
 input[type="number"]::-webkit-inner-spin-button {
   -webkit-appearance: none;
   margin: 0;
+}
+input[type="number"] {
+  -moz-appearance: textfield;
+}
+
+::-webkit-scrollbar {
+  width: 10px;
+  height: 10px;
+}
+::-webkit-scrollbar-thumb {
+  background: #24282f;
+  border-radius: 999px;
 }
