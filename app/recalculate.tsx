@@ -143,7 +143,7 @@ export function RecalculateDialog({
                         <span className="num ml-auto text-sm text-[#545b68]">{from}</span>
                         <span className="text-[#454b57]">→</span>
                         <span
-                          className="num w-11 text-right text-sm"
+                          className="num w-14 text-right text-sm"
                           style={{
                             color:
                               Math.abs(delta) < 0.5
@@ -160,7 +160,7 @@ export function RecalculateDialog({
                           <input
                             type="number"
                             title="Smallest portion you'd accept"
-                            className="field w-[3.2rem] px-1.5 py-1 text-right text-xs"
+                            className="field w-[3.9rem] px-1.5 py-1 text-right text-xs"
                             value={it.min_grams ?? b.min}
                             disabled={it.locked}
                             onChange={(e) =>
@@ -171,7 +171,7 @@ export function RecalculateDialog({
                           <input
                             type="number"
                             title="Largest portion you'd accept"
-                            className="field w-[3.2rem] px-1.5 py-1 text-right text-xs"
+                            className="field w-[3.9rem] px-1.5 py-1 text-right text-xs"
                             value={it.max_grams ?? b.max}
                             disabled={it.locked}
                             onChange={(e) =>
