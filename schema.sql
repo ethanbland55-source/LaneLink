@@ -33,6 +33,11 @@ create table if not exists ingredients (
   protein_100  numeric not null default 0,
   carbs_100    numeric not null default 0,
   fat_100      numeric not null default 0,
+  -- Portion limits for the optimiser. NULL = derive a 60%-150% band around
+  -- the planned amount. locked = never change this portion.
+  min_grams    numeric,
+  max_grams    numeric,
+  locked       boolean not null default false,
   sort_order   int  not null default 0
 );
 
