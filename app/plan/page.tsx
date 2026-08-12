@@ -212,7 +212,7 @@ export default function PlanPage() {
         <div className="mt-4 grid gap-4 sm:grid-cols-2 lg:grid-cols-3">
           <Field label="Sex">
             <select
-              className="field"
+              className="field w-full"
               value={profile.sex}
               onChange={(e) => set("sex", e.target.value as Profile["sex"])}
             >
@@ -224,7 +224,7 @@ export default function PlanPage() {
           <Field label={`Date of birth · age ${ageFromDob(profile.dob)}`}>
             <input
               type="date"
-              className="field"
+              className="field w-full"
               value={profile.dob ?? ""}
               onChange={(e) => set("dob", e.target.value || null)}
             />
@@ -240,7 +240,7 @@ export default function PlanPage() {
 
           <Field label="Activity level">
             <select
-              className="field"
+              className="field w-full"
               value={profile.activity}
               onChange={(e) => set("activity", Number(e.target.value))}
             >
@@ -286,7 +286,7 @@ export default function PlanPage() {
           <Field label="Manual kcal override">
             <input
               type="number"
-              className="field"
+              className="field w-full"
               value={profile.calorie_override ?? ""}
               placeholder={`${target.kcal} (calculated)`}
               onChange={(e) =>
@@ -323,7 +323,7 @@ export default function PlanPage() {
             <div key={meal.id} className="panel px-4 py-4 sm:px-5">
               <div className="flex flex-wrap items-center gap-2">
                 <input
-                  className="field mr-auto max-w-[15rem] text-base font-semibold"
+                  className="field mr-auto w-full max-w-[15rem] text-base font-semibold"
                   value={meal.name}
                   onChange={(e) => patchMeal(meal.id, { name: e.target.value })}
                 />
@@ -362,7 +362,7 @@ export default function PlanPage() {
                         <tr key={i} className="group">
                           <td className="pr-2">
                             <input
-                              className="field"
+                              className="field w-full"
                               placeholder="Chicken breast"
                               value={it.name}
                               onChange={(e) => patchItem(meal.id, i, { name: e.target.value })}
@@ -520,7 +520,7 @@ function Num({
       type="number"
       inputMode="decimal"
       step={step}
-      className="field"
+      className="field w-full"
       value={value}
       onChange={(e) => onChange(Number(e.target.value))}
     />

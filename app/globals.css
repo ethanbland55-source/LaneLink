@@ -36,8 +36,9 @@ body {
   backdrop-filter: blur(8px);
 }
 
+/* No width here on purpose — utilities like w-14 would lose to it, since this
+   rule comes after Tailwind's layers. Add w-full where a field should fill. */
 .field {
-  width: 100%;
   background: #070b14;
   border: 1px solid var(--color-line);
   border-radius: 0.6rem;

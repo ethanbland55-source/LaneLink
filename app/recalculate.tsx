@@ -69,6 +69,12 @@ export function RecalculateDialog({
 
   const changed = flat.filter((f, i) => Math.abs(result.grams[i] - Number(f.it.grams)) > 0.5).length;
 
+  // Hitting a portion limit only matters if it actually stopped us reaching
+  // the target — otherwise the fit is fine and the warning is just noise.
+  const missed = KEYS.filter(
+    (k) => Math.abs(result.after[k] - target[k]) > Math.max(2, target[k] * 0.02)
+  );
+
   return (
     <div className="fixed inset-0 z-50 flex items-start justify-center overflow-y-auto bg-black/70 p-3 backdrop-blur-sm sm:p-6">
       <div className="panel my-auto w-full max-w-3xl">
@@ -113,15 +119,22 @@ export function RecalculateDialog({
           })}
         </div>
 
-        {result.constrained && (
-          <p className="mx-5 mb-3 rounded-lg border border-[#ffb547]/30 bg-[#ffb547]/10 px-3 py-2 text-xs text-[#ffd08a]">
-            Some ingredients hit their portion limit. That's the optimiser refusing to give you an
-            unrealistic plate — widen a limit below, or add/remove an ingredient, to close the gap.
+        {result.constrained && missed.length > 0 && (
+          <p className="mx-5 mb-3 rounded-lg border border-[#ffb547]/30 bg-[#ffb547]/10 px-3 py-2 text-xs leading-relaxed text-[#ffd08a]">
+            Still off on <b>{missed.map((k) => LABEL[k].toLowerCase()).join(", ")}</b> — ingredients
+            hit their portion limits first. That's the optimiser refusing to put an unrealistic
+            amount on your plate. Widen a limit below, or add an ingredient, to close the gap.
           </p>
         )}
 
         {/* Per-ingredient changes */}
-        <div className="max-h-[45vh] overflow-y-auto border-t border-[#1e2637] px-5 py-3">
+        <div className="flex items-center gap-2 border-t border-[#1e2637] px-5 pt-3 text-[0.66rem] uppercase tracking-wider text-[#5d6a80]">
+          <span className="mr-auto">Lock · ingredient</span>
+          <span>now → new</span>
+          <span className="w-[6.6rem] text-center">limits (g)</span>
+        </div>
+
+        <div className="max-h-[45vh] overflow-y-auto px-5 py-2">
           {draft.map((meal) => {
             const rows = flat
               .map((f, gi) => ({ ...f, gi }))
@@ -142,20 +155,25 @@ export function RecalculateDialog({
                         className="flex flex-wrap items-center gap-x-2 gap-y-1 rounded-lg px-2 py-1.5 hover:bg-white/[0.03]"
                       >
                         <button
-                          title={it.locked ? "Unlock — allow changes" : "Lock this portion"}
+                          title={it.locked ? "Locked — click to allow changes" : "Lock this portion"}
                           onClick={() => patch(meal.id, index, { locked: !it.locked })}
-                          className="text-sm"
-                          style={{ color: it.locked ? "var(--color-accent)" : "#4a5568" }}
+                          className="shrink-0 rounded-md p-1 hover:bg-white/5"
+                          style={{ color: it.locked ? "var(--color-accent)" : "#3d4759" }}
                         >
-                          {it.locked ? "🔒" : "🔓"}
+                          <LockIcon open={!it.locked} />
                         </button>
 
-                        <span className="mr-auto min-w-0 flex-1 truncate text-sm">{it.name}</span>
-
-                        <span className="tabular-nums text-sm text-[#8a97ae]">{from}g</span>
-                        <span className="text-[#4a5568]">→</span>
                         <span
-                          className="w-14 text-right font-bold tabular-nums"
+                          className="mr-auto min-w-0 flex-1 truncate text-sm"
+                          style={it.locked ? { color: "#8a97ae" } : undefined}
+                        >
+                          {it.name}
+                        </span>
+
+                        <span className="tabular-nums text-sm text-[#5d6a80]">{from}g</span>
+                        <span className="text-[#3d4759]">→</span>
+                        <span
+                          className="w-12 text-right text-sm font-bold tabular-nums"
                           style={{
                             color:
                               Math.abs(delta) < 0.5
@@ -168,20 +186,22 @@ export function RecalculateDialog({
                           {Math.round(to)}g
                         </span>
 
-                        <span className="flex items-center gap-1 text-[0.68rem] text-[#8a97ae]">
+                        <span className="flex shrink-0 items-center gap-1 text-[0.7rem] text-[#5d6a80]">
                           <input
                             type="number"
-                            className="field w-14 px-1.5 py-1 text-right text-[0.7rem]"
+                            title="Smallest portion you'd accept"
+                            className="field w-12 px-1 py-0.5 text-right text-[0.7rem] disabled:opacity-40"
                             value={it.min_grams ?? b.min}
                             disabled={it.locked}
                             onChange={(e) =>
                               patch(meal.id, index, { min_grams: Number(e.target.value) })
                             }
                           />
-                          –
+                          <span>–</span>
                           <input
                             type="number"
-                            className="field w-14 px-1.5 py-1 text-right text-[0.7rem]"
+                            title="Largest portion you'd accept"
+                            className="field w-12 px-1 py-0.5 text-right text-[0.7rem] disabled:opacity-40"
                             value={it.max_grams ?? b.max}
                             disabled={it.locked}
                             onChange={(e) =>
@@ -212,5 +232,20 @@ export function RecalculateDialog({
         </div>
       </div>
     </div>
+  );
+}
+
+/** Padlock — shackle lifts and shifts right when the portion is unlocked. */
+function LockIcon({ open }: { open: boolean }) {
+  return (
+    <svg width="14" height="14" viewBox="0 0 24 24" fill="none" aria-hidden="true">
+      <rect x="4" y="11" width="16" height="10" rx="2" fill="currentColor" />
+      <path
+        d={open ? "M9 11V7a4 4 0 0 1 7-2.6" : "M8 11V7a4 4 0 0 1 8 0v4"}
+        stroke="currentColor"
+        strokeWidth="2.2"
+        strokeLinecap="round"
+      />
+    </svg>
   );
 }
