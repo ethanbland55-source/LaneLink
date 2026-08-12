@@ -224,7 +224,7 @@ export default function PlanPage() {
                     {/* Line 1: what it is, and how much of it */}
                     <div className="flex items-center gap-2">
                       <input
-                        className="field mr-auto w-full min-w-0 flex-1 bg-transparent px-0 py-0.5 text-sm font-semibold"
+                        className="field field-bare mr-auto w-full min-w-0 flex-1 px-1.5 py-1 text-sm font-semibold"
                         placeholder="Ingredient"
                         value={it.name}
                         onChange={(e) => patchItem(meal.id, i, { name: e.target.value })}

@@ -51,9 +51,11 @@ body {
   font-weight: 600;
 }
 
+/* Sits one step ABOVE both .card and .sunk so an input always reads as an
+   input — matching either surface makes the boxes vanish into the row. */
 .field {
-  background: #0e1013;
-  border: 1px solid transparent;
+  background: #1e222a;
+  border: 1px solid #2a2f38;
   border-radius: 0.7rem;
   padding: 0.6rem 0.75rem;
   font-size: 0.95rem;
@@ -66,6 +68,19 @@ body {
 }
 .field:disabled {
   opacity: 0.45;
+}
+
+/* Title-style input: reads as text until you go near it. */
+.field-bare {
+  background: transparent;
+  border-color: transparent;
+}
+.field-bare:hover {
+  border-color: #2a2f38;
+}
+.field-bare:focus {
+  background: #1e222a;
+  border-color: var(--color-accent);
 }
 /* No width declared on purpose — this rule sits after Tailwind's layers, so a
    width here would beat every w-* utility. Add w-full where a field fills. */
