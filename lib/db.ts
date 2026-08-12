@@ -63,6 +63,12 @@ async function createSchema() {
     items jsonb not null default '[]'::jsonb,
     created_at timestamptz not null default now()
   )`;
+  // Portion limits for the optimiser. Added after the first release, so they
+  // go on as ALTER ... IF NOT EXISTS rather than in the CREATE above.
+  await sql`alter table ingredients add column if not exists min_grams numeric`;
+  await sql`alter table ingredients add column if not exists max_grams numeric`;
+  await sql`alter table ingredients add column if not exists locked boolean not null default false`;
+
   await sql`create index if not exists log_entries_day_idx on log_entries(day)`;
   await sql`create index if not exists ingredients_meal_idx on ingredients(meal_id)`;
   await sql`insert into profile (id) values (1) on conflict (id) do nothing`;

@@ -34,16 +34,11 @@ export function MacroDial({
   const left = Math.round(target - eaten);
 
   return (
-    <div className="panel px-3 py-3">
-      <div className="flex items-baseline justify-between">
-        <span className="label">{LABEL[k]}</span>
-        <span className="text-[0.68rem] text-[#8a97ae]">
-          {over ? `${Math.abs(left)}${UNIT[k]} over` : `${left}${UNIT[k]} left`}
-        </span>
-      </div>
-      <div className="mt-1 flex items-baseline gap-1">
+    <div className="panel px-3.5 py-3">
+      <p className="label">{LABEL[k]}</p>
+      <div className="mt-1.5 flex items-baseline gap-1.5">
         <span
-          className="text-2xl font-black tabular-nums tracking-tight sm:text-3xl"
+          className="text-[1.75rem] font-black leading-none tabular-nums tracking-tight"
           style={{ color: over ? "var(--color-fat)" : COLORS[k] }}
         >
           {Math.round(eaten)}
@@ -53,16 +48,29 @@ export function MacroDial({
           {UNIT[k]}
         </span>
       </div>
-      <div className="mt-2 h-1.5 overflow-hidden rounded-full bg-[#161d2c]">
+      <div className="mt-2.5 h-1.5 overflow-hidden rounded-full bg-[#161d2c]">
         <div
           className="h-full rounded-full transition-[width] duration-500"
           style={{
             width: `${pct}%`,
             background: over ? "var(--color-fat)" : COLORS[k],
-            boxShadow: `0 0 12px ${over ? "var(--color-fat)" : COLORS[k]}`,
+            boxShadow: `0 0 10px ${over ? "var(--color-fat)" : COLORS[k]}`,
           }}
         />
       </div>
+      <p className="mt-1.5 text-[0.7rem] text-[#8a97ae]">
+        {over ? (
+          <span className="text-[#ff6f91]">
+            {Math.abs(left)}
+            {UNIT[k]} over
+          </span>
+        ) : (
+          <>
+            {left}
+            {UNIT[k]} left
+          </>
+        )}
+      </p>
     </div>
   );
 }

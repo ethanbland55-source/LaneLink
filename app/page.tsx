@@ -72,11 +72,6 @@ export default function TodayPage() {
     [entries]
   );
 
-  const planTotal = useMemo(
-    () => sumMacros(meals.map((m) => totalFor(m.ingredients))),
-    [meals]
-  );
-
   async function addMeal(meal: Meal) {
     const res = await fetch("/api/log", {
       method: "POST",
@@ -126,26 +121,35 @@ export default function TodayPage() {
       )}
 
       {/* Header bar — the daily targets from your plan / calculator */}
-      <header className="panel px-4 py-4">
-        <div className="flex flex-wrap items-end justify-between gap-3">
-          <div>
+      <header className="panel overflow-hidden">
+        <div className="flex items-start gap-4 px-5 py-4">
+          <div className="mr-auto">
             <p className="label">Daily target · {goalLabel(profile)}</p>
-            <p className="mt-0.5 text-3xl font-black tracking-tight">
-              {target.kcal.toLocaleString()}{" "}
-              <span className="text-base font-semibold text-[#8a97ae]">kcal</span>
-            </p>
-            <p className="mt-1 text-xs text-[#8a97ae]">
-              BMR {target.bmr} · maintenance {target.maintenance} · P {target.protein}g · C{" "}
-              {target.carbs}g · F {target.fat}g
+            <p className="mt-1.5 text-4xl font-black leading-none tracking-tight">
+              {target.kcal.toLocaleString()}
+              <span className="ml-1.5 text-base font-semibold text-[#8a97ae]">kcal</span>
             </p>
           </div>
-          <div className="text-right text-xs text-[#8a97ae]">
-            <p className="font-semibold text-[#eef2f8]">{prettyDay(day)}</p>
-            <p>resets at {String(DAY_ROLLOVER_HOUR).padStart(2, "0")}:00</p>
-            {meals.length > 0 && (
-              <p className="mt-1">Plan as written: {Math.round(planTotal.kcal)} kcal</p>
-            )}
+          <div className="shrink-0 text-right">
+            <p className="text-sm font-semibold">{prettyDay(day)}</p>
+            <p className="mt-0.5 text-[0.7rem] text-[#8a97ae]">
+              resets {String(DAY_ROLLOVER_HOUR).padStart(2, "0")}:00
+            </p>
           </div>
+        </div>
+        <div className="flex flex-wrap gap-x-5 gap-y-1 border-t border-[#1e2637] px-5 py-2.5 text-[0.72rem] text-[#8a97ae]">
+          <span>
+            Protein <b className="text-[#eef2f8]">{target.protein}g</b>
+          </span>
+          <span>
+            Carbs <b className="text-[#eef2f8]">{target.carbs}g</b>
+          </span>
+          <span>
+            Fat <b className="text-[#eef2f8]">{target.fat}g</b>
+          </span>
+          <span className="ml-auto">
+            Maintenance <b className="text-[#eef2f8]">{target.maintenance}</b>
+          </span>
         </div>
       </header>
 
@@ -164,7 +168,7 @@ export default function TodayPage() {
             first.
           </div>
         ) : (
-          <div className="flex flex-wrap gap-2">
+          <div className="grid grid-cols-1 gap-2 sm:grid-cols-2 lg:grid-cols-3">
             {meals.map((m) => {
               const t = totalFor(m.ingredients);
               const used = entries.filter((e) => e.meal_id === m.id).length;
@@ -172,17 +176,21 @@ export default function TodayPage() {
                 <button
                   key={m.id}
                   onClick={() => addMeal(m)}
-                  className="panel group flex items-center gap-3 px-3 py-2 text-left hover:border-[#38e2b0]"
+                  className="panel flex w-full items-center gap-3 px-3 py-2.5 text-left transition hover:border-[#38e2b0]"
                 >
-                  <span className="grid h-6 w-6 place-items-center rounded-md bg-[#38e2b0] text-sm font-bold text-[#04120d]">
+                  <span className="grid h-7 w-7 shrink-0 place-items-center rounded-lg bg-[#38e2b0] text-base font-bold leading-none text-[#04120d]">
                     +
                   </span>
-                  <span>
-                    <span className="block text-sm font-semibold">
-                      {m.name}
-                      {used > 0 && <span className="ml-1 text-[#38e2b0]">×{used}</span>}
+                  <span className="min-w-0 flex-1">
+                    <span className="flex items-center gap-1.5 text-sm font-semibold">
+                      <span className="truncate">{m.name}</span>
+                      {used > 0 && (
+                        <span className="shrink-0 rounded-full bg-[#38e2b0]/15 px-1.5 py-px text-[0.65rem] text-[#38e2b0]">
+                          ×{used}
+                        </span>
+                      )}
                     </span>
-                    <span className="block text-[0.7rem] text-[#8a97ae]">
+                    <span className="mt-0.5 block truncate text-[0.7rem] text-[#8a97ae]">
                       {Math.round(t.kcal)} kcal · P {Math.round(t.protein)} · C{" "}
                       {Math.round(t.carbs)} · F {Math.round(t.fat)}
                     </span>

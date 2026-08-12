@@ -35,9 +35,13 @@ export async function PUT(req: Request) {
   for (const [n, i] of (ingredients ?? []).entries()) {
     await sql`
       insert into ingredients
-        (meal_id, name, grams, kcal_100, protein_100, carbs_100, fat_100, sort_order)
+        (meal_id, name, grams, kcal_100, protein_100, carbs_100, fat_100,
+         min_grams, max_grams, locked, sort_order)
       values (${id}, ${i.name || "Ingredient"}, ${num(i.grams)}, ${num(i.kcal_100)},
-              ${num(i.protein_100)}, ${num(i.carbs_100)}, ${num(i.fat_100)}, ${n})`;
+              ${num(i.protein_100)}, ${num(i.carbs_100)}, ${num(i.fat_100)},
+              ${i.min_grams == null ? null : num(i.min_grams)},
+              ${i.max_grams == null ? null : num(i.max_grams)},
+              ${!!i.locked}, ${n})`;
   }
   return NextResponse.json({ ok: true });
 }
