@@ -163,14 +163,17 @@ export function RecalculateDialog({
                           <LockIcon open={!it.locked} />
                         </button>
 
+                        {/* basis keeps the name readable — on a phone the
+                            numbers wrap to their own line rather than
+                            squeezing the name down to "Ric…". */}
                         <span
-                          className="mr-auto min-w-0 flex-1 truncate text-sm"
+                          className="min-w-0 flex-1 basis-[9rem] truncate text-sm"
                           style={it.locked ? { color: "#8a97ae" } : undefined}
                         >
                           {it.name}
                         </span>
 
-                        <span className="tabular-nums text-sm text-[#5d6a80]">{from}g</span>
+                        <span className="ml-auto tabular-nums text-sm text-[#5d6a80]">{from}g</span>
                         <span className="text-[#3d4759]">→</span>
                         <span
                           className="w-12 text-right text-sm font-bold tabular-nums"
