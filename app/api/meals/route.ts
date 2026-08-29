@@ -1,5 +1,6 @@
 import { NextResponse } from "next/server";
 import { sql, ensureSchema } from "@/lib/db";
+import { profileFor } from "@/lib/foods";
 
 export const dynamic = "force-dynamic";
 
@@ -11,7 +12,21 @@ export async function GET() {
   return NextResponse.json(
     meals.map((m: any) => ({
       ...m,
-      ingredients: ings.filter((i: any) => i.meal_id === m.id),
+      times_per_day: Number(m.times_per_day ?? 1),
+      day_types: m.day_types ?? null,
+      ingredients: ings
+        .filter((i: any) => i.meal_id === m.id)
+        .map((i: any) => ({
+          ...i,
+          grams: Number(i.grams),
+          kcal_100: Number(i.kcal_100),
+          protein_100: Number(i.protein_100),
+          carbs_100: Number(i.carbs_100),
+          fat_100: Number(i.fat_100),
+          fibre_100: Number(i.fibre_100 ?? 0),
+          min_grams: i.min_grams == null ? null : Number(i.min_grams),
+          max_grams: i.max_grams == null ? null : Number(i.max_grams),
+        })),
     }))
   );
 }
@@ -23,22 +38,42 @@ export async function POST(req: Request) {
     insert into meals (name, sort_order)
     values (${name || "New meal"}, coalesce((select max(sort_order) + 1 from meals), 0))
     returning *`;
-  return NextResponse.json({ ...rows[0], ingredients: [] });
+  return NextResponse.json({ ...rows[0], times_per_day: 1, day_types: null, ingredients: [] });
 }
 
 /** Replaces a meal's name and its whole ingredient list in one go. */
 export async function PUT(req: Request) {
   await ensureSchema();
-  const { id, name, ingredients } = await req.json();
-  await sql`update meals set name = ${name} where id = ${id}`;
+  const { id, name, ingredients, times_per_day, day_types } = await req.json();
+
+  const reps = Number(times_per_day);
+  const types: string[] | null =
+    Array.isArray(day_types) && day_types.length > 0 && day_types.length < 4 ? day_types : null;
+
+  await sql`
+    update meals set
+      name = ${name},
+      times_per_day = ${Number.isFinite(reps) && reps > 0 ? reps : 1},
+      day_types = ${types}
+    where id = ${id}`;
+
   await sql`delete from ingredients where meal_id = ${id}`;
   for (const [n, i] of (ingredients ?? []).entries()) {
+    // Classify on write so the shopping list never has to guess later.
+    const cls = profileFor(i.name ?? "", {
+      kcal_100: num(i.kcal_100),
+      protein_100: num(i.protein_100),
+      carbs_100: num(i.carbs_100),
+      fat_100: num(i.fat_100),
+    });
     await sql`
       insert into ingredients
-        (meal_id, name, grams, kcal_100, protein_100, carbs_100, fat_100,
+        (meal_id, name, grams, kcal_100, protein_100, carbs_100, fat_100, fibre_100,
+         fibre_estimated, food_class, aisle, pack_grams,
          min_grams, max_grams, locked, sort_order)
       values (${id}, ${i.name || "Ingredient"}, ${num(i.grams)}, ${num(i.kcal_100)},
-              ${num(i.protein_100)}, ${num(i.carbs_100)}, ${num(i.fat_100)},
+              ${num(i.protein_100)}, ${num(i.carbs_100)}, ${num(i.fat_100)}, ${num(i.fibre_100)},
+              ${!!i.fibre_estimated}, ${cls.cls}, ${cls.aisle}, ${cls.packGrams},
               ${i.min_grams == null ? null : num(i.min_grams)},
               ${i.max_grams == null ? null : num(i.max_grams)},
               ${!!i.locked}, ${n})`;

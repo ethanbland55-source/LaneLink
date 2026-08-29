@@ -10,6 +10,7 @@
   --color-protein: #5b9dff;
   --color-carbs: #ffb13d;
   --color-fat: #ff5d8f;
+  --color-fibre: #4fd6b8;
 }
 
 html,
@@ -135,6 +136,51 @@ input[type="number"]::-webkit-inner-spin-button {
 }
 input[type="number"] {
   -moz-appearance: textfield;
+}
+
+/* Checkbox that reads at arm's length in a supermarket aisle. */
+.tick {
+  width: 1.6rem;
+  height: 1.6rem;
+  border-radius: 0.55rem;
+  border: 2px solid #333944;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  flex-shrink: 0;
+  transition: 0.12s;
+  cursor: pointer;
+  background: #0e1013;
+}
+.tick[data-on="true"] {
+  background: var(--color-accent);
+  border-color: var(--color-accent);
+  color: #10160a;
+}
+
+/* Rows that have been dealt with fade back rather than disappearing, so the
+   list doesn't reflow under your thumb while you're shopping. */
+.done {
+  opacity: 0.38;
+}
+.done .strike {
+  text-decoration: line-through;
+}
+
+@media print {
+  .no-print {
+    display: none !important;
+  }
+  html,
+  body {
+    background: #fff;
+    color: #000;
+  }
+  .card,
+  .sunk {
+    background: #fff;
+    border: 1px solid #ddd;
+  }
 }
 
 ::-webkit-scrollbar {

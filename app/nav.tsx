@@ -6,6 +6,7 @@ import { usePathname } from "next/navigation";
 const TABS = [
   { href: "/", label: "Today" },
   { href: "/plan", label: "Plan" },
+  { href: "/shop", label: "Shop" },
 ];
 
 export function Nav() {
@@ -25,7 +26,7 @@ export function Nav() {
             <Link
               key={t.href}
               href={t.href}
-              className="rounded-full px-4 py-1.5 text-sm font-semibold transition"
+              className="rounded-full px-3.5 py-1.5 text-sm font-semibold transition sm:px-4"
               style={
                 active
                   ? { background: "var(--color-accent)", color: "#10160a" }

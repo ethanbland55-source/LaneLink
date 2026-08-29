@@ -2,19 +2,30 @@
 
 import { useCallback, useEffect, useMemo, useState } from "react";
 import Link from "next/link";
-import { Bar, MacroChips, MacroTile } from "./macro-ui";
+import { Bar, MacroChips, MacroTile, Segmented } from "./macro-ui";
 import {
+  DAY_TYPES,
+  addDays,
   dayKey,
+  dayTypeFor,
   itemMacros,
   sumMacros,
   targets,
   totalFor,
+  type DayType,
   type Item,
   type Macros,
   type Profile,
 } from "@/lib/nutrition";
+import { normaliseProfile } from "@/lib/profile";
 
-type Meal = { id: number; name: string; ingredients: Item[] };
+type Meal = {
+  id: number;
+  name: string;
+  times_per_day?: number;
+  day_types?: DayType[] | null;
+  ingredients: Item[];
+};
 type Entry = {
   id: number;
   meal_id: number | null;
@@ -23,13 +34,15 @@ type Entry = {
   items: Item[];
 };
 
-const ZERO: Macros = { kcal: 0, protein: 0, carbs: 0, fat: 0 };
+const OVERRIDE_KEY = "mealhub.dayType";
 
 export default function TodayPage() {
   const [profile, setProfile] = useState<Profile | null>(null);
   const [meals, setMeals] = useState<Meal[]>([]);
   const [entries, setEntries] = useState<Entry[]>([]);
   const [day, setDay] = useState(dayKey());
+  const [override, setOverride] = useState<DayType | null>(null);
+  const [followToday, setFollowToday] = useState(true);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
 
@@ -40,7 +53,7 @@ export default function TodayPage() {
         fetch("/api/meals").then((r) => r.json()),
         fetch(`/api/log?day=${d}`).then((r) => r.json()),
       ]);
-      setProfile(normalise(p));
+      setProfile(normaliseProfile(p));
       setMeals(m);
       setEntries(l);
       setError(null);
@@ -55,24 +68,68 @@ export default function TodayPage() {
     load(day);
   }, [day, load]);
 
-  // The logging day turns over at 03:00; catch it without a refresh.
+  // Today's day type can be nudged without rewriting the whole week — you
+  // swapped a session for a rest day, it happens.
+  useEffect(() => {
+    try {
+      const raw = localStorage.getItem(`${OVERRIDE_KEY}:${day}`);
+      setOverride(raw ? (raw as DayType) : null);
+    } catch {
+      setOverride(null);
+    }
+  }, [day]);
+
+  function chooseDayType(dt: DayType) {
+    setOverride(dt);
+    try {
+      localStorage.setItem(`${OVERRIDE_KEY}:${day}`, dt);
+    } catch {
+      /* private mode — the choice just won't survive a refresh */
+    }
+  }
+
+  // The logging day turns over at 03:00; catch it without a refresh — but
+  // only while you're actually looking at today, not browsing back.
   useEffect(() => {
     const t = setInterval(() => {
+      if (!followToday) return;
       const k = dayKey();
-      setDay((prev) => (k !== prev ? k : prev));
+      setDay((prev) => (k === prev ? prev : k));
     }, 60_000);
     return () => clearInterval(t);
-  }, []);
+  }, [followToday]);
+
+  const dayType: DayType = useMemo(
+    () => override ?? (profile ? dayTypeFor(profile, day) : "session"),
+    [override, profile, day]
+  );
 
   const target = useMemo(
-    () => (profile ? targets(profile) : { ...ZERO, maintenance: 0, bmr: 0 }),
-    [profile]
+    () => (profile ? targets(profile, dayType) : null),
+    [profile, dayType]
   );
 
   const eaten = useMemo(
     () => sumMacros(entries.filter((e) => e.confirmed).map((e) => totalFor(e.items))),
     [entries]
   );
+
+  const suggested = useMemo(
+    () =>
+      meals.filter(
+        (m) => !m.day_types || m.day_types.length === 0 || m.day_types.includes(dayType)
+      ),
+    [meals, dayType]
+  );
+
+  /** Step a day back or forward; stop auto-rollover unless we're on today. */
+  function go(delta: number) {
+    setDay((d) => {
+      const next = addDays(d, delta);
+      setFollowToday(next === dayKey());
+      return next;
+    });
+  }
 
   async function addMeal(meal: Meal) {
     const res = await fetch("/api/log", {
@@ -82,6 +139,7 @@ export default function TodayPage() {
         day,
         meal_id: meal.id,
         meal_name: meal.name,
+        day_type: dayType,
         items: meal.ingredients.map(stripItem),
       }),
     });
@@ -97,6 +155,11 @@ export default function TodayPage() {
     });
     const saved = await res.json();
     setEntries((list) => list.map((e) => (e.id === saved.id ? { ...saved } : e)));
+  }
+
+  async function confirmAll() {
+    const pending = entries.filter((e) => !e.confirmed);
+    for (const e of pending) await saveEntry(e, true);
   }
 
   async function removeEntry(id: number) {
@@ -115,15 +178,22 @@ export default function TodayPage() {
   }
 
   if (loading) return <p className="py-24 text-center text-sm text-[var(--color-mut)]">Loading…</p>;
+  if (!profile || !target) {
+    return (
+      <p className="py-24 text-center text-sm text-[var(--color-fat)]">
+        {error ?? "Something went wrong."}
+      </p>
+    );
+  }
 
   const left = Math.round(target.kcal - eaten.kcal);
   const over = left < 0;
+  const isToday = day === dayKey();
+  const pending = entries.filter((e) => !e.confirmed).length;
 
   return (
     <div className="space-y-3">
-      {error && (
-        <div className="card px-5 py-3 text-sm text-[var(--color-fat)]">{error}</div>
-      )}
+      {error && <div className="card px-5 py-3 text-sm text-[var(--color-fat)]">{error}</div>}
 
       {/* Hero — one number, the one that matters */}
       <section className="card px-5 py-6">
@@ -137,23 +207,63 @@ export default function TodayPage() {
               {Math.abs(left).toLocaleString()}
             </p>
           </div>
-          <p className="pt-1 text-right text-xs leading-relaxed text-[var(--color-mut)]">
-            {prettyDay(day)}
-            <br />
-            {Math.round(eaten.kcal).toLocaleString()} of {target.kcal.toLocaleString()} kcal
-          </p>
+          <div className="pt-1 text-right">
+            <div className="flex items-center justify-end gap-1">
+              <button
+                className="btn btn-sm btn-quiet px-2"
+                onClick={() => go(-1)}
+                aria-label="Previous day"
+              >
+                ‹
+              </button>
+              <span className="text-xs text-[var(--color-mut)]">
+                {isToday ? "Today" : prettyDay(day)}
+              </span>
+              <button
+                className="btn btn-sm btn-quiet px-2 disabled:opacity-20"
+                disabled={isToday}
+                onClick={() => go(1)}
+                aria-label="Next day"
+              >
+                ›
+              </button>
+            </div>
+            <p className="mt-1 text-xs leading-relaxed text-[var(--color-mut)]">
+              {Math.round(eaten.kcal).toLocaleString()} of {target.kcal.toLocaleString()} kcal
+            </p>
+          </div>
         </div>
 
         <div className="mt-5">
           <Bar value={eaten.kcal} target={target.kcal} color="var(--color-accent)" height={8} />
         </div>
+
+        {profile.cycling && (
+          <div className="mt-5">
+            <p className="label mb-2">Today's training</p>
+            <Segmented
+              size="sm"
+              value={dayType}
+              onChange={chooseDayType}
+              options={DAY_TYPES.map((d) => ({ value: d.value, label: d.label, hint: d.hint }))}
+            />
+            <p className="mt-2 text-xs text-[var(--color-mut)]">
+              {target.multiplier === 1
+                ? "Flat target."
+                : `${target.multiplier > 1 ? "+" : ""}${Math.round(
+                    (target.multiplier - 1) * 100
+                  )}% on your ${target.base.toLocaleString()} kcal average.`}
+            </p>
+          </div>
+        )}
       </section>
 
       {/* Macros */}
-      <section className="grid grid-cols-3 gap-3">
+      <section className="grid grid-cols-2 gap-3 sm:grid-cols-4">
         <MacroTile k="protein" eaten={eaten.protein} target={target.protein} />
         <MacroTile k="carbs" eaten={eaten.carbs} target={target.carbs} />
         <MacroTile k="fat" eaten={eaten.fat} target={target.fat} />
+        <MacroTile k="fibre" eaten={eaten.fibre} target={target.fibre} overIsFine />
       </section>
 
       {/* Add a meal */}
@@ -166,28 +276,42 @@ export default function TodayPage() {
         </section>
       ) : (
         <section className="card px-5 py-4">
-          <p className="label mb-3">Add a meal</p>
+          <div className="mb-3 flex items-center">
+            <p className="label mr-auto">Add a meal</p>
+            {pending > 0 && (
+              <button className="btn btn-sm btn-accent" onClick={confirmAll}>
+                Confirm all {pending}
+              </button>
+            )}
+          </div>
           <div className="flex flex-wrap gap-2">
-            {meals.map((m) => {
+            {suggested.map((m) => {
               const t = totalFor(m.ingredients);
               const used = entries.filter((e) => e.meal_id === m.id).length;
+              const planned = Math.max(1, Number(m.times_per_day ?? 1));
               return (
                 <button
                   key={m.id}
                   onClick={() => addMeal(m)}
                   className="sunk group flex items-center gap-2.5 px-3.5 py-2.5 text-left transition hover:bg-[#161a1f]"
                 >
-                  <span className="text-lg font-light leading-none text-[var(--color-accent)]">
-                    +
-                  </span>
+                  <span className="text-lg font-light leading-none text-[var(--color-accent)]">+</span>
                   <span>
                     <span className="block text-sm font-semibold">{m.name}</span>
                     <span className="block text-xs tabular-nums text-[var(--color-mut)]">
                       {Math.round(t.kcal)} kcal
+                      {planned > 1 && ` · ${planned}× a day`}
                     </span>
                   </span>
                   {used > 0 && (
-                    <span className="num ml-1 rounded-full bg-[var(--color-accent)] px-1.5 py-0.5 text-[0.65rem] text-[#10160a]">
+                    <span
+                      className="num ml-1 rounded-full px-1.5 py-0.5 text-[0.65rem]"
+                      style={{
+                        background:
+                          used >= planned ? "var(--color-accent)" : "var(--color-raised)",
+                        color: used >= planned ? "#10160a" : "var(--color-mut)",
+                      }}
+                    >
                       {used}
                     </span>
                   )}
@@ -195,10 +319,17 @@ export default function TodayPage() {
               );
             })}
           </div>
+          {suggested.length < meals.length && (
+            <p className="mt-3 text-xs text-[var(--color-mut)]">
+              {meals.length - suggested.length} meal
+              {meals.length - suggested.length === 1 ? "" : "s"} hidden — not part of a{" "}
+              {DAY_TYPES.find((d) => d.value === dayType)?.label.toLowerCase()} day.
+            </p>
+          )}
         </section>
       )}
 
-      {/* Today's log */}
+      {/* The day's log */}
       {entries.length > 0 && (
         <section className="space-y-3">
           {entries.map((e) => {
@@ -209,7 +340,7 @@ export default function TodayPage() {
                   <div className="mr-auto min-w-0">
                     <p className="truncate font-semibold">{e.meal_name}</p>
                     <div className="mt-1">
-                      <MacroChips m={t} />
+                      <MacroChips m={t} fibre />
                     </div>
                   </div>
                   {e.confirmed ? (
@@ -273,20 +404,7 @@ function stripItem(i: Item): Item {
     protein_100: Number(i.protein_100),
     carbs_100: Number(i.carbs_100),
     fat_100: Number(i.fat_100),
-  };
-}
-
-function normalise(p: any): Profile {
-  return {
-    sex: p?.sex ?? "male",
-    dob: p?.dob ? String(p.dob).slice(0, 10) : null,
-    height_cm: Number(p?.height_cm ?? 180),
-    weight_kg: Number(p?.weight_kg ?? 75),
-    activity: Number(p?.activity ?? 1.725),
-    goal: p?.goal ?? "cut",
-    protein_per_kg: Number(p?.protein_per_kg ?? 2),
-    fat_per_kg: Number(p?.fat_per_kg ?? 0.7),
-    calorie_override: p?.calorie_override ? Number(p.calorie_override) : null,
+    fibre_100: Number(i.fibre_100 ?? 0),
   };
 }
 

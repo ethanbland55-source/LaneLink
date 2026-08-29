@@ -1,22 +1,40 @@
 "use client";
 
 import { useEffect, useMemo, useState } from "react";
+import Link from "next/link";
 import { RecalculateDialog } from "../recalculate";
-import { Bar, MACRO_COLOR, MACRO_LABEL, type MacroKey } from "../macro-ui";
+import { Bar, MACRO_COLOR, MACRO_LABEL, Segmented, Stat, type MacroKey } from "../macro-ui";
 import { offTarget, type BoundedItem } from "@/lib/optimise";
+import { dayVolume, volumeHeadline } from "@/lib/prep";
+import { profileFor } from "@/lib/foods";
 import {
   ACTIVITY_LEVELS,
+  DAY_TYPES,
   GOALS,
+  METS,
+  WEEKDAYS,
+  WEEKDAY_LABEL,
   ageFromDob,
   itemMacros,
+  macroConsistency,
+  sessionKcal,
   sumMacros,
   targets,
   totalFor,
+  type DayType,
   type Goal,
   type Profile,
+  type Weekday,
 } from "@/lib/nutrition";
+import { DOW_LABELS, SHOP_DAY_OPTIONS, normaliseProfile } from "@/lib/profile";
 
-type Meal = { id: number; name: string; ingredients: BoundedItem[] };
+type Meal = {
+  id: number;
+  name: string;
+  times_per_day: number;
+  day_types: DayType[] | null;
+  ingredients: BoundedItem[];
+};
 
 const BLANK: BoundedItem = {
   name: "",
@@ -25,10 +43,13 @@ const BLANK: BoundedItem = {
   protein_100: 0,
   carbs_100: 0,
   fat_100: 0,
+  fibre_100: 0,
   min_grams: null,
   max_grams: null,
   locked: false,
 };
+
+const BAR_KEYS: MacroKey[] = ["kcal", "protein", "carbs", "fat", "fibre"];
 
 export default function PlanPage() {
   const [profile, setProfile] = useState<Profile | null>(null);
@@ -36,6 +57,8 @@ export default function PlanPage() {
   const [saved, setSaved] = useState<string | null>(null);
   const [loading, setLoading] = useState(true);
   const [showRecalc, setShowRecalc] = useState(false);
+  const [planFor, setPlanFor] = useState<DayType>("session");
+  const [advanced, setAdvanced] = useState(false);
 
   useEffect(() => {
     (async () => {
@@ -43,26 +66,63 @@ export default function PlanPage() {
         fetch("/api/profile").then((r) => r.json()),
         fetch("/api/meals").then((r) => r.json()),
       ]);
-      setProfile(normalise(p));
-      setMeals(m);
+      const prof = normaliseProfile(p);
+      setProfile(prof);
+      setMeals(
+        (m as any[]).map((x) => ({
+          ...x,
+          times_per_day: Number(x.times_per_day ?? 1),
+          day_types: x.day_types ?? null,
+        }))
+      );
       setLoading(false);
     })();
   }, []);
 
-  const target = useMemo(() => (profile ? targets(profile) : null), [profile]);
-  const planTotal = useMemo(() => sumMacros(meals.map((m) => totalFor(m.ingredients))), [meals]);
+  const target = useMemo(
+    () => (profile ? targets(profile, profile.cycling ? planFor : "session") : null),
+    [profile, planFor]
+  );
+
+  /** The plan as eaten on this kind of day: meals that apply, times each. */
+  const activeMeals = useMemo(
+    () =>
+      meals.filter(
+        (m) =>
+          !profile?.cycling ||
+          !m.day_types ||
+          m.day_types.length === 0 ||
+          m.day_types.includes(planFor)
+      ),
+    [meals, profile, planFor]
+  );
+
+  const planTotal = useMemo(
+    () =>
+      sumMacros(
+        activeMeals.flatMap((m) =>
+          Array.from({ length: Math.max(1, Math.round(m.times_per_day || 1)) }, () =>
+            totalFor(m.ingredients)
+          )
+        )
+      ),
+    [activeMeals]
+  );
+
   const drift = useMemo(() => (target ? offTarget(planTotal, target) : null), [planTotal, target]);
+  const volume = useMemo(() => dayVolume(activeMeals), [activeMeals]);
 
   function set<K extends keyof Profile>(k: K, v: Profile[K]) {
     setProfile((p) => (p ? { ...p, [k]: v } : p));
   }
 
-  async function saveProfile() {
-    if (!profile) return;
+  async function saveProfile(next?: Profile) {
+    const body = next ?? profile;
+    if (!body) return;
     await fetch("/api/profile", {
       method: "PUT",
       headers: { "content-type": "application/json" },
-      body: JSON.stringify(profile),
+      body: JSON.stringify(body),
     });
     flash("Targets saved");
   }
@@ -74,7 +134,7 @@ export default function PlanPage() {
       body: JSON.stringify({ name: `Meal ${meals.length + 1}` }),
     });
     const created = await res.json();
-    setMeals((m) => [...m, created]);
+    setMeals((m) => [...m, { ...created, times_per_day: 1, day_types: null, ingredients: [] }]);
   }
 
   async function persist(meal: Meal) {
@@ -90,9 +150,13 @@ export default function PlanPage() {
     flash("Saved");
   }
 
-  async function applyRecalc(next: Meal[]) {
-    for (const m of next) await persist(m);
-    setMeals(next);
+  async function applyRecalc(next: { id: number; name: string; ingredients: BoundedItem[] }[]) {
+    const merged = meals.map((m) => {
+      const n = next.find((x) => x.id === m.id);
+      return n ? { ...m, ingredients: n.ingredients } : m;
+    });
+    for (const m of merged) await persist(m);
+    setMeals(merged);
     setShowRecalc(false);
     flash("Portions rebalanced");
   }
@@ -130,6 +194,9 @@ export default function PlanPage() {
   }
 
   const diff = Math.round(planTotal.kcal - target.kcal);
+  const dayLabel = profile.cycling
+    ? `${DAY_TYPES.find((d) => d.value === planFor)?.label} day · ${target.kcal.toLocaleString()} kcal`
+    : `${target.kcal.toLocaleString()} kcal`;
 
   return (
     <div className="space-y-3">
@@ -141,8 +208,10 @@ export default function PlanPage() {
 
       {showRecalc && (
         <RecalculateDialog
-          meals={meals}
+          meals={activeMeals.map((m) => ({ id: m.id, name: m.name, ingredients: m.ingredients }))}
           target={target}
+          dayLabel={dayLabel}
+          defaultMode={profile.calorie_override != null ? "calories_exact" : "balanced"}
           onClose={() => setShowRecalc(false)}
           onApply={applyRecalc}
         />
@@ -150,12 +219,22 @@ export default function PlanPage() {
 
       {/* Target vs plan */}
       <section className="card px-5 py-6">
+        {profile.cycling && (
+          <div className="mb-5">
+            <p className="label mb-2">Planning for a</p>
+            <Segmented
+              size="sm"
+              value={planFor}
+              onChange={setPlanFor}
+              options={DAY_TYPES.map((d) => ({ value: d.value, label: d.label, hint: d.hint }))}
+            />
+          </div>
+        )}
+
         <div className="flex items-start">
           <div className="mr-auto">
             <p className="label">Daily target</p>
-            <p className="num mt-2 text-[3.5rem] sm:text-[4rem]">
-              {target.kcal.toLocaleString()}
-            </p>
+            <p className="num mt-2 text-[3.5rem] sm:text-[4rem]">{target.kcal.toLocaleString()}</p>
           </div>
           <div className="pt-1 text-right">
             <p className="label">Your plan</p>
@@ -171,24 +250,27 @@ export default function PlanPage() {
         </div>
 
         <div className="mt-6 space-y-3">
-          {(["kcal", "protein", "carbs", "fat"] as MacroKey[]).map((k) => (
+          {BAR_KEYS.map((k) => (
             <div key={k} className="flex items-center gap-3">
               <span className="w-14 shrink-0 text-xs text-[var(--color-mut)]">
                 {MACRO_LABEL[k]}
               </span>
               <Bar value={planTotal[k]} target={target[k]} color={MACRO_COLOR[k]} height={5} />
               <span className="w-24 shrink-0 text-right text-xs tabular-nums text-[var(--color-mut)]">
-                <b className="text-[#f2f4f7]">{Math.round(planTotal[k])}</b> /{" "}
-                {Math.round(target[k])}
+                <b className="text-[#f2f4f7]">{Math.round(planTotal[k])}</b> / {Math.round(target[k])}
               </span>
             </div>
           ))}
         </div>
 
+        <p className="mt-4 text-xs leading-relaxed text-[var(--color-mut)]">
+          {volumeHeadline(volume)}
+        </p>
+
         <button
-          className={`${drift ? "btn btn-accent" : "btn"} mt-6 w-full`}
+          className={`${drift ? "btn btn-accent" : "btn"} mt-5 w-full`}
           onClick={() => setShowRecalc(true)}
-          disabled={meals.length === 0}
+          disabled={activeMeals.length === 0}
         >
           Recalculate portions
         </button>
@@ -197,8 +279,17 @@ export default function PlanPage() {
       {/* Meals */}
       {meals.map((meal) => {
         const t = totalFor(meal.ingredients);
+        const hidden =
+          profile.cycling &&
+          meal.day_types &&
+          meal.day_types.length > 0 &&
+          !meal.day_types.includes(planFor);
         return (
-          <section key={meal.id} className="card px-4 py-4 sm:px-5">
+          <section
+            key={meal.id}
+            className="card px-4 py-4 sm:px-5"
+            style={hidden ? { opacity: 0.5 } : undefined}
+          >
             <div className="flex items-center gap-2">
               <input
                 className="field mr-auto w-full max-w-[13rem] font-semibold"
@@ -216,75 +307,64 @@ export default function PlanPage() {
               </button>
             </div>
 
-            <div className="mt-3 space-y-2">
-              {meal.ingredients.map((it, i) => {
-                const m = itemMacros(it);
-                return (
-                  <div key={i} className="sunk px-3 py-2.5">
-                    {/* Line 1: what it is, and how much of it */}
-                    <div className="flex items-center gap-2">
-                      <input
-                        className="field field-bare mr-auto w-full min-w-0 flex-1 px-1.5 py-1 text-sm font-semibold"
-                        placeholder="Ingredient"
-                        value={it.name}
-                        onChange={(e) => patchItem(meal.id, i, { name: e.target.value })}
-                      />
-                      <span className="num text-sm text-[var(--color-mut)]">
-                        {Math.round(m.kcal)} kcal
-                      </span>
-                      <input
-                        type="number"
-                        inputMode="decimal"
-                        className="field w-[4.5rem] py-1.5 text-right text-sm font-bold"
-                        value={it.grams}
-                        onChange={(e) => patchItem(meal.id, i, { grams: Number(e.target.value) })}
-                      />
-                      <span className="w-2 text-xs text-[var(--color-mut)]">g</span>
-                      <button
-                        className="px-1 text-[#4a505c] transition hover:text-[var(--color-fat)]"
-                        title="Remove"
-                        onClick={() =>
-                          patchMeal(meal.id, {
-                            ingredients: meal.ingredients.filter((_, j) => j !== i),
-                          })
-                        }
-                      >
-                        ✕
-                      </button>
-                    </div>
+            {/* How often, and on which days */}
+            <div className="mt-3 flex flex-wrap items-center gap-x-4 gap-y-2 text-xs">
+              <label className="flex items-center gap-2">
+                <span className="text-[var(--color-mut)]">Times a day</span>
+                <input
+                  type="number"
+                  min={0.5}
+                  step={0.5}
+                  className="field w-16 px-2 py-1 text-right text-xs"
+                  value={meal.times_per_day}
+                  onChange={(e) =>
+                    patchMeal(meal.id, { times_per_day: Number(e.target.value) || 1 })
+                  }
+                />
+              </label>
 
-                    {/* Line 2: the packet values, labelled once each */}
-                    <div className="mt-2 flex flex-wrap items-center gap-2 border-t border-[#1c1f25] pt-2">
-                      <span className="label mr-1">per 100g</span>
-                      {(
-                        [
-                          ["kcal_100", "kcal", "var(--color-mut)"],
-                          ["protein_100", "P", MACRO_COLOR.protein],
-                          ["carbs_100", "C", MACRO_COLOR.carbs],
-                          ["fat_100", "F", MACRO_COLOR.fat],
-                        ] as const
-                      ).map(([key, tag, colour]) => (
-                        <span key={key} className="flex items-center gap-1">
-                          <span className="text-[0.7rem] font-bold" style={{ color: colour }}>
-                            {tag}
-                          </span>
-                          <input
-                            type="number"
-                            inputMode="decimal"
-                            className="field w-[3.6rem] px-2 py-1 text-right text-xs"
-                            value={it[key]}
-                            onChange={(e) =>
-                              patchItem(meal.id, i, {
-                                [key]: Number(e.target.value),
-                              } as Partial<BoundedItem>)
-                            }
-                          />
-                        </span>
-                      ))}
-                    </div>
-                  </div>
-                );
-              })}
+              {profile.cycling && (
+                <span className="flex flex-wrap items-center gap-1.5">
+                  <span className="text-[var(--color-mut)]">On</span>
+                  {DAY_TYPES.map((d) => {
+                    const list = meal.day_types ?? [];
+                    const on = list.length === 0 || list.includes(d.value);
+                    return (
+                      <button
+                        key={d.value}
+                        className={on ? "btn btn-sm btn-accent" : "btn btn-sm"}
+                        onClick={() => {
+                          const cur = list.length === 0 ? DAY_TYPES.map((x) => x.value) : list;
+                          const next = on
+                            ? cur.filter((v) => v !== d.value)
+                            : [...cur, d.value];
+                          patchMeal(meal.id, {
+                            day_types: next.length === 0 || next.length === 4 ? null : next,
+                          });
+                        }}
+                      >
+                        {d.label}
+                      </button>
+                    );
+                  })}
+                </span>
+              )}
+            </div>
+
+            <div className="mt-3 space-y-2">
+              {meal.ingredients.map((it, i) => (
+                <IngredientRow
+                  key={i}
+                  it={it}
+                  advanced={advanced}
+                  onPatch={(p) => patchItem(meal.id, i, p)}
+                  onRemove={() =>
+                    patchMeal(meal.id, {
+                      ingredients: meal.ingredients.filter((_, j) => j !== i),
+                    })
+                  }
+                />
+              ))}
             </div>
 
             <button
@@ -299,9 +379,141 @@ export default function PlanPage() {
         );
       })}
 
-      <button className="btn w-full" onClick={addMeal}>
-        + Add meal
-      </button>
+      <div className="flex gap-2">
+        <button className="btn flex-1" onClick={addMeal}>
+          + Add meal
+        </button>
+        <button className="btn" onClick={() => setAdvanced((a) => !a)}>
+          {advanced ? "Hide limits" : "Show limits"}
+        </button>
+      </div>
+
+      {/* Training week */}
+      <section className="card px-5 py-5">
+        <div className="flex items-center gap-3">
+          <div className="mr-auto">
+            <p className="label">Training week</p>
+            <p className="mt-1.5 text-xs leading-relaxed text-[var(--color-mut)]">
+              Give each day its own number. The percentages are balanced across the week, so the
+              seven-day average still lands on your goal.
+            </p>
+          </div>
+          <button
+            className={profile.cycling ? "btn btn-sm btn-accent" : "btn btn-sm"}
+            onClick={() => set("cycling", !profile.cycling)}
+          >
+            {profile.cycling ? "On" : "Off"}
+          </button>
+        </div>
+
+        {profile.cycling && (
+          <>
+            <div className="mt-4 grid grid-cols-7 gap-1">
+              {WEEKDAYS.map((d) => (
+                <div key={d} className="text-center">
+                  <p className="mb-1 text-[0.65rem] font-semibold text-[var(--color-mut)]">
+                    {WEEKDAY_LABEL[d]}
+                  </p>
+                  <select
+                    className="field w-full px-1 py-1.5 text-center text-[0.7rem]"
+                    value={profile.week[d]}
+                    onChange={(e) =>
+                      set("week", { ...profile.week, [d as Weekday]: e.target.value as DayType })
+                    }
+                  >
+                    {DAY_TYPES.map((t) => (
+                      <option key={t.value} value={t.value}>
+                        {t.label}
+                      </option>
+                    ))}
+                  </select>
+                </div>
+              ))}
+            </div>
+
+            <div className="mt-4 space-y-2">
+              {DAY_TYPES.map((d) => {
+                const t = targets(profile, d.value);
+                const pct = Math.round((profile.day_adjust[d.value] ?? 0) * 100);
+                return (
+                  <div key={d.value} className="flex items-center gap-3">
+                    <span className="w-16 shrink-0 text-xs font-semibold">{d.label}</span>
+                    <input
+                      type="range"
+                      min={-30}
+                      max={30}
+                      step={1}
+                      value={pct}
+                      className="flex-1 accent-[var(--color-accent)]"
+                      onChange={(e) =>
+                        set("day_adjust", {
+                          ...profile.day_adjust,
+                          [d.value]: Number(e.target.value) / 100,
+                        })
+                      }
+                    />
+                    <span className="w-10 shrink-0 text-right text-xs tabular-nums text-[var(--color-mut)]">
+                      {pct > 0 ? "+" : ""}
+                      {pct}%
+                    </span>
+                    <span className="num w-16 shrink-0 text-right text-sm">
+                      {t.kcal.toLocaleString()}
+                    </span>
+                  </div>
+                );
+              })}
+            </div>
+
+            <p className="mt-3 text-xs leading-relaxed text-[var(--color-mut)]">
+              For reference: a 90-minute hard swim at your weight burns roughly{" "}
+              <b className="text-[#f2f4f7]">
+                {sessionKcal(profile.weight_kg, 90, METS.swim_hard).toLocaleString()} kcal
+              </b>
+              , an hour in the gym about{" "}
+              {sessionKcal(profile.weight_kg, 60, METS.gym).toLocaleString()} kcal.
+            </p>
+          </>
+        )}
+      </section>
+
+      {/* Shopping */}
+      <section className="card px-5 py-5">
+        <p className="label">Shopping</p>
+        <p className="mt-1.5 text-xs leading-relaxed text-[var(--color-mut)]">
+          How many days of food you buy in one go, and the day you shop.
+        </p>
+
+        <div className="mt-3 flex flex-wrap gap-1.5">
+          {SHOP_DAY_OPTIONS.map((n) => (
+            <button
+              key={n}
+              className={`${profile.shop_days === n ? "btn btn-accent" : "btn"} btn-sm`}
+              onClick={() => set("shop_days", n)}
+            >
+              {n} days
+            </button>
+          ))}
+        </div>
+
+        <label className="mt-3 block">
+          <span className="label mb-1.5 block">Shop day</span>
+          <select
+            className="field w-full max-w-[13rem]"
+            value={profile.shop_start_dow}
+            onChange={(e) => set("shop_start_dow", Number(e.target.value))}
+          >
+            {DOW_LABELS.map((d, i) => (
+              <option key={d} value={i}>
+                {d}
+              </option>
+            ))}
+          </select>
+        </label>
+
+        <Link href="/shop" className="btn btn-accent mt-4 w-full">
+          Open the shopping list
+        </Link>
+      </section>
 
       {/* Numbers */}
       <section className="card px-5 py-5">
@@ -337,7 +549,22 @@ export default function PlanPage() {
           </Field>
 
           <div className="sm:col-span-2">
-            <Field label="Activity">
+            <Field label="Body fat % — optional, but it makes the BMR figure better">
+              <input
+                type="number"
+                step={0.5}
+                className="field w-full"
+                placeholder="leave blank to use height and age instead"
+                value={profile.body_fat_pct ?? ""}
+                onChange={(e) =>
+                  set("body_fat_pct", e.target.value ? Number(e.target.value) : null)
+                }
+              />
+            </Field>
+          </div>
+
+          <div className="sm:col-span-2">
+            <Field label="Activity — your baseline, before day-to-day training">
               <select
                 className="field w-full"
                 value={profile.activity}
@@ -380,28 +607,54 @@ export default function PlanPage() {
             <Num value={profile.fat_per_kg} onChange={(v) => set("fat_per_kg", v)} step={0.05} />
           </Field>
 
+          <Field label="Carb floor g/kg — carbs never go below this">
+            <Num
+              value={profile.carb_floor_per_kg}
+              onChange={(v) => set("carb_floor_per_kg", v)}
+              step={0.1}
+            />
+          </Field>
+
+          <Field label="Fibre g per 1000 kcal">
+            <Num
+              value={profile.fibre_per_1000}
+              onChange={(v) => set("fibre_per_1000", v)}
+              step={1}
+            />
+          </Field>
+
           <div className="sm:col-span-2">
-            <Field label="Manual kcal override">
+            <Field label="Manual kcal override — your own number, used as the weekly average">
               <input
                 type="number"
                 className="field w-full"
                 value={profile.calorie_override ?? ""}
-                placeholder={`${target.kcal} — calculated`}
+                placeholder={`${target.base} — calculated`}
                 onChange={(e) =>
                   set("calorie_override", e.target.value ? Number(e.target.value) : null)
                 }
               />
             </Field>
+            {profile.calorie_override != null && (
+              <p className="mt-2 text-xs leading-relaxed text-[var(--color-mut)]">
+                Using your number. Protein and fat still come from your g/kg settings and carbs take
+                the rest, and Recalculate will default to landing this figure exactly.
+              </p>
+            )}
           </div>
         </div>
 
         <div className="mt-5 grid grid-cols-3 gap-3">
-          <Stat label="BMR" value={target.bmr} />
+          <Stat label="BMR" value={target.bmr} sub={target.method} />
           <Stat label="Maintenance" value={target.maintenance} />
-          <Stat label="Target" value={target.kcal} accent />
+          <Stat
+            label={profile.cycling ? "Week average" : "Target"}
+            value={target.base}
+            accent
+          />
         </div>
 
-        <button className="btn btn-accent mt-4 w-full" onClick={saveProfile}>
+        <button className="btn btn-accent mt-4 w-full" onClick={() => saveProfile()}>
           Save targets
         </button>
       </section>
@@ -409,16 +662,139 @@ export default function PlanPage() {
   );
 }
 
-function Stat({ label, value, accent }: { label: string; value: number; accent?: boolean }) {
+/* -------------------------------------------------------------------- */
+
+function IngredientRow({
+  it,
+  advanced,
+  onPatch,
+  onRemove,
+}: {
+  it: BoundedItem;
+  advanced: boolean;
+  onPatch: (p: Partial<BoundedItem>) => void;
+  onRemove: () => void;
+}) {
+  const m = itemMacros(it);
+  const check = macroConsistency(it);
+  const food = profileFor(it.name, it);
+  const estimated = (it as any).fibre_estimated as boolean | undefined;
+
   return (
-    <div className="sunk px-3 py-3">
-      <p className="label">{label}</p>
-      <p
-        className="num mt-1.5 text-xl"
-        style={accent ? { color: "var(--color-accent)" } : undefined}
-      >
-        {value.toLocaleString()}
-      </p>
+    <div className="sunk px-3 py-2.5">
+      {/* Line 1: what it is, and how much of it */}
+      <div className="flex items-center gap-2">
+        <input
+          className="field field-bare mr-auto w-full min-w-0 flex-1 px-1.5 py-1 text-sm font-semibold"
+          placeholder="Ingredient"
+          value={it.name}
+          onChange={(e) => onPatch({ name: e.target.value })}
+        />
+        <span className="num text-sm text-[var(--color-mut)]">{Math.round(m.kcal)} kcal</span>
+        <input
+          type="number"
+          inputMode="decimal"
+          className="field w-[4.5rem] py-1.5 text-right text-sm font-bold"
+          value={it.grams}
+          onChange={(e) => onPatch({ grams: Number(e.target.value) })}
+        />
+        <span className="w-2 text-xs text-[var(--color-mut)]">g</span>
+        <button
+          className="px-1 text-[#4a505c] transition hover:text-[var(--color-fat)]"
+          title="Remove"
+          onClick={onRemove}
+        >
+          ✕
+        </button>
+      </div>
+
+      {/* Line 2: the packet values, labelled once each */}
+      <div className="mt-2 flex flex-wrap items-center gap-2 border-t border-[#1c1f25] pt-2">
+        <span className="label mr-1">per 100g</span>
+        {(
+          [
+            ["kcal_100", "kcal", "var(--color-mut)"],
+            ["protein_100", "P", MACRO_COLOR.protein],
+            ["carbs_100", "C", MACRO_COLOR.carbs],
+            ["fat_100", "F", MACRO_COLOR.fat],
+            ["fibre_100", "Fib", MACRO_COLOR.fibre],
+          ] as const
+        ).map(([key, tag, colour]) => (
+          <span key={key} className="flex items-center gap-1">
+            <span className="text-[0.7rem] font-bold" style={{ color: colour }}>
+              {tag}
+            </span>
+            <input
+              type="number"
+              inputMode="decimal"
+              className="field w-[3.6rem] px-2 py-1 text-right text-xs"
+              style={
+                key === "fibre_100" && estimated
+                  ? { borderStyle: "dashed", color: "var(--color-mut)" }
+                  : undefined
+              }
+              title={
+                key === "fibre_100" && estimated
+                  ? "Estimated from the type of food — check the packet"
+                  : undefined
+              }
+              value={(it as any)[key] ?? 0}
+              onChange={(e) =>
+                onPatch({
+                  [key]: Number(e.target.value),
+                  ...(key === "fibre_100" ? { fibre_estimated: false } : {}),
+                } as Partial<BoundedItem>)
+              }
+            />
+          </span>
+        ))}
+      </div>
+
+      {/* Line 3: what the app worked out, and anything that looks wrong */}
+      {(advanced || !check.ok) && (
+        <div className="mt-2 flex flex-wrap items-center gap-x-3 gap-y-1.5 border-t border-[#1c1f25] pt-2 text-[0.68rem]">
+          {!check.ok && (
+            <span style={{ color: "var(--color-carbs)" }}>
+              4/4/9 says {Math.round(check.implied)} kcal, not {Math.round(check.stated)} — worth a
+              second look at the label.
+            </span>
+          )}
+          {advanced && (
+            <>
+              <span className="text-[#5b6270]">{food.spec.label.toLowerCase()}</span>
+              <span className="text-[#5b6270]">{food.aisle.toLowerCase()}</span>
+              <span className="flex items-center gap-1 text-[#5b6270]">
+                limits
+                <input
+                  type="number"
+                  className="field w-[3.4rem] px-1.5 py-0.5 text-right text-[0.68rem]"
+                  placeholder="auto"
+                  value={it.min_grams ?? ""}
+                  onChange={(e) =>
+                    onPatch({ min_grams: e.target.value ? Number(e.target.value) : null })
+                  }
+                />
+                –
+                <input
+                  type="number"
+                  className="field w-[3.4rem] px-1.5 py-0.5 text-right text-[0.68rem]"
+                  placeholder="auto"
+                  value={it.max_grams ?? ""}
+                  onChange={(e) =>
+                    onPatch({ max_grams: e.target.value ? Number(e.target.value) : null })
+                  }
+                />
+              </span>
+              <button
+                className={it.locked ? "text-[var(--color-accent)]" : "text-[#5b6270]"}
+                onClick={() => onPatch({ locked: !it.locked })}
+              >
+                {it.locked ? "locked" : "lock"}
+              </button>
+            </>
+          )}
+        </div>
+      )}
     </div>
   );
 }
@@ -451,18 +827,4 @@ function Num({
       onChange={(e) => onChange(Number(e.target.value))}
     />
   );
-}
-
-function normalise(p: any): Profile {
-  return {
-    sex: p?.sex ?? "male",
-    dob: p?.dob ? String(p.dob).slice(0, 10) : null,
-    height_cm: Number(p?.height_cm ?? 180),
-    weight_kg: Number(p?.weight_kg ?? 75),
-    activity: Number(p?.activity ?? 1.725),
-    goal: p?.goal ?? "cut",
-    protein_per_kg: Number(p?.protein_per_kg ?? 2),
-    fat_per_kg: Number(p?.fat_per_kg ?? 0.7),
-    calorie_override: p?.calorie_override ? Number(p.calorie_override) : null,
-  };
 }

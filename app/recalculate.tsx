@@ -1,8 +1,19 @@
 "use client";
 
 import { useMemo, useState } from "react";
-import { MACRO_COLOR, MACRO_LABEL, type MacroKey } from "./macro-ui";
-import { boundsFor, optimisePortions, type BoundedItem } from "@/lib/optimise";
+import { MACRO_COLOR, MACRO_LABEL, Segmented } from "./macro-ui";
+import {
+  boundsFor,
+  optimisePortions,
+  unitOf,
+  MODES,
+  type BoundedItem,
+  type MacroKey,
+  type Mode,
+  type Suggestion,
+} from "@/lib/optimise";
+import { smartBounds, VOLUME_FOODS } from "@/lib/foods";
+import { dayVolume, fillerSuggestions, volumeHeadline } from "@/lib/prep";
 import type { Macros } from "@/lib/nutrition";
 
 type Meal = { id: number; name: string; ingredients: BoundedItem[] };
@@ -10,22 +21,31 @@ type Meal = { id: number; name: string; ingredients: BoundedItem[] };
 const KEYS: MacroKey[] = ["kcal", "protein", "carbs", "fat"];
 
 /**
- * Preview-and-apply for the portion optimiser. Nothing is written until
- * "Apply" — widen a limit or lock an ingredient and the fit updates live.
+ * Preview-and-apply for the portion optimiser.
+ *
+ * Everything here re-solves live: change a limit, lock a portion, switch the
+ * priority, add a filler — the fit updates immediately and nothing is written
+ * until Apply.
  */
 export function RecalculateDialog({
   meals,
   target,
+  dayLabel,
+  defaultMode = "balanced",
   onClose,
   onApply,
 }: {
   meals: Meal[];
   target: Macros;
+  dayLabel?: string;
+  defaultMode?: Mode;
   onClose: () => void;
   onApply: (meals: Meal[]) => Promise<void>;
 }) {
   const [draft, setDraft] = useState<Meal[]>(() => structuredClone(meals));
+  const [mode, setMode] = useState<Mode>(defaultMode);
   const [saving, setSaving] = useState(false);
+  const [tab, setTab] = useState<"portions" | "prep">("portions");
 
   // The fit is a whole-day fit, so flatten every ingredient across every meal.
   const flat = useMemo(
@@ -33,7 +53,25 @@ export function RecalculateDialog({
     [draft]
   );
 
-  const result = useMemo(() => optimisePortions(flat.map((f) => f.it), target), [flat, target]);
+  const result = useMemo(
+    () => optimisePortions(flat.map((f) => f.it), target, { mode }),
+    [flat, target, mode]
+  );
+
+  /** The plan as it would be after applying — used by the prep guide. */
+  const fitted = useMemo(() => {
+    let n = 0;
+    return draft.map((m) => ({
+      ...m,
+      ingredients: m.ingredients.map((it) => ({ ...it, grams: result.grams[n++] ?? it.grams })),
+    }));
+  }, [draft, result]);
+
+  const volume = useMemo(() => dayVolume(fitted), [fitted]);
+  const fillers = useMemo(
+    () => fillerSuggestions(result.after, target),
+    [result.after, target]
+  );
 
   function patch(mealId: number, index: number, p: Partial<BoundedItem>) {
     setDraft((ms) =>
@@ -45,39 +83,94 @@ export function RecalculateDialog({
     );
   }
 
+  /** Forget every hand-set limit and go back to what the food suggests. */
+  function resetBounds() {
+    setDraft((ms) =>
+      ms.map((m) => ({
+        ...m,
+        ingredients: m.ingredients.map((it) => ({ ...it, min_grams: null, max_grams: null })),
+      }))
+    );
+  }
+
+  /** Take the optimiser up on one of its own suggestions. */
+  function applySuggestion(s: Suggestion) {
+    const f = flat[s.index];
+    if (!f) return;
+    patch(f.mealId, f.index, s.direction === "up" ? { max_grams: s.to } : { min_grams: s.to });
+  }
+
+  function addFiller(name: string, grams: number, mealId: number) {
+    const food = VOLUME_FOODS.find((v) => v.name === name);
+    if (!food) return;
+    setDraft((ms) =>
+      ms.map((m) =>
+        m.id !== mealId
+          ? m
+          : {
+              ...m,
+              ingredients: [
+                ...m.ingredients,
+                {
+                  name: food.name,
+                  grams,
+                  kcal_100: food.kcal_100,
+                  protein_100: food.protein_100,
+                  carbs_100: food.carbs_100,
+                  fat_100: food.fat_100,
+                  fibre_100: food.fibre_100,
+                  min_grams: null,
+                  max_grams: null,
+                  locked: false,
+                },
+              ],
+            }
+      )
+    );
+  }
+
   async function apply() {
     setSaving(true);
-    let n = 0;
-    const next = draft.map((m) => ({
-      ...m,
-      ingredients: m.ingredients.map((it) => ({ ...it, grams: result.grams[n++] })),
-    }));
-    await onApply(next);
+    await onApply(fitted);
     setSaving(false);
   }
 
-  // A portion limit only matters if it actually held a macro off target.
-  const missed = KEYS.filter(
-    (k) => Math.abs(result.after[k] - target[k]) > Math.max(2, target[k] * 0.02)
-  );
+  const missed = KEYS.filter((k) => !result.hit[k]);
 
   return (
     <div className="fixed inset-0 z-50 flex items-end justify-center bg-black/75 backdrop-blur-sm sm:items-center sm:p-6">
-      <div className="card flex max-h-[92vh] w-full max-w-2xl flex-col rounded-b-none sm:rounded-b-[1.25rem]">
+      <div className="card flex max-h-[94vh] w-full max-w-2xl flex-col rounded-b-none sm:rounded-b-[1.25rem]">
         {/* Header */}
-        <div className="flex items-center gap-3 px-5 pb-4 pt-5">
-          <h2 className="mr-auto text-lg font-bold tracking-tight">Rebalance portions</h2>
-          <button className="btn btn-sm btn-quiet px-2.5" onClick={onClose}>
+        <div className="flex items-center gap-3 px-5 pb-3 pt-5">
+          <div className="mr-auto min-w-0">
+            <h2 className="truncate text-lg font-bold tracking-tight">Rebalance portions</h2>
+            {dayLabel && <p className="mt-0.5 text-xs text-[var(--color-mut)]">{dayLabel}</p>}
+          </div>
+          <button className="btn btn-sm btn-quiet px-2.5" onClick={onClose} aria-label="Close">
             ✕
           </button>
         </div>
 
+        {/* What matters most */}
+        <div className="px-5">
+          <Segmented
+            size="sm"
+            value={mode}
+            onChange={(v) => setMode(v)}
+            options={MODES.map((m) => ({ value: m.value, label: m.label, hint: m.blurb }))}
+          />
+          <p className="mt-2 text-xs text-[var(--color-mut)]">
+            {MODES.find((m) => m.value === mode)?.blurb}
+          </p>
+        </div>
+
         {/* Result */}
-        <div className="grid grid-cols-2 gap-2 px-5 sm:grid-cols-4">
+        <div className="mt-4 grid grid-cols-2 gap-2 px-5 sm:grid-cols-4">
           {KEYS.map((k) => {
             const after = result.after[k];
             const t = target[k];
-            const hit = Math.abs(after - t) <= Math.max(2, t * 0.02);
+            const hit = result.hit[k];
+            const delta = Math.round(after - t);
             return (
               <div key={k} className="sunk px-3 py-3">
                 <p className="label">{MACRO_LABEL[k]}</p>
@@ -89,107 +182,121 @@ export function RecalculateDialog({
                   {!hit && (
                     <span style={{ color: "var(--color-carbs)" }}>
                       {" · "}
-                      {after > t ? "+" : ""}
-                      {Math.round(after - t)}
+                      {delta >= 0 ? "+" : ""}
+                      {delta}
                     </span>
                   )}
+                  {hit && <span style={{ color: "var(--color-accent)" }}> · on target</span>}
                 </p>
               </div>
             );
           })}
         </div>
 
-        {result.constrained && missed.length > 0 && (
-          <p className="mx-5 mt-3 rounded-xl bg-[#2a2416] px-3.5 py-2.5 text-xs text-[#ffd08a]">
-            Limits reached — {missed.map((k) => MACRO_LABEL[k].toLowerCase()).join(", ")} can't
-            close without an unrealistic portion.
+        {target.fibre > 0 && (
+          <p className="mx-5 mt-2 text-xs text-[var(--color-mut)]">
+            Fibre{" "}
+            <b style={{ color: MACRO_COLOR.fibre }}>{Math.round(result.after.fibre)} g</b> of{" "}
+            {Math.round(target.fibre)} g
           </p>
         )}
 
-        {/* Rows */}
-        <div className="mt-4 min-h-0 flex-1 overflow-y-auto px-5">
-          {draft.map((meal) => {
-            const rows = flat.map((f, gi) => ({ ...f, gi })).filter((f) => f.mealId === meal.id);
-            if (!rows.length) return null;
-            return (
-              <div key={meal.id} className="mb-5 last:mb-0">
-                <p className="label mb-2">{meal.name}</p>
-                <div className="space-y-1.5">
-                  {rows.map(({ it, index, gi }) => {
-                    const from = Number(it.grams);
-                    const to = result.grams[gi];
-                    const delta = to - from;
-                    const b = boundsFor(it);
-                    return (
-                      <div key={index} className="sunk flex flex-wrap items-center gap-2 px-3 py-2">
-                        <button
-                          title={it.locked ? "Locked" : "Lock this portion"}
-                          onClick={() => patch(meal.id, index, { locked: !it.locked })}
-                          className="shrink-0 rounded-lg p-1 transition hover:bg-white/5"
-                          style={{ color: it.locked ? "var(--color-accent)" : "#454b57" }}
-                        >
-                          <LockIcon open={!it.locked} />
-                        </button>
-
-                        {/* Basis keeps the name legible — on a phone the numbers
-                            wrap to their own line instead of truncating it. */}
-                        <span
-                          className="min-w-0 flex-1 basis-[8rem] truncate text-sm font-medium"
-                          style={it.locked ? { color: "var(--color-mut)" } : undefined}
-                        >
-                          {it.name}
-                        </span>
-
-                        <span className="num ml-auto text-sm text-[#545b68]">{from}</span>
-                        <span className="text-[#454b57]">→</span>
-                        <span
-                          className="num w-14 text-right text-sm"
-                          style={{
-                            color:
-                              Math.abs(delta) < 0.5
-                                ? "var(--color-mut)"
-                                : delta > 0
-                                  ? "var(--color-accent)"
-                                  : "var(--color-fat)",
-                          }}
-                        >
-                          {Math.round(to)}g
-                        </span>
-
-                        <span className="flex shrink-0 items-center gap-1">
-                          <input
-                            type="number"
-                            title="Smallest portion you'd accept"
-                            className="field w-[3.9rem] px-1.5 py-1 text-right text-xs"
-                            value={it.min_grams ?? b.min}
-                            disabled={it.locked}
-                            onChange={(e) =>
-                              patch(meal.id, index, { min_grams: Number(e.target.value) })
-                            }
-                          />
-                          <span className="text-xs text-[#454b57]">–</span>
-                          <input
-                            type="number"
-                            title="Largest portion you'd accept"
-                            className="field w-[3.9rem] px-1.5 py-1 text-right text-xs"
-                            value={it.max_grams ?? b.max}
-                            disabled={it.locked}
-                            onChange={(e) =>
-                              patch(meal.id, index, { max_grams: Number(e.target.value) })
-                            }
-                          />
-                        </span>
-                      </div>
-                    );
-                  })}
-                </div>
+        {/* Why it couldn't close, and what to do about it */}
+        {missed.length > 0 && (
+          <div className="mx-5 mt-3 rounded-xl bg-[#2a2416] px-3.5 py-3 text-xs text-[#ffd08a]">
+            <p>
+              {missed.map((k) => MACRO_LABEL[k].toLowerCase()).join(", ")}{" "}
+              {missed.length === 1 ? "is" : "are"} still off.
+              {result.unreachable.length > 0
+                ? " Your limits can't reach it at all — even at every maximum."
+                : " The limits are holding it back."}
+            </p>
+            {result.suggestions.length > 0 && (
+              <div className="mt-2.5 flex flex-wrap gap-1.5">
+                {result.suggestions.map((s, i) => (
+                  <button
+                    key={i}
+                    className="btn btn-sm"
+                    onClick={() => applySuggestion(s)}
+                    title={`Would close ${Math.round(s.closes)} ${s.key === "kcal" ? "kcal" : "g"}`}
+                  >
+                    {s.direction === "up" ? "Allow up to" : "Allow down to"} {s.to} g of{" "}
+                    {s.name.toLowerCase()}
+                  </button>
+                ))}
               </div>
-            );
-          })}
+            )}
+          </div>
+        )}
+
+        {/* Tabs */}
+        <div className="mt-4 flex gap-1 px-5">
+          {(
+            [
+              ["portions", "Portions"],
+              ["prep", "Meal prep"],
+            ] as const
+          ).map(([id, label]) => (
+            <button
+              key={id}
+              onClick={() => setTab(id)}
+              className={tab === id ? "btn btn-sm btn-accent" : "btn btn-sm btn-quiet"}
+            >
+              {label}
+            </button>
+          ))}
+          {tab === "portions" && (
+            <button className="btn btn-sm btn-quiet ml-auto" onClick={resetBounds}>
+              Reset limits
+            </button>
+          )}
+        </div>
+
+        {/* Body */}
+        <div className="mt-3 min-h-0 flex-1 overflow-y-auto px-5 pb-1">
+          {tab === "portions" ? (
+            draft.map((meal) => {
+              const rows = flat.map((f, gi) => ({ ...f, gi })).filter((f) => f.mealId === meal.id);
+              if (!rows.length) return null;
+              return (
+                <div key={meal.id} className="mb-5 last:mb-0">
+                  <p className="label mb-2">{meal.name}</p>
+                  <div className="space-y-1.5">
+                    {rows.map(({ it, index, gi }) => (
+                      <PortionRow
+                        key={index}
+                        it={it}
+                        from={Number(it.grams)}
+                        to={result.grams[gi]}
+                        binding={result.binding.includes(gi)}
+                        onPatch={(p) => patch(meal.id, index, p)}
+                        onRemove={() =>
+                          setDraft((ms) =>
+                            ms.map((m) =>
+                              m.id !== meal.id
+                                ? m
+                                : { ...m, ingredients: m.ingredients.filter((_, j) => j !== index) }
+                            )
+                          )
+                        }
+                      />
+                    ))}
+                  </div>
+                </div>
+              );
+            })
+          ) : (
+            <PrepGuide
+              volume={volume}
+              fillers={fillers}
+              meals={draft}
+              onAdd={addFiller}
+            />
+          )}
         </div>
 
         {/* Footer */}
-        <div className="flex gap-2 px-5 pb-5 pt-4">
+        <div className="flex gap-2 border-t border-[#1c1f25] px-5 pb-5 pt-4">
           <button className="btn flex-1" onClick={onClose}>
             Cancel
           </button>
@@ -198,6 +305,211 @@ export function RecalculateDialog({
           </button>
         </div>
       </div>
+    </div>
+  );
+}
+
+/* -------------------------------------------------------------------- */
+
+function PortionRow({
+  it,
+  from,
+  to,
+  binding,
+  onPatch,
+  onRemove,
+}: {
+  it: BoundedItem;
+  from: number;
+  to: number;
+  binding: boolean;
+  onPatch: (p: Partial<BoundedItem>) => void;
+  onRemove: () => void;
+}) {
+  const b = boundsFor(it);
+  const unit = unitOf(it);
+  const smart = smartBounds(it.name, from, it);
+  const custom = it.min_grams != null || it.max_grams != null;
+  const delta = to - from;
+
+  return (
+    <div className="sunk px-3 py-2">
+      <div className="flex flex-wrap items-center gap-2">
+        <button
+          title={it.locked ? "Locked — this portion won't move" : "Lock this portion"}
+          onClick={() => onPatch({ locked: !it.locked })}
+          className="shrink-0 rounded-lg p-1 transition hover:bg-white/5"
+          style={{ color: it.locked ? "var(--color-accent)" : "#454b57" }}
+        >
+          <LockIcon open={!it.locked} />
+        </button>
+
+        <span
+          className="min-w-0 flex-1 basis-[8rem] truncate text-sm font-medium"
+          style={it.locked ? { color: "var(--color-mut)" } : undefined}
+        >
+          {it.name}
+        </span>
+
+        <span className="num ml-auto text-sm text-[#545b68]">{Math.round(from)}</span>
+        <span className="text-[#454b57]">→</span>
+        <span
+          className="num w-14 text-right text-sm"
+          style={{
+            color:
+              Math.abs(delta) < 0.5
+                ? "var(--color-mut)"
+                : delta > 0
+                  ? "var(--color-accent)"
+                  : "var(--color-fat)",
+          }}
+        >
+          {Math.round(to)}g
+        </span>
+
+        <span className="flex shrink-0 items-center gap-1">
+          <input
+            type="number"
+            title="Smallest portion you'd accept"
+            className="field w-[3.9rem] px-1.5 py-1 text-right text-xs"
+            value={it.min_grams ?? Math.round(b.min)}
+            disabled={it.locked}
+            onChange={(e) => onPatch({ min_grams: Number(e.target.value) })}
+          />
+          <span className="text-xs text-[#454b57]">–</span>
+          <input
+            type="number"
+            title="Largest portion you'd accept"
+            className="field w-[3.9rem] px-1.5 py-1 text-right text-xs"
+            value={it.max_grams ?? Math.round(b.max)}
+            disabled={it.locked}
+            onChange={(e) => onPatch({ max_grams: Number(e.target.value) })}
+          />
+        </span>
+
+        <button
+          className="px-1 text-[#4a505c] transition hover:text-[var(--color-fat)]"
+          title="Take this out of the plan"
+          onClick={onRemove}
+        >
+          ✕
+        </button>
+      </div>
+
+      {/* What the app knows about this food, and why the band is what it is. */}
+      <div className="mt-1.5 flex flex-wrap items-center gap-x-3 gap-y-1 pl-8 text-[0.68rem] text-[#5b6270]">
+        <span>{smart.profile.spec.label.toLowerCase()}</span>
+        {unit && (
+          <span style={{ color: "var(--color-protein)" }}>
+            {(to / unit.grams).toFixed(1).replace(/\.0$/, "")} {unit.name}
+            {to / unit.grams === 1 ? "" : "s"} · whole units only
+          </span>
+        )}
+        {smart.profile.rawToCooked !== 1 && (
+          <span>
+            ≈ {Math.round(to * smart.profile.rawToCooked)} g cooked
+          </span>
+        )}
+        {binding && !it.locked && (
+          <span style={{ color: "var(--color-carbs)" }}>at its limit</span>
+        )}
+        {custom && !it.locked && (
+          <button
+            className="underline decoration-dotted"
+            onClick={() => onPatch({ min_grams: null, max_grams: null })}
+          >
+            reset to suggested ({Math.round(smart.min)}–{Math.round(smart.max)} g)
+          </button>
+        )}
+      </div>
+    </div>
+  );
+}
+
+function PrepGuide({
+  volume,
+  fillers,
+  meals,
+  onAdd,
+}: {
+  volume: ReturnType<typeof dayVolume>;
+  fillers: ReturnType<typeof fillerSuggestions>;
+  meals: Meal[];
+  onAdd: (name: string, grams: number, mealId: number) => void;
+}) {
+  const [mealId, setMealId] = useState<number>(meals[0]?.id ?? 0);
+
+  return (
+    <div className="space-y-4 pb-2">
+      <div className="sunk px-4 py-3.5">
+        <p className="label">How much food this actually is</p>
+        <p className="mt-2 text-sm leading-relaxed">{volumeHeadline(volume)}</p>
+        <p className="mt-2 text-xs leading-relaxed text-[var(--color-mut)]">
+          Energy density is the number that decides whether a day fills you up. Under about
+          150 kcal per 100 g you'll finish the day full; over 250 and you'll be hungry on the
+          same calories.
+        </p>
+      </div>
+
+      {volume.meals.map((m) => (
+        <div key={m.name} className="sunk px-4 py-3">
+          <div className="flex items-baseline gap-2">
+            <p className="mr-auto text-sm font-semibold">{m.name}</p>
+            <span className="num text-sm" style={{ color: "var(--color-accent)" }}>
+              {Math.round(m.cookedGrams)} g
+            </span>
+            <span className="text-xs text-[var(--color-mut)]">
+              {Math.round(m.kcalPer100g)} kcal/100g
+            </span>
+          </div>
+          <p className="mt-1 text-xs" style={{ color: "var(--color-mut)" }}>
+            {m.verdict} — {m.blurb}
+          </p>
+          {m.notes.length > 0 && (
+            <ul className="mt-2 space-y-0.5 text-xs text-[#5b6270]">
+              {m.notes.slice(0, 4).map((n, i) => (
+                <li key={i}>· {n}</li>
+              ))}
+            </ul>
+          )}
+        </div>
+      ))}
+
+      {fillers.length > 0 && (
+        <div className="sunk px-4 py-3.5">
+          <p className="label">Calories spare</p>
+          <p className="mt-2 text-xs leading-relaxed text-[var(--color-mut)]">
+            There's room left in the day. These add the most food for the fewest calories — pick a
+            meal and add one, and the fit will re-run around it.
+          </p>
+          <div className="mt-3">
+            <select
+              className="field w-full text-sm"
+              value={mealId}
+              onChange={(e) => setMealId(Number(e.target.value))}
+            >
+              {meals.map((m) => (
+                <option key={m.id} value={m.id}>
+                  Add to {m.name}
+                </option>
+              ))}
+            </select>
+          </div>
+          <div className="mt-2 space-y-1.5">
+            {fillers.map((f) => (
+              <div key={f.name} className="flex items-center gap-2">
+                <span className="mr-auto text-sm">
+                  {f.grams} g {f.name.toLowerCase()}
+                </span>
+                <span className="text-xs text-[var(--color-mut)]">{f.reason}</span>
+                <button className="btn btn-sm" onClick={() => onAdd(f.name, f.grams, mealId)}>
+                  Add
+                </button>
+              </div>
+            ))}
+          </div>
+        </div>
+      )}
     </div>
   );
 }

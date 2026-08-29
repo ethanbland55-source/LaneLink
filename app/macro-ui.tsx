@@ -7,6 +7,7 @@ export const MACRO_COLOR = {
   protein: "var(--color-protein)",
   carbs: "var(--color-carbs)",
   fat: "var(--color-fat)",
+  fibre: "var(--color-fibre)",
 } as const;
 
 export type MacroKey = keyof typeof MACRO_COLOR;
@@ -16,6 +17,7 @@ export const MACRO_LABEL: Record<MacroKey, string> = {
   protein: "Protein",
   carbs: "Carbs",
   fat: "Fat",
+  fibre: "Fibre",
 };
 
 /** A flat progress track. No glow, no gradient — just the fill. */
@@ -51,12 +53,26 @@ export function Bar({
  * One macro, one big number. The gram figure leads; the target is a quiet
  * denominator underneath rather than competing for attention.
  */
-export function MacroTile({ k, eaten, target }: { k: MacroKey; eaten: number; target: number }) {
-  const over = eaten > target * 1.02;
+export function MacroTile({
+  k,
+  eaten,
+  target,
+  /** Fibre has no upside to overshooting, so it never turns red. */
+  overIsFine = false,
+}: {
+  k: MacroKey;
+  eaten: number;
+  target: number;
+  overIsFine?: boolean;
+}) {
+  const over = !overIsFine && eaten > target * 1.02;
   return (
     <div className="card px-4 py-3.5">
       <p className="label">{MACRO_LABEL[k]}</p>
-      <p className="num mt-2 text-[1.9rem]" style={{ color: over ? "var(--color-fat)" : MACRO_COLOR[k] }}>
+      <p
+        className="num mt-2 text-[1.9rem]"
+        style={{ color: over ? "var(--color-fat)" : MACRO_COLOR[k] }}
+      >
         {Math.round(eaten)}
         <span className="ml-0.5 text-sm font-semibold text-[var(--color-mut)]">g</span>
       </p>
@@ -69,13 +85,71 @@ export function MacroTile({ k, eaten, target }: { k: MacroKey; eaten: number; ta
 }
 
 /** Compact macro summary for a meal row. */
-export function MacroChips({ m }: { m: Macros }) {
+export function MacroChips({ m, fibre = false }: { m: Macros; fibre?: boolean }) {
   return (
     <div className="flex flex-wrap items-center gap-x-3 gap-y-1 text-xs font-semibold tabular-nums">
       <span style={{ color: MACRO_COLOR.kcal }}>{Math.round(m.kcal)} kcal</span>
       <span style={{ color: MACRO_COLOR.protein }}>{m.protein.toFixed(0)}P</span>
       <span style={{ color: MACRO_COLOR.carbs }}>{m.carbs.toFixed(0)}C</span>
       <span style={{ color: MACRO_COLOR.fat }}>{m.fat.toFixed(0)}F</span>
+      {fibre && m.fibre > 0 && (
+        <span style={{ color: MACRO_COLOR.fibre }}>{m.fibre.toFixed(0)} fibre</span>
+      )}
+    </div>
+  );
+}
+
+/** A pill row. One choice, always visible — no dropdown to open on a phone. */
+export function Segmented<T extends string | number>({
+  options,
+  value,
+  onChange,
+  size = "md",
+}: {
+  options: { value: T; label: string; hint?: string }[];
+  value: T;
+  onChange: (v: T) => void;
+  size?: "sm" | "md";
+}) {
+  return (
+    <div className="flex flex-wrap gap-1.5">
+      {options.map((o) => {
+        const active = o.value === value;
+        return (
+          <button
+            key={String(o.value)}
+            type="button"
+            title={o.hint}
+            onClick={() => onChange(o.value)}
+            className={`${active ? "btn btn-accent" : "btn"} ${size === "sm" ? "btn-sm" : ""}`}
+          >
+            {o.label}
+          </button>
+        );
+      })}
+    </div>
+  );
+}
+
+/** Small labelled statistic in a sunken well. */
+export function Stat({
+  label,
+  value,
+  sub,
+  accent,
+}: {
+  label: string;
+  value: string | number;
+  sub?: string;
+  accent?: boolean;
+}) {
+  return (
+    <div className="sunk px-3 py-3">
+      <p className="label">{label}</p>
+      <p className="num mt-1.5 text-xl" style={accent ? { color: "var(--color-accent)" } : undefined}>
+        {typeof value === "number" ? value.toLocaleString() : value}
+      </p>
+      {sub && <p className="mt-1 text-[0.7rem] text-[var(--color-mut)]">{sub}</p>}
     </div>
   );
 }
