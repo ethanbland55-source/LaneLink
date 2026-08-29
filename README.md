@@ -6,7 +6,8 @@ Three screens:
   it pre-filled from your plan, editable gram amounts, then Confirm. Arrows step back
   through previous days.
 - **`/plan` — Plan & Settings.** Your body stats and goal (which calculate the targets),
-  your training week, and your meal plan: meals → ingredients → per-100g macros.
+  your week and the day types that make it up, and your meal plan: meals → ingredients
+  → per-100g macros.
 - **`/shop` — Shopping list.** The plan played forward over however many days you buy
   for, totalled up, rounded to real pack sizes and grouped by aisle.
 
@@ -39,7 +40,10 @@ Local dev: copy `.env.example` to `.env.local`, fill in `DATABASE_URL`, then
   percentage, because it works off the tissue that actually burns the calories.
   Without one it falls back to Mifflin-St Jeor:
   `10×kg + 6.25×cm − 5×age (+5 male / −161 female)`.
-- **Maintenance (TDEE)** — BMR × your activity multiplier.
+- **A day's energy** — a baseline for everything that isn't training
+  (BMR × a modest multiplier: sitting, walking about, lectures) plus the cost of
+  the sessions you actually did that day. **Maintenance** is the average of those
+  across your week.
 - **Target** — maintenance −20% cutting, +12% bulking, or unchanged maintaining.
   You can also type a manual kcal figure, which is then used as your weekly average.
 - **Protein** — g/kg bodyweight, fixed; this is the one you don't move.
@@ -49,17 +53,50 @@ Local dev: copy `.env.example` to `.env.local`, fill in `DATABASE_URL`, then
   hard 0.45 g/kg.
 - **Fibre** — 14 g per 1000 kcal by default, minimum 25 g.
 
-### The training week
+### Your week
 
-A swim week isn't flat, so each weekday can be labelled **rest / easy / session /
-double**, and each type gets its own calorie number. Protein and fat stay put and the
-difference lands almost entirely on carbohydrate, which is where you want it.
+A week isn't flat, and it isn't four fixed shapes either. You describe the kinds of day
+you have — **day types** — and each one is just a name and a list of sessions:
 
-The percentages are **normalised across the week**: whatever spread you set, the
-seven-day average still comes out at exactly your goal figure. Eating 340 kcal more on
-a Saturday double doesn't quietly turn a maintenance phase into a surplus — it borrows
-from Sunday. The Plan page shows each day type's number as you drag the sliders, and
-Today lets you switch a single day if the session got cancelled.
+| | |
+| --- | --- |
+| Rest | nothing |
+| Gym only | gym 60 min — the pool's shut |
+| Swim only | swim 90 min |
+| Swim + gym | swim 90 min + gym 45 min |
+| Double swim | swim 90 min + swim 75 min |
+
+Those are the ones a new account starts with. Rename them, add sessions, delete the
+ones you don't use, add "Meet day" or "Bike commute" — nothing in the app cares what
+they're called. Then map each weekday to one, and Today lets you switch a single day
+when a session gets cancelled without touching the week.
+
+**Meals belong to day types.** Any meal can be limited to the day types it appears on,
+so the pre-swim carb top-up simply isn't there on a rest day — on Today it isn't
+offered, on the Plan page it's dimmed, and the shopping list only counts it on the days
+it's actually eaten.
+
+**Sessions decide the calories.** Each session is an activity at an intensity for a
+number of minutes, costed with MET values from the Compendium of Physical Activities,
+**net of resting metabolism** — the standard `MET × 3.5 × kg / 200` formula is a gross
+figure that includes the calories you'd have burned sitting still for that hour, and
+your baseline already counts those. Subtracting the 1 MET you'd have spent anyway is
+worth about 90 kcal on a two-hour training day, in the direction that stops the number
+flattering you.
+
+**And the week still balances.** Whatever spread the sessions produce, every day is
+scaled by a single factor chosen so the seven mapped days average out to exactly your
+goal. Eating 900 kcal more on a Saturday double doesn't quietly turn a maintenance
+phase into a surplus — it borrows from Sunday. Pin any day type to a fixed number and
+it drops out of the balancing while the rest still make the week add up.
+
+MET values are population averages, not measurements of you. Treat the result as a
+starting point and adjust the baseline multiplier once you've watched your weight for
+three or four weeks.
+
+An existing database keeps its old flat-multiplier numbers until you press
+**Switch to session-based energy** on the Plan page, so upgrading never silently moves
+your targets.
 
 ## Recalculate portions
 
@@ -144,9 +181,13 @@ calories and adds them straight into a meal, re-fitting around them.
 Set how many days you're buying for — 3, 5, 7, 10, whatever — and it plays the plan
 forward day by day from your shop day and totals every ingredient.
 
-- **Day types are respected.** A double day needs more food than a rest day, so each
-  day in the window is scaled by that day's own multiplier rather than assuming seven
-  identical days. Meals restricted to certain day types only count on those days.
+- **Day types are respected.** Each day in the window is looked up against your week,
+  and a meal limited to certain day types is only counted on those days — five swim
+  days at one bagel each is five bagels, not seven. The list buys the plan exactly as
+  written and never quietly scales portions up to meet a target: a bigger day is meant
+  to be handled by the meals you put on it, and scaling on top of that would count the
+  difference twice. If a day type's meals don't add up to its target, that's a warning
+  before you shop rather than a silent adjustment.
 - **You buy packets, not grams.** 1,400 g of chicken is five 300 g packs; 735 g of
   banana is seven bananas. Amounts round up to real pack sizes and the leftover is
   shown.

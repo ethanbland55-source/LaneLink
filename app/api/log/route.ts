@@ -16,13 +16,14 @@ export async function GET(req: Request) {
 /** Add a meal to today's log, pre-filled from the plan. */
 export async function POST(req: Request) {
   await ensureSchema();
-  const { day, meal_id, meal_name, items, day_type } = await req.json();
+  const { day, meal_id, meal_name, items, day_type_id } = await req.json();
   const t = totalFor((items ?? []) as Item[]);
+  const dt = Number(day_type_id);
   const rows = await sql`
-    insert into log_entries (day, meal_id, meal_name, confirmed, kcal, protein, carbs, fat, items, day_type)
+    insert into log_entries (day, meal_id, meal_name, confirmed, kcal, protein, carbs, fat, items, day_type_id)
     values (${day}, ${meal_id ?? null}, ${meal_name}, false,
             ${t.kcal}, ${t.protein}, ${t.carbs}, ${t.fat},
-            ${JSON.stringify(items ?? [])}::jsonb, ${day_type ?? null})
+            ${JSON.stringify(items ?? [])}::jsonb, ${Number.isFinite(dt) && dt > 0 ? dt : null})
     returning *`;
   return NextResponse.json(rows[0]);
 }

@@ -4,26 +4,28 @@ import { useCallback, useEffect, useMemo, useState } from "react";
 import Link from "next/link";
 import { Bar, MacroChips, MacroTile, Segmented } from "./macro-ui";
 import {
-  DAY_TYPES,
   addDays,
+  buildWeekPlan,
   dayKey,
-  dayTypeFor,
+  dayTypeIdFor,
   itemMacros,
+  normaliseDayType,
   sumMacros,
-  targets,
+  targetsFor,
   totalFor,
   type DayType,
   type Item,
-  type Macros,
   type Profile,
 } from "@/lib/nutrition";
+import { activityLabel } from "@/lib/activities";
+import { appliesOn } from "@/lib/shopping";
 import { normaliseProfile } from "@/lib/profile";
 
 type Meal = {
   id: number;
   name: string;
   times_per_day?: number;
-  day_types?: DayType[] | null;
+  day_type_ids?: number[] | null;
   ingredients: Item[];
 };
 type Entry = {
@@ -39,23 +41,26 @@ const OVERRIDE_KEY = "mealhub.dayType";
 export default function TodayPage() {
   const [profile, setProfile] = useState<Profile | null>(null);
   const [meals, setMeals] = useState<Meal[]>([]);
+  const [dayTypes, setDayTypes] = useState<DayType[]>([]);
   const [entries, setEntries] = useState<Entry[]>([]);
   const [day, setDay] = useState(dayKey());
-  const [override, setOverride] = useState<DayType | null>(null);
+  const [override, setOverride] = useState<number | null>(null);
   const [followToday, setFollowToday] = useState(true);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
 
   const load = useCallback(async (d: string) => {
     try {
-      const [p, m, l] = await Promise.all([
+      const [p, m, l, dt] = await Promise.all([
         fetch("/api/profile").then((r) => r.json()),
         fetch("/api/meals").then((r) => r.json()),
         fetch(`/api/log?day=${d}`).then((r) => r.json()),
+        fetch("/api/day-types").then((r) => r.json()),
       ]);
       setProfile(normaliseProfile(p));
       setMeals(m);
       setEntries(l);
+      setDayTypes((dt as any[]).map((x, i) => normaliseDayType(x, i)));
       setError(null);
     } catch {
       setError("Can't reach the database.");
@@ -73,16 +78,16 @@ export default function TodayPage() {
   useEffect(() => {
     try {
       const raw = localStorage.getItem(`${OVERRIDE_KEY}:${day}`);
-      setOverride(raw ? (raw as DayType) : null);
+      setOverride(raw ? Number(raw) || null : null);
     } catch {
       setOverride(null);
     }
   }, [day]);
 
-  function chooseDayType(dt: DayType) {
+  function chooseDayType(dt: number) {
     setOverride(dt);
     try {
-      localStorage.setItem(`${OVERRIDE_KEY}:${day}`, dt);
+      localStorage.setItem(`${OVERRIDE_KEY}:${day}`, String(dt));
     } catch {
       /* private mode — the choice just won't survive a refresh */
     }
@@ -99,14 +104,19 @@ export default function TodayPage() {
     return () => clearInterval(t);
   }, [followToday]);
 
-  const dayType: DayType = useMemo(
-    () => override ?? (profile ? dayTypeFor(profile, day) : "session"),
-    [override, profile, day]
+  const plan = useMemo(
+    () => (profile ? buildWeekPlan(profile, dayTypes) : null),
+    [profile, dayTypes]
   );
 
+  const dayTypeId = useMemo(() => {
+    if (!plan) return 0;
+    return override && plan.byId[override] ? override : dayTypeIdFor(plan, day);
+  }, [override, plan, day]);
+
   const target = useMemo(
-    () => (profile ? targets(profile, dayType) : null),
-    [profile, dayType]
+    () => (plan ? targetsFor(plan, dayTypeId) : null),
+    [plan, dayTypeId]
   );
 
   const eaten = useMemo(
@@ -115,11 +125,8 @@ export default function TodayPage() {
   );
 
   const suggested = useMemo(
-    () =>
-      meals.filter(
-        (m) => !m.day_types || m.day_types.length === 0 || m.day_types.includes(dayType)
-      ),
-    [meals, dayType]
+    () => meals.filter((m) => appliesOn(m, dayTypeId, dayTypes.length)),
+    [meals, dayTypeId, dayTypes.length]
   );
 
   /** Step a day back or forward; stop auto-rollover unless we're on today. */
@@ -139,7 +146,7 @@ export default function TodayPage() {
         day,
         meal_id: meal.id,
         meal_name: meal.name,
-        day_type: dayType,
+        day_type_id: dayTypeId,
         items: meal.ingredients.map(stripItem),
       }),
     });
@@ -178,7 +185,7 @@ export default function TodayPage() {
   }
 
   if (loading) return <p className="py-24 text-center text-sm text-[var(--color-mut)]">Loading…</p>;
-  if (!profile || !target) {
+  if (!profile || !target || !plan) {
     return (
       <p className="py-24 text-center text-sm text-[var(--color-fat)]">
         {error ?? "Something went wrong."}
@@ -238,22 +245,46 @@ export default function TodayPage() {
           <Bar value={eaten.kcal} target={target.kcal} color="var(--color-accent)" height={8} />
         </div>
 
-        {profile.cycling && (
+        {profile.cycling && plan.dayTypes.length > 0 && (
           <div className="mt-5">
-            <p className="label mb-2">Today's training</p>
+            <p className="label mb-2">Today</p>
             <Segmented
               size="sm"
-              value={dayType}
+              value={dayTypeId}
               onChange={chooseDayType}
-              options={DAY_TYPES.map((d) => ({ value: d.value, label: d.label, hint: d.hint }))}
+              options={plan.dayTypes.map((d) => ({ value: d.id, label: d.name }))}
             />
-            <p className="mt-2 text-xs text-[var(--color-mut)]">
-              {target.multiplier === 1
-                ? "Flat target."
-                : `${target.multiplier > 1 ? "+" : ""}${Math.round(
-                    (target.multiplier - 1) * 100
-                  )}% on your ${target.base.toLocaleString()} kcal average.`}
+            <p className="mt-2 text-xs leading-relaxed text-[var(--color-mut)]">
+              {target.sessions.length > 0
+                ? target.sessions
+                    .map((x) => `${activityLabel(x)}, ${x.minutes} min`)
+                    .join(" · ")
+                : "Nothing on."}
+              {Math.abs(target.multiplier - 1) > 0.005 && (
+                <>
+                  {" — "}
+                  {target.multiplier > 1 ? "+" : ""}
+                  {Math.round((target.multiplier - 1) * 100)}% on your{" "}
+                  {plan.goalKcal.toLocaleString()} kcal average
+                  {target.sessionKcal > 0 && `, ${target.sessionKcal} kcal of training`}.
+                </>
+              )}
             </p>
+            {override != null && override !== dayTypeIdFor(plan, day) && (
+              <button
+                className="btn btn-sm btn-quiet mt-2"
+                onClick={() => {
+                  setOverride(null);
+                  try {
+                    localStorage.removeItem(`${OVERRIDE_KEY}:${day}`);
+                  } catch {
+                    /* nothing to clean up */
+                  }
+                }}
+              >
+                Back to the usual {targetsFor(plan, dayTypeIdFor(plan, day)).name.toLowerCase()}
+              </button>
+            )}
           </div>
         )}
       </section>
@@ -323,7 +354,7 @@ export default function TodayPage() {
             <p className="mt-3 text-xs text-[var(--color-mut)]">
               {meals.length - suggested.length} meal
               {meals.length - suggested.length === 1 ? "" : "s"} hidden — not part of a{" "}
-              {DAY_TYPES.find((d) => d.value === dayType)?.label.toLowerCase()} day.
+              {target.name.toLowerCase()} day.
             </p>
           )}
         </section>

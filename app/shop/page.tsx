@@ -4,7 +4,13 @@ import { useCallback, useEffect, useMemo, useState } from "react";
 import Link from "next/link";
 import { Stat } from "../macro-ui";
 import { buildShoppingList, shopListText, type PlanMeal, type ShopLine } from "@/lib/shopping";
-import { DAY_TYPES, dayKey, type DayType, type Profile } from "@/lib/nutrition";
+import {
+  buildWeekPlan,
+  dayKey,
+  normaliseDayType,
+  type DayType,
+  type Profile,
+} from "@/lib/nutrition";
 import { normaliseProfile, SHOP_DAY_OPTIONS } from "@/lib/profile";
 
 type PantryRow = { name: string; grams: number };
@@ -13,6 +19,7 @@ export default function ShopPage() {
   const [profile, setProfile] = useState<Profile | null>(null);
   const [meals, setMeals] = useState<PlanMeal[]>([]);
   const [pantry, setPantry] = useState<PantryRow[]>([]);
+  const [dayTypes, setDayTypes] = useState<DayType[]>([]);
   const [checked, setChecked] = useState<Set<string>>(new Set());
   const [days, setDays] = useState<number | null>(null);
   const [start, setStart] = useState(dayKey());
@@ -23,15 +30,17 @@ export default function ShopPage() {
   useEffect(() => {
     (async () => {
       try {
-        const [p, m, pan, ch] = await Promise.all([
+        const [p, m, pan, ch, dt] = await Promise.all([
           fetch("/api/profile").then((r) => r.json()),
           fetch("/api/meals").then((r) => r.json()),
           fetch("/api/pantry").then((r) => r.json()),
           fetch("/api/checks").then((r) => r.json()),
+          fetch("/api/day-types").then((r) => r.json()),
         ]);
         const prof = normaliseProfile(p);
         setProfile(prof);
         setMeals(m);
+        setDayTypes((dt as any[]).map((x, i) => normaliseDayType(x, i)));
         setPantry(pan);
         setChecked(new Set(ch));
         setDays(prof.shop_days);
@@ -43,14 +52,19 @@ export default function ShopPage() {
     })();
   }, []);
 
+  const plan = useMemo(
+    () => (profile ? buildWeekPlan(profile, dayTypes) : null),
+    [profile, dayTypes]
+  );
+
   const list = useMemo(() => {
-    if (!profile) return null;
-    return buildShoppingList(meals, profile, {
+    if (!profile || !plan) return null;
+    return buildShoppingList(meals, profile, plan, {
       days: days ?? profile.shop_days,
       startDay: start,
       pantry,
     });
-  }, [meals, profile, days, start, pantry]);
+  }, [meals, profile, plan, days, start, pantry]);
 
   const say = useCallback((msg: string) => {
     setFlash(msg);
@@ -184,13 +198,13 @@ export default function ShopPage() {
           />
         </label>
 
-        {profile.cycling && (
+        {profile.cycling && list.dayMix.length > 0 && (
           <p className="mt-3 text-xs leading-relaxed text-[var(--color-mut)]">
             This window is{" "}
-            {DAY_TYPES.filter((d) => list.dayTypeCounts[d.value as DayType] > 0)
-              .map((d) => `${list.dayTypeCounts[d.value as DayType]} ${d.label.toLowerCase()}`)
-              .join(", ")}
-            . Heavier days are scaled up, so the quantities already account for it.
+            {list.dayMix.map((d) => `${d.count} × ${d.name.toLowerCase()}`).join(", ")}.
+{" "}
+            The list buys your plan exactly as written — the meals you've limited to certain day
+            types are only counted on those days.
           </p>
         )}
 

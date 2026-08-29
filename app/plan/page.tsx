@@ -7,19 +7,27 @@ import { Bar, MACRO_COLOR, MACRO_LABEL, Segmented, Stat, type MacroKey } from ".
 import { offTarget, type BoundedItem } from "@/lib/optimise";
 import { dayVolume, volumeHeadline } from "@/lib/prep";
 import { profileFor } from "@/lib/foods";
+import { appliesOn } from "@/lib/shopping";
+import {
+  ACTIVITIES,
+  BASE_ACTIVITY_LEVELS,
+  activityDef,
+  newSession,
+  sessionKcal,
+  type Session,
+} from "@/lib/activities";
 import {
   ACTIVITY_LEVELS,
-  DAY_TYPES,
   GOALS,
-  METS,
   WEEKDAYS,
   WEEKDAY_LABEL,
   ageFromDob,
+  buildWeekPlan,
   itemMacros,
   macroConsistency,
-  sessionKcal,
+  normaliseDayType,
   sumMacros,
-  targets,
+  targetsFor,
   totalFor,
   type DayType,
   type Goal,
@@ -32,7 +40,7 @@ type Meal = {
   id: number;
   name: string;
   times_per_day: number;
-  day_types: DayType[] | null;
+  day_type_ids: number[] | null;
   ingredients: BoundedItem[];
 };
 
@@ -54,47 +62,54 @@ const BAR_KEYS: MacroKey[] = ["kcal", "protein", "carbs", "fat", "fibre"];
 export default function PlanPage() {
   const [profile, setProfile] = useState<Profile | null>(null);
   const [meals, setMeals] = useState<Meal[]>([]);
+  const [dayTypes, setDayTypes] = useState<DayType[]>([]);
   const [saved, setSaved] = useState<string | null>(null);
   const [loading, setLoading] = useState(true);
   const [showRecalc, setShowRecalc] = useState(false);
-  const [planFor, setPlanFor] = useState<DayType>("session");
+  const [planFor, setPlanFor] = useState<number>(0);
   const [advanced, setAdvanced] = useState(false);
 
   useEffect(() => {
     (async () => {
-      const [p, m] = await Promise.all([
+      const [p, m, dt] = await Promise.all([
         fetch("/api/profile").then((r) => r.json()),
         fetch("/api/meals").then((r) => r.json()),
+        fetch("/api/day-types").then((r) => r.json()),
       ]);
-      const prof = normaliseProfile(p);
-      setProfile(prof);
+      setProfile(normaliseProfile(p));
       setMeals(
         (m as any[]).map((x) => ({
           ...x,
           times_per_day: Number(x.times_per_day ?? 1),
-          day_types: x.day_types ?? null,
+          day_type_ids: x.day_type_ids ?? null,
         }))
       );
+      setDayTypes((dt as any[]).map((x, i) => normaliseDayType(x, i)));
       setLoading(false);
     })();
   }, []);
 
-  const target = useMemo(
-    () => (profile ? targets(profile, profile.cycling ? planFor : "session") : null),
-    [profile, planFor]
+  const plan = useMemo(
+    () => (profile ? buildWeekPlan(profile, dayTypes) : null),
+    [profile, dayTypes]
   );
 
-  /** The plan as eaten on this kind of day: meals that apply, times each. */
+  // Default to whichever day type the week uses most — usually the one you
+  // want to be looking at.
+  useEffect(() => {
+    if (!plan || planFor) return;
+    const counts = new Map<number, number>();
+    for (const d of WEEKDAYS) counts.set(plan.week[d], (counts.get(plan.week[d]) ?? 0) + 1);
+    const best = [...counts.entries()].sort((a, b) => b[1] - a[1])[0];
+    setPlanFor(best ? best[0] : plan.order[0] ?? 0);
+  }, [plan, planFor]);
+
+  const target = useMemo(() => (plan ? targetsFor(plan, planFor) : null), [plan, planFor]);
+
   const activeMeals = useMemo(
     () =>
-      meals.filter(
-        (m) =>
-          !profile?.cycling ||
-          !m.day_types ||
-          m.day_types.length === 0 ||
-          m.day_types.includes(planFor)
-      ),
-    [meals, profile, planFor]
+      meals.filter((m) => !profile?.cycling || appliesOn(m, planFor, dayTypes.length)),
+    [meals, profile, planFor, dayTypes.length]
   );
 
   const planTotal = useMemo(
@@ -124,8 +139,76 @@ export default function PlanPage() {
       headers: { "content-type": "application/json" },
       body: JSON.stringify(body),
     });
-    flash("Targets saved");
+    flash("Saved");
   }
+
+  /* ---- day types ---- */
+
+  function patchDayType(id: number, patch: Partial<DayType>) {
+    setDayTypes((ts) => ts.map((t) => (t.id === id ? { ...t, ...patch } : t)));
+  }
+
+  async function saveDayType(t: DayType) {
+    await fetch("/api/day-types", {
+      method: "PUT",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify(t),
+    });
+    flash(`${t.name} saved`);
+  }
+
+  async function addDayType() {
+    const res = await fetch("/api/day-types", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ name: "New day type" }),
+    });
+    const created = normaliseDayType(await res.json(), dayTypes.length);
+    setDayTypes((ts) => [...ts, created]);
+  }
+
+  async function duplicateDayType(t: DayType) {
+    const res = await fetch("/api/day-types", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ name: `${t.name} copy` }),
+    });
+    const created = normaliseDayType(await res.json(), dayTypes.length);
+    const copy = { ...created, sessions: t.sessions, fixed_kcal: t.fixed_kcal };
+    await fetch("/api/day-types", {
+      method: "PUT",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify(copy),
+    });
+    setDayTypes((ts) => [...ts, copy]);
+  }
+
+  async function deleteDayType(t: DayType) {
+    if (dayTypes.length <= 1) return;
+    if (!confirm(`Delete "${t.name}"? Days using it will fall back to another type.`)) return;
+    const res = await fetch(`/api/day-types?id=${t.id}`, { method: "DELETE" });
+    if (!res.ok) {
+      flash("Couldn't delete that one");
+      return;
+    }
+    setDayTypes((ts) => ts.filter((x) => x.id !== t.id));
+    setMeals((ms) =>
+      ms.map((m) => ({
+        ...m,
+        day_type_ids: m.day_type_ids ? m.day_type_ids.filter((i) => i !== t.id) : null,
+      }))
+    );
+    setProfile((p) => {
+      if (!p) return p;
+      const fallback = dayTypes.find((x) => x.id !== t.id)?.id ?? 0;
+      const week = { ...p.week };
+      for (const d of WEEKDAYS) if (week[d] === t.id) week[d] = fallback;
+      return { ...p, week };
+    });
+    if (planFor === t.id) setPlanFor(0);
+  }
+
+  /* ---- meals ---- */
 
   async function addMeal() {
     const res = await fetch("/api/meals", {
@@ -134,7 +217,7 @@ export default function PlanPage() {
       body: JSON.stringify({ name: `Meal ${meals.length + 1}` }),
     });
     const created = await res.json();
-    setMeals((m) => [...m, { ...created, times_per_day: 1, day_types: null, ingredients: [] }]);
+    setMeals((m) => [...m, { ...created, times_per_day: 1, day_type_ids: null, ingredients: [] }]);
   }
 
   async function persist(meal: Meal) {
@@ -189,13 +272,13 @@ export default function PlanPage() {
     setTimeout(() => setSaved(null), 2000);
   }
 
-  if (loading || !profile || !target) {
+  if (loading || !profile || !plan || !target) {
     return <p className="py-24 text-center text-sm text-[var(--color-mut)]">Loading…</p>;
   }
 
   const diff = Math.round(planTotal.kcal - target.kcal);
   const dayLabel = profile.cycling
-    ? `${DAY_TYPES.find((d) => d.value === planFor)?.label} day · ${target.kcal.toLocaleString()} kcal`
+    ? `${target.name} · ${target.kcal.toLocaleString()} kcal`
     : `${target.kcal.toLocaleString()} kcal`;
 
   return (
@@ -219,14 +302,14 @@ export default function PlanPage() {
 
       {/* Target vs plan */}
       <section className="card px-5 py-6">
-        {profile.cycling && (
+        {profile.cycling && plan.dayTypes.length > 0 && (
           <div className="mb-5">
             <p className="label mb-2">Planning for a</p>
             <Segmented
               size="sm"
               value={planFor}
               onChange={setPlanFor}
-              options={DAY_TYPES.map((d) => ({ value: d.value, label: d.label, hint: d.hint }))}
+              options={plan.dayTypes.map((d) => ({ value: d.id, label: d.name }))}
             />
           </div>
         )}
@@ -279,11 +362,7 @@ export default function PlanPage() {
       {/* Meals */}
       {meals.map((meal) => {
         const t = totalFor(meal.ingredients);
-        const hidden =
-          profile.cycling &&
-          meal.day_types &&
-          meal.day_types.length > 0 &&
-          !meal.day_types.includes(planFor);
+        const hidden = profile.cycling && !appliesOn(meal, planFor, dayTypes.length);
         return (
           <section
             key={meal.id}
@@ -326,24 +405,24 @@ export default function PlanPage() {
               {profile.cycling && (
                 <span className="flex flex-wrap items-center gap-1.5">
                   <span className="text-[var(--color-mut)]">On</span>
-                  {DAY_TYPES.map((d) => {
-                    const list = meal.day_types ?? [];
-                    const on = list.length === 0 || list.includes(d.value);
+                  {plan.dayTypes.map((d) => {
+                    const list = meal.day_type_ids ?? [];
+                    const on = list.length === 0 || list.includes(d.id);
                     return (
                       <button
-                        key={d.value}
+                        key={d.id}
                         className={on ? "btn btn-sm btn-accent" : "btn btn-sm"}
                         onClick={() => {
-                          const cur = list.length === 0 ? DAY_TYPES.map((x) => x.value) : list;
-                          const next = on
-                            ? cur.filter((v) => v !== d.value)
-                            : [...cur, d.value];
+                          const all = plan.dayTypes.map((x) => x.id);
+                          const cur = list.length === 0 ? all : list;
+                          const next = on ? cur.filter((v) => v !== d.id) : [...cur, d.id];
                           patchMeal(meal.id, {
-                            day_types: next.length === 0 || next.length === 4 ? null : next,
+                            day_type_ids:
+                              next.length === 0 || next.length === all.length ? null : next,
                           });
                         }}
                       >
-                        {d.label}
+                        {d.name}
                       </button>
                     );
                   })}
@@ -388,14 +467,14 @@ export default function PlanPage() {
         </button>
       </div>
 
-      {/* Training week */}
+      {/* Your week */}
       <section className="card px-5 py-5">
         <div className="flex items-center gap-3">
           <div className="mr-auto">
-            <p className="label">Training week</p>
+            <p className="label">Your week</p>
             <p className="mt-1.5 text-xs leading-relaxed text-[var(--color-mut)]">
-              Give each day its own number. The percentages are balanced across the week, so the
-              seven-day average still lands on your goal.
+              Describe the kinds of day you have, then say which is which. Calories follow the
+              training, and the seven-day average still lands on your goal.
             </p>
           </div>
           <button
@@ -408,6 +487,26 @@ export default function PlanPage() {
 
         {profile.cycling && (
           <>
+            {profile.energy_model === "flat" && (
+              <div className="mt-4 rounded-xl bg-[#2a2416] px-4 py-3 text-xs leading-relaxed text-[#ffd08a]">
+                <p>
+                  You're still on the old model — one activity multiplier, adjusted by percentages.
+                  Switching to sessions works out each day from what you actually did, which is
+                  more accurate and is what the day types below are for. Your targets will change.
+                </p>
+                <button
+                  className="btn btn-sm mt-2.5"
+                  onClick={() => {
+                    const next: Profile = { ...profile, energy_model: "sessions" as const };
+                    setProfile(next);
+                    saveProfile(next);
+                  }}
+                >
+                  Switch to session-based energy
+                </button>
+              </div>
+            )}
+
             <div className="mt-4 grid grid-cols-7 gap-1">
               {WEEKDAYS.map((d) => (
                 <div key={d} className="text-center">
@@ -415,65 +514,79 @@ export default function PlanPage() {
                     {WEEKDAY_LABEL[d]}
                   </p>
                   <select
-                    className="field w-full px-1 py-1.5 text-center text-[0.7rem]"
-                    value={profile.week[d]}
+                    className="field w-full px-1 py-1.5 text-center text-[0.68rem]"
+                    value={plan.week[d]}
                     onChange={(e) =>
-                      set("week", { ...profile.week, [d as Weekday]: e.target.value as DayType })
+                      set("week", { ...profile.week, [d as Weekday]: Number(e.target.value) })
                     }
                   >
-                    {DAY_TYPES.map((t) => (
-                      <option key={t.value} value={t.value}>
-                        {t.label}
+                    {plan.dayTypes.map((t) => (
+                      <option key={t.id} value={t.id}>
+                        {t.name}
                       </option>
                     ))}
                   </select>
+                  <p className="num mt-1 text-[0.65rem] text-[var(--color-mut)]">
+                    {targetsFor(plan, plan.week[d]).kcal}
+                  </p>
                 </div>
               ))}
             </div>
 
-            <div className="mt-4 space-y-2">
-              {DAY_TYPES.map((d) => {
-                const t = targets(profile, d.value);
-                const pct = Math.round((profile.day_adjust[d.value] ?? 0) * 100);
-                return (
-                  <div key={d.value} className="flex items-center gap-3">
-                    <span className="w-16 shrink-0 text-xs font-semibold">{d.label}</span>
-                    <input
-                      type="range"
-                      min={-30}
-                      max={30}
-                      step={1}
-                      value={pct}
-                      className="flex-1 accent-[var(--color-accent)]"
-                      onChange={(e) =>
-                        set("day_adjust", {
-                          ...profile.day_adjust,
-                          [d.value]: Number(e.target.value) / 100,
-                        })
-                      }
-                    />
-                    <span className="w-10 shrink-0 text-right text-xs tabular-nums text-[var(--color-mut)]">
-                      {pct > 0 ? "+" : ""}
-                      {pct}%
-                    </span>
-                    <span className="num w-16 shrink-0 text-right text-sm">
-                      {t.kcal.toLocaleString()}
-                    </span>
-                  </div>
-                );
-              })}
+            {profile.energy_model === "sessions" && (
+              <label className="mt-4 block">
+                <span className="label mb-1.5 block">
+                  Baseline — everything that isn't a session
+                </span>
+                <select
+                  className="field w-full"
+                  value={profile.base_activity}
+                  onChange={(e) => set("base_activity", Number(e.target.value))}
+                >
+                  {BASE_ACTIVITY_LEVELS.map((a) => (
+                    <option key={a.value} value={a.value}>
+                      {a.label} — {a.hint}
+                    </option>
+                  ))}
+                </select>
+              </label>
+            )}
+
+            <div className="mt-5 space-y-2">
+              {plan.dayTypes.map((t) => (
+                <DayTypeCard
+                  key={t.id}
+                  dt={t}
+                  target={targetsFor(plan, t.id)}
+                  weightKg={profile.weight_kg}
+                  sessionsModel={profile.energy_model === "sessions"}
+                  usedOn={WEEKDAYS.filter((d) => plan.week[d] === t.id).map(
+                    (d) => WEEKDAY_LABEL[d]
+                  )}
+                  canDelete={plan.dayTypes.length > 1}
+                  onPatch={(p) => patchDayType(t.id, p)}
+                  onSave={() => saveDayType(dayTypes.find((x) => x.id === t.id) ?? t)}
+                  onDuplicate={() => duplicateDayType(t)}
+                  onDelete={() => deleteDayType(t)}
+                />
+              ))}
             </div>
 
+            <button className="btn mt-3 w-full" onClick={addDayType}>
+              + Add a day type
+            </button>
+
             <p className="mt-3 text-xs leading-relaxed text-[var(--color-mut)]">
-              For reference: a 90-minute hard swim at your weight burns roughly{" "}
-              <b className="text-[#f2f4f7]">
-                {sessionKcal(profile.weight_kg, 90, METS.swim_hard).toLocaleString()} kcal
-              </b>
-              , an hour in the gym about{" "}
-              {sessionKcal(profile.weight_kg, 60, METS.gym).toLocaleString()} kcal.
+              Baseline {plan.baseline.toLocaleString()} kcal · average day{" "}
+              {plan.maintenance.toLocaleString()} kcal · aiming for{" "}
+              {plan.goalKcal.toLocaleString()} kcal a day across the week.
             </p>
           </>
         )}
+
+        <button className="btn btn-accent mt-4 w-full" onClick={() => saveProfile()}>
+          Save week
+        </button>
       </section>
 
       {/* Shopping */}
@@ -563,21 +676,23 @@ export default function PlanPage() {
             </Field>
           </div>
 
-          <div className="sm:col-span-2">
-            <Field label="Activity — your baseline, before day-to-day training">
-              <select
-                className="field w-full"
-                value={profile.activity}
-                onChange={(e) => set("activity", Number(e.target.value))}
-              >
-                {ACTIVITY_LEVELS.map((a) => (
-                  <option key={a.value} value={a.value}>
-                    {a.label} — {a.hint}
-                  </option>
-                ))}
-              </select>
-            </Field>
-          </div>
+          {profile.energy_model === "flat" && (
+            <div className="sm:col-span-2">
+              <Field label="Activity — one multiplier for the whole week">
+                <select
+                  className="field w-full"
+                  value={profile.activity}
+                  onChange={(e) => set("activity", Number(e.target.value))}
+                >
+                  {ACTIVITY_LEVELS.map((a) => (
+                    <option key={a.value} value={a.value}>
+                      {a.label} — {a.hint}
+                    </option>
+                  ))}
+                </select>
+              </Field>
+            </div>
+          )}
 
           <div className="sm:col-span-2">
             <Field label="Goal">
@@ -629,7 +744,7 @@ export default function PlanPage() {
                 type="number"
                 className="field w-full"
                 value={profile.calorie_override ?? ""}
-                placeholder={`${target.base} — calculated`}
+                placeholder={`${plan.maintenance} — calculated`}
                 onChange={(e) =>
                   set("calorie_override", e.target.value ? Number(e.target.value) : null)
                 }
@@ -637,21 +752,17 @@ export default function PlanPage() {
             </Field>
             {profile.calorie_override != null && (
               <p className="mt-2 text-xs leading-relaxed text-[var(--color-mut)]">
-                Using your number. Protein and fat still come from your g/kg settings and carbs take
-                the rest, and Recalculate will default to landing this figure exactly.
+                Using your number as the seven-day average. The shape of the week still comes from
+                your sessions, and Recalculate will default to landing this figure exactly.
               </p>
             )}
           </div>
         </div>
 
         <div className="mt-5 grid grid-cols-3 gap-3">
-          <Stat label="BMR" value={target.bmr} sub={target.method} />
-          <Stat label="Maintenance" value={target.maintenance} />
-          <Stat
-            label={profile.cycling ? "Week average" : "Target"}
-            value={target.base}
-            accent
-          />
+          <Stat label="BMR" value={plan.bmr} sub={plan.method} />
+          <Stat label="Average day" value={plan.maintenance} sub="cost of your week" />
+          <Stat label="Target" value={plan.goalKcal} accent sub="7-day average" />
         </div>
 
         <button className="btn btn-accent mt-4 w-full" onClick={() => saveProfile()}>
@@ -663,6 +774,162 @@ export default function PlanPage() {
 }
 
 /* -------------------------------------------------------------------- */
+
+function DayTypeCard({
+  dt,
+  target,
+  weightKg,
+  sessionsModel,
+  usedOn,
+  canDelete,
+  onPatch,
+  onSave,
+  onDuplicate,
+  onDelete,
+}: {
+  dt: DayType;
+  target: ReturnType<typeof targetsFor>;
+  weightKg: number;
+  sessionsModel: boolean;
+  usedOn: string[];
+  canDelete: boolean;
+  onPatch: (p: Partial<DayType>) => void;
+  onSave: () => void;
+  onDuplicate: () => void;
+  onDelete: () => void;
+}) {
+  const [open, setOpen] = useState(false);
+
+  function patchSession(i: number, p: Partial<Session>) {
+    onPatch({ sessions: dt.sessions.map((s, j) => (j === i ? { ...s, ...p } : s)) });
+  }
+
+  return (
+    <div className="sunk px-3.5 py-3">
+      <div className="flex items-center gap-2">
+        <input
+          className="field field-bare mr-auto min-w-0 flex-1 px-1.5 py-1 text-sm font-semibold"
+          value={dt.name}
+          onChange={(e) => onPatch({ name: e.target.value })}
+        />
+        <span className="num text-sm" style={{ color: "var(--color-accent)" }}>
+          {target.kcal.toLocaleString()}
+        </span>
+        <button className="btn btn-sm btn-quiet" onClick={() => setOpen((o) => !o)}>
+          {open ? "Done" : "Edit"}
+        </button>
+      </div>
+
+      <p className="mt-1 pl-1.5 text-[0.68rem] text-[#5b6270]">
+        {dt.sessions.length
+          ? dt.sessions
+              .map((s) => `${activityDef(s.activity).label.toLowerCase()} ${s.minutes}′`)
+              .join(" + ")
+          : "no sessions"}
+        {usedOn.length > 0 && ` · ${usedOn.join(", ")}`}
+        {sessionsModel && target.sessionKcal > 0 && ` · +${target.sessionKcal} kcal`}
+        {dt.fixed_kcal != null && " · pinned"}
+      </p>
+
+      {open && (
+        <div className="mt-3 space-y-2 border-t border-[#1c1f25] pt-3">
+          {dt.sessions.map((s, i) => {
+            const def = activityDef(s.activity);
+            return (
+              <div key={i} className="flex flex-wrap items-center gap-1.5">
+                <select
+                  className="field px-2 py-1 text-xs"
+                  value={s.activity}
+                  onChange={(e) => {
+                    const next = newSession(e.target.value);
+                    patchSession(i, { ...next, minutes: s.minutes });
+                  }}
+                >
+                  {ACTIVITIES.map((a) => (
+                    <option key={a.id} value={a.id}>
+                      {a.label}
+                    </option>
+                  ))}
+                </select>
+                <select
+                  className="field px-2 py-1 text-xs"
+                  value={s.level}
+                  onChange={(e) => {
+                    const lvl = def.levels.find((l) => l.id === e.target.value);
+                    patchSession(i, { level: e.target.value, met: lvl?.met ?? s.met });
+                  }}
+                >
+                  {def.levels.map((l) => (
+                    <option key={l.id} value={l.id}>
+                      {l.label}
+                    </option>
+                  ))}
+                </select>
+                <input
+                  type="number"
+                  min={0}
+                  step={5}
+                  className="field w-[4.2rem] px-2 py-1 text-right text-xs"
+                  value={s.minutes}
+                  onChange={(e) => patchSession(i, { minutes: Number(e.target.value) || 0 })}
+                />
+                <span className="text-xs text-[var(--color-mut)]">min</span>
+                <span className="num text-xs text-[#5b6270]">
+                  {Math.round(sessionKcal(weightKg, s))} kcal
+                </span>
+                <button
+                  className="ml-auto px-1 text-[#4a505c] transition hover:text-[var(--color-fat)]"
+                  onClick={() => onPatch({ sessions: dt.sessions.filter((_, j) => j !== i) })}
+                >
+                  ✕
+                </button>
+              </div>
+            );
+          })}
+
+          <div className="flex flex-wrap gap-1.5 pt-1">
+            {ACTIVITIES.slice(0, 4).map((a) => (
+              <button
+                key={a.id}
+                className="btn btn-sm"
+                onClick={() => onPatch({ sessions: [...dt.sessions, newSession(a.id)] })}
+              >
+                + {a.label}
+              </button>
+            ))}
+          </div>
+
+          <label className="flex items-center gap-2 pt-1 text-xs">
+            <span className="text-[var(--color-mut)]">Pin to a fixed kcal</span>
+            <input
+              type="number"
+              className="field w-24 px-2 py-1 text-right text-xs"
+              placeholder="auto"
+              value={dt.fixed_kcal ?? ""}
+              onChange={(e) =>
+                onPatch({ fixed_kcal: e.target.value ? Number(e.target.value) : null })
+              }
+            />
+          </label>
+
+          <div className="flex gap-2 pt-1">
+            <button className="btn btn-sm btn-quiet" onClick={onDuplicate}>
+              Duplicate
+            </button>
+            {canDelete && (
+              <button className="btn btn-sm btn-quiet" onClick={onDelete}>
+                Delete
+              </button>
+            )}
+            <button className="btn btn-sm btn-accent ml-auto" onClick={onSave}>
+              Save
+            </button>
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
 
 function IngredientRow({
   it,

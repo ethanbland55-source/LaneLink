@@ -1,25 +1,25 @@
 /**
  * Nutrition maths.
  *
- * Three things changed here over the first version:
+ * The shape of a week is yours to describe. A **day type** is a name and a
+ * list of training sessions — "Swim + gym", "Gym only", "Rest" — and you map
+ * each weekday to one of them. Meals can be limited to particular day types,
+ * so the carb top-up before a session simply isn't there on a rest day.
  *
- *  1. **BMR** uses Katch-McArdle when you know your body fat percentage
- *     (it works off lean mass, which is the thing that actually burns the
- *     calories) and falls back to Mifflin-St Jeor when you don't.
- *  2. **Day types.** A swim week isn't flat. You can label each weekday as
- *     rest / easy / session / double and each gets its own calorie and carb
- *     number — but the adjustments are *normalised across the week*, so the
- *     seven-day average still lands exactly on your goal. Eating more on a
- *     double day doesn't quietly turn a maintenance phase into a surplus.
- *  3. **Fibre** is tracked as a fifth number, because it's the one that
- *     decides whether a day's food actually fills you up.
+ * Energy comes from those sessions rather than from one blanket activity
+ * multiplier: a baseline for everything that isn't training, plus the measured
+ * cost of what you actually did, net of the resting metabolism already counted
+ * in the baseline.
+ *
+ * Whatever spread that produces, the seven-day average is scaled to land
+ * exactly on your goal, so a heavy Saturday borrows from Sunday instead of
+ * quietly becoming a surplus.
  */
 
 import { profileFor } from "./foods";
+import { normaliseSessions, sessionsKcal, type Session } from "./activities";
 
 export type Goal = "cut" | "maintain" | "bulk";
-
-export type DayType = "rest" | "easy" | "session" | "double";
 
 export type Weekday = "mon" | "tue" | "wed" | "thu" | "fri" | "sat" | "sun";
 
@@ -35,32 +35,60 @@ export const WEEKDAY_LABEL: Record<Weekday, string> = {
   sun: "Sun",
 };
 
-export const DAY_TYPES: { value: DayType; label: string; hint: string }[] = [
-  { value: "rest", label: "Rest", hint: "no training" },
-  { value: "easy", label: "Easy", hint: "gym or a light swim" },
-  { value: "session", label: "Session", hint: "one full swim set" },
-  { value: "double", label: "Double", hint: "two sessions, or swim + gym" },
+/** Which day type each weekday uses, by id. */
+export type WeekMap = Record<Weekday, number>;
+
+export type DayType = {
+  id: number;
+  name: string;
+  sort_order: number;
+  sessions: Session[];
+  /** Pin this day to a number of your own and opt it out of the maths. */
+  fixed_kcal: number | null;
+  /** A nudge on top of what the sessions say, e.g. +5% because you're always hungry Fridays. */
+  percent: number | null;
+};
+
+/**
+ * What a new account starts with. Named for the shape of a swim week because
+ * that's the hardest case — a mix of pool and gym on the same day — but they
+ * are only starting points and every one of them is editable.
+ */
+export const SEED_DAY_TYPES: { name: string; sessions: Session[] }[] = [
+  { name: "Rest", sessions: [] },
+  {
+    name: "Gym only",
+    sessions: [{ activity: "gym", level: "moderate", met: 5.0, minutes: 60 }],
+  },
+  {
+    name: "Swim only",
+    sessions: [{ activity: "swim", level: "moderate", met: 8.3, minutes: 90 }],
+  },
+  {
+    name: "Swim + gym",
+    sessions: [
+      { activity: "swim", level: "moderate", met: 8.3, minutes: 90 },
+      { activity: "gym", level: "moderate", met: 5.0, minutes: 45 },
+    ],
+  },
+  {
+    name: "Double swim",
+    sessions: [
+      { activity: "swim", level: "moderate", met: 8.3, minutes: 90 },
+      { activity: "swim", level: "hard", met: 9.8, minutes: 75 },
+    ],
+  },
 ];
 
-export type DayAdjust = Record<DayType, number>;
-
-/** Sensible starting spread for an in-season swimmer. */
-export const DEFAULT_DAY_ADJUST: DayAdjust = {
-  rest: -0.12,
-  easy: -0.04,
-  session: 0.05,
-  double: 0.16,
+/** How the old four fixed types map onto the seeded ones when upgrading. */
+export const LEGACY_DAY_TYPE_MAP: Record<string, string> = {
+  rest: "Rest",
+  easy: "Gym only",
+  session: "Swim only",
+  double: "Double swim",
 };
 
-export const DEFAULT_WEEK: Record<Weekday, DayType> = {
-  mon: "session",
-  tue: "session",
-  wed: "easy",
-  thu: "session",
-  fri: "easy",
-  sat: "double",
-  sun: "rest",
-};
+export type EnergyModel = "sessions" | "flat";
 
 export type Profile = {
   sex: "male" | "female";
@@ -68,21 +96,21 @@ export type Profile = {
   height_cm: number;
   weight_kg: number;
   body_fat_pct: number | null;
+  /** Legacy all-in-one multiplier, used only when energy_model is "flat". */
   activity: number;
+  /** Everything that isn't a logged session. Used when energy_model is "sessions". */
+  base_activity: number;
+  energy_model: EnergyModel;
   goal: Goal;
   protein_per_kg: number;
   fat_per_kg: number;
   calorie_override: number | null;
-  /** g of fibre per 1000 kcal. 14 is the standard recommendation. */
   fibre_per_1000: number;
-  /** Never let carbs fall below this many g/kg, even on a rest day. */
   carb_floor_per_kg: number;
+  /** Off means one flat number every day, and the week grid is ignored. */
   cycling: boolean;
-  day_adjust: DayAdjust;
-  week: Record<Weekday, DayType>;
-  /** How many days of food you buy in one shop. */
+  week: WeekMap;
   shop_days: number;
-  /** Day of week you shop on. 0 = Sunday … 6 = Saturday. */
   shop_start_dow: number;
 };
 
@@ -96,6 +124,7 @@ export type Macros = {
 
 export const ZERO_MACROS: Macros = { kcal: 0, protein: 0, carbs: 0, fat: 0, fibre: 0 };
 
+/** Legacy single-multiplier levels, kept for the "flat" energy model. */
 export const ACTIVITY_LEVELS = [
   { value: 1.2, label: "Sedentary", hint: "desk job, no training" },
   { value: 1.375, label: "Lightly active", hint: "1–3 sessions/week" },
@@ -110,17 +139,6 @@ export const GOALS: { value: Goal; label: string; adjust: number; blurb: string 
   { value: "maintain", label: "Maintaining", adjust: 0, blurb: "at maintenance" },
   { value: "bulk", label: "Bulking", adjust: 0.12, blurb: "12% above maintenance" },
 ];
-
-/** MET values for the sessions a swimmer actually does. */
-export const METS = { swim_easy: 5.8, swim_hard: 9.8, gym: 5.0, run: 9.0 };
-
-/**
- * Rough energy cost of a session: MET × 3.5 × kg / 200 kcal per minute.
- * Used only as a hint when choosing your day-type percentages.
- */
-export function sessionKcal(weightKg: number, minutes: number, met: number): number {
-  return Math.round(((met * 3.5 * weightKg) / 200) * minutes);
-}
 
 export function ageFromDob(dob: string | null | undefined): number {
   if (!dob) return 25;
@@ -151,123 +169,198 @@ export function bmrMethod(p: Profile): "Katch-McArdle" | "Mifflin-St Jeor" {
   return leanMass(p) != null ? "Katch-McArdle" : "Mifflin-St Jeor";
 }
 
-export function tdee(p: Profile): number {
-  return bmr(p) * p.activity;
+/** Everything that isn't a training session. */
+export function baseline(p: Profile): number {
+  return bmr(p) * (p.energy_model === "sessions" ? p.base_activity : p.activity);
 }
 
-/** The seven-day average calorie number, before any day-type shuffling. */
-export function baseKcal(p: Profile): number {
-  if (p.calorie_override != null && p.calorie_override > 0) return p.calorie_override;
-  const goal = GOALS.find((g) => g.value === p.goal) ?? GOALS[1];
-  return tdee(p) * (1 + goal.adjust);
-}
-
-/**
- * Day multipliers, normalised so the week averages out to exactly 1.
- *
- * If your week is 3 sessions, 2 easy, 1 double and 1 rest, the raw
- * percentages don't average to zero — so we divide them all by the week's
- * mean. The hard days stay relatively harder, the total stays honest.
- */
-export function dayMultipliers(p: Profile): Record<DayType, number> {
-  const adj = p.day_adjust ?? DEFAULT_DAY_ADJUST;
-  const raw: Record<DayType, number> = {
-    rest: 1 + (adj.rest ?? 0),
-    easy: 1 + (adj.easy ?? 0),
-    session: 1 + (adj.session ?? 0),
-    double: 1 + (adj.double ?? 0),
-  };
-  if (!p.cycling) return { rest: 1, easy: 1, session: 1, double: 1 };
-
-  const week = p.week ?? DEFAULT_WEEK;
-  let sum = 0;
-  for (const d of WEEKDAYS) sum += raw[week[d] ?? "session"] ?? 1;
-  const mean = sum / WEEKDAYS.length || 1;
-
-  return {
-    rest: raw.rest / mean,
-    easy: raw.easy / mean,
-    session: raw.session / mean,
-    double: raw.double / mean,
-  };
-}
-
-export function weekdayOf(dayKeyStr: string): Weekday {
-  const d = new Date(dayKeyStr + "T12:00:00");
-  // getDay(): 0 = Sunday
-  return WEEKDAYS[(d.getDay() + 6) % 7];
-}
-
-export function dayTypeFor(p: Profile, dayKeyStr: string): DayType {
-  if (!p.cycling) return "session";
-  const week = p.week ?? DEFAULT_WEEK;
-  return week[weekdayOf(dayKeyStr)] ?? "session";
+/** What one day type costs before the week is balanced against your goal. */
+export function dayTypeCost(p: Profile, dt: DayType): number {
+  if (p.energy_model === "sessions") {
+    return baseline(p) + sessionsKcal(p.weight_kg, dt.sessions);
+  }
+  return baseline(p) * (1 + (dt.percent ?? 0));
 }
 
 export type Targets = Macros & {
-  maintenance: number;
-  bmr: number;
-  /** The flat seven-day average, for comparison. */
-  base: number;
-  dayType: DayType;
+  dayTypeId: number;
+  name: string;
+  /** Raw energy cost of this kind of day, before balancing. */
+  cost: number;
+  sessionKcal: number;
+  /** This day's calories relative to the weekly average. */
   multiplier: number;
-  method: string;
+  sessions: Session[];
 };
 
-/**
- * The day's target. Protein is fixed, fat is fixed at your g/kg unless carbs
- * would otherwise fall through the floor, and carbs take the rest — so a
- * double day shows up almost entirely as extra carbohydrate, which is what
- * you actually want it to be.
- */
-export function targets(p: Profile, dayType: DayType = "session"): Targets {
-  const maintenance = tdee(p);
-  const base = baseKcal(p);
-  const mult = dayMultipliers(p)[dayType] ?? 1;
-  const kcal = base * mult;
+export type WeekPlan = {
+  byId: Record<number, Targets>;
+  order: number[];
+  week: WeekMap;
+  bmr: number;
+  method: string;
+  baseline: number;
+  /** Mean daily cost across the seven days you've mapped. */
+  maintenance: number;
+  /** The seven-day average you're aiming for. */
+  goalKcal: number;
+  /** What every non-pinned day was multiplied by to make the week balance. */
+  balance: number;
+  dayTypes: DayType[];
+};
 
+function macrosFor(p: Profile, kcal: number): Macros {
   const protein = p.protein_per_kg * p.weight_kg;
   let fat = p.fat_per_kg * p.weight_kg;
   const carbFloor = (p.carb_floor_per_kg ?? 1) * p.weight_kg;
 
   let carbs = (kcal - protein * 4 - fat * 9) / 4;
 
-  // On a low day, protect carbohydrate before fat — you still have to train
-  // on it. Fat gives way down to a hard 0.45 g/kg hormonal floor.
+  // On a low day, protect carbohydrate before fat — you still have to train on
+  // it. Fat gives way down to a hard 0.45 g/kg hormonal floor.
   if (carbs < carbFloor) {
     const fatFloor = 0.45 * p.weight_kg;
     const needed = (carbFloor - carbs) * 4;
     const giveable = Math.max(0, (fat - fatFloor) * 9);
-    const take = Math.min(needed, giveable);
-    fat -= take / 9;
+    fat -= Math.min(needed, giveable) / 9;
     carbs = (kcal - protein * 4 - fat * 9) / 4;
   }
-  carbs = Math.max(0, carbs);
-
-  const fibre = Math.max(25, (kcal / 1000) * (p.fibre_per_1000 ?? 14));
 
   return {
     kcal: Math.round(kcal),
     protein: Math.round(protein),
+    carbs: Math.round(Math.max(0, carbs)),
     fat: Math.round(fat),
-    carbs: Math.round(carbs),
-    fibre: Math.round(fibre),
-    maintenance: Math.round(maintenance),
-    bmr: Math.round(bmr(p)),
-    base: Math.round(base),
-    dayType,
-    multiplier: mult,
-    method: bmrMethod(p),
+    fibre: Math.round(Math.max(25, (kcal / 1000) * (p.fibre_per_1000 ?? 14))),
   };
 }
 
-/** Every day type at once — used by the plan page and the shopping maths. */
-export function allDayTargets(p: Profile): Record<DayType, Targets> {
+/**
+ * Work out every day type's numbers at once.
+ *
+ * The balancing step is the important one. Each day type has a raw cost; days
+ * you've pinned to a fixed number are taken out of the pot, and everything
+ * else is scaled by a single factor chosen so that the seven mapped days
+ * average out to your goal exactly. One factor for all of them, so the
+ * relative shape of your week — the thing you actually described — survives.
+ */
+export function buildWeekPlan(p: Profile, dayTypes: DayType[]): WeekPlan {
+  const types = [...dayTypes].sort((a, b) => a.sort_order - b.sort_order || a.id - b.id);
+  const fallbackId = types[0]?.id ?? 0;
+  const week = {} as WeekMap;
+  for (const d of WEEKDAYS) {
+    const id = p.week?.[d];
+    week[d] = types.some((t) => t.id === id) ? id : fallbackId;
+  }
+
+  const cost = new Map<number, number>();
+  for (const t of types) cost.set(t.id, dayTypeCost(p, t));
+
+  const used = WEEKDAYS.map((d) => types.find((t) => t.id === week[d])).filter(
+    (t): t is DayType => !!t
+  );
+  const days = used.length || 1;
+
+  const maintenance =
+    used.reduce((a, t) => a + (cost.get(t.id) ?? 0), 0) / days ||
+    (types.length ? cost.get(types[0].id) ?? baseline(p) : baseline(p));
+
+  const goal = GOALS.find((g) => g.value === p.goal) ?? GOALS[1];
+  const goalKcal =
+    p.calorie_override != null && p.calorie_override > 0
+      ? p.calorie_override
+      : maintenance * (1 + goal.adjust);
+
+  // Balance: pinned days come out of the weekly pot, the rest share what's left
+  // in proportion to what they cost.
+  let balance = 1;
+  if (p.cycling) {
+    let pinned = 0;
+    let flexible = 0;
+    for (const t of used) {
+      if (t.fixed_kcal != null && t.fixed_kcal > 0) pinned += t.fixed_kcal;
+      else flexible += cost.get(t.id) ?? 0;
+    }
+    const remaining = days * goalKcal - pinned;
+    balance = flexible > 0 ? remaining / flexible : 1;
+    // A balance outside this range means the week is dominated by pinned days;
+    // clamp rather than serve someone 900 kcal because the maths said so.
+    balance = Math.min(1.6, Math.max(0.5, balance));
+  } else {
+    balance = maintenance > 0 ? goalKcal / maintenance : 1;
+  }
+
+  const floor = bmr(p) * 1.05;
+  const byId: Record<number, Targets> = {};
+  for (const t of types) {
+    const raw = cost.get(t.id) ?? baseline(p);
+    let kcal: number;
+    if (!p.cycling) kcal = goalKcal;
+    else if (t.fixed_kcal != null && t.fixed_kcal > 0) kcal = t.fixed_kcal;
+    else kcal = raw * balance;
+    kcal = Math.max(floor, kcal);
+
+    byId[t.id] = {
+      ...macrosFor(p, kcal),
+      dayTypeId: t.id,
+      name: t.name,
+      cost: Math.round(raw),
+      sessionKcal: Math.round(sessionsKcal(p.weight_kg, t.sessions)),
+      multiplier: goalKcal > 0 ? kcal / goalKcal : 1,
+      sessions: t.sessions,
+    };
+  }
+
   return {
-    rest: targets(p, "rest"),
-    easy: targets(p, "easy"),
-    session: targets(p, "session"),
-    double: targets(p, "double"),
+    byId,
+    order: types.map((t) => t.id),
+    week,
+    bmr: Math.round(bmr(p)),
+    method: bmrMethod(p),
+    baseline: Math.round(baseline(p)),
+    maintenance: Math.round(maintenance),
+    goalKcal: Math.round(goalKcal),
+    balance,
+    dayTypes: types,
+  };
+}
+
+export function weekdayOf(dayKeyStr: string): Weekday {
+  const d = new Date(dayKeyStr + "T12:00:00");
+  return WEEKDAYS[(d.getDay() + 6) % 7]; // getDay(): 0 = Sunday
+}
+
+/** Which day type a calendar day falls on. */
+export function dayTypeIdFor(plan: WeekPlan, dayKeyStr: string): number {
+  if (!plan.order.length) return 0;
+  return plan.week[weekdayOf(dayKeyStr)] ?? plan.order[0];
+}
+
+export function targetsFor(plan: WeekPlan, dayTypeId: number): Targets {
+  return (
+    plan.byId[dayTypeId] ??
+    plan.byId[plan.order[0]] ?? {
+      ...ZERO_MACROS,
+      dayTypeId: 0,
+      name: "—",
+      cost: 0,
+      sessionKcal: 0,
+      multiplier: 1,
+      sessions: [],
+    }
+  );
+}
+
+export function normaliseDayType(raw: any, index = 0): DayType {
+  const fixed = Number(raw?.fixed_kcal);
+  const pct = Number(raw?.percent);
+  return {
+    id: Number(raw?.id) || 0,
+    name: String(raw?.name ?? "Day type").slice(0, 40) || "Day type",
+    sort_order: Number.isFinite(Number(raw?.sort_order)) ? Number(raw.sort_order) : index,
+    sessions: normaliseSessions(raw?.sessions),
+    fixed_kcal: Number.isFinite(fixed) && fixed > 0 ? Math.min(9000, fixed) : null,
+    percent: Number.isFinite(pct) && Math.abs(pct) <= 0.5 ? pct : null,
   };
 }
 
@@ -280,15 +373,16 @@ export const DAY_ROLLOVER_HOUR = 3;
 export function dayKey(at: Date = new Date()): string {
   const d = new Date(at);
   d.setHours(d.getHours() - DAY_ROLLOVER_HOUR);
-  const y = d.getFullYear();
-  const m = String(d.getMonth() + 1).padStart(2, "0");
-  const day = String(d.getDate()).padStart(2, "0");
-  return `${y}-${m}-${day}`;
+  return isoDay(d);
 }
 
 export function addDays(dayKeyStr: string, n: number): string {
   const d = new Date(dayKeyStr + "T12:00:00");
   d.setDate(d.getDate() + n);
+  return isoDay(d);
+}
+
+function isoDay(d: Date): string {
   const y = d.getFullYear();
   const m = String(d.getMonth() + 1).padStart(2, "0");
   const day = String(d.getDate()).padStart(2, "0");
@@ -346,8 +440,7 @@ export function totalFor(items: Item[]): Macros {
 /**
  * A sanity check on the per-100g numbers themselves: 4/4/9 should reconstruct
  * the calorie figure. If it's more than 12% out, the label was probably typed
- * wrong — and every downstream number inherits that error, so it's worth
- * saying so.
+ * wrong — and every downstream number inherits that error.
  */
 export function macroConsistency(i: Item): { ok: boolean; implied: number; stated: number } {
   const implied =
@@ -359,6 +452,5 @@ export function macroConsistency(i: Item): { ok: boolean; implied: number; state
 
 /** Cooked weight of a raw ingredient, from the food knowledge base. */
 export function cookedGrams(i: Item): number {
-  const p = profileFor(i.name, i);
-  return (Number(i.grams) || 0) * p.rawToCooked;
+  return (Number(i.grams) || 0) * profileFor(i.name, i).rawToCooked;
 }

@@ -28,16 +28,17 @@ import {
 } from "./foods";
 import {
   addDays,
-  dayMultipliers,
-  dayTypeFor,
+  dayTypeIdFor,
   itemMacros,
   scaleMacros,
   sumMacros,
+  targetsFor,
+  totalFor,
   ZERO_MACROS,
-  type DayType,
   type Item,
   type Macros,
   type Profile,
+  type WeekPlan,
 } from "./nutrition";
 
 export type PlanMeal = {
@@ -45,8 +46,8 @@ export type PlanMeal = {
   name: string;
   /** How many times this meal is eaten on a day it applies to. */
   times_per_day?: number;
-  /** Which day types it appears on. Empty/omitted = every day. */
-  day_types?: DayType[] | null;
+  /** Which day types it appears on, by id. Empty or omitted = every day. */
+  day_type_ids?: number[] | null;
   ingredients: Item[];
 };
 
@@ -84,7 +85,13 @@ export type ShopList = {
   days: number;
   startDay: string;
   endDay: string;
-  dayTypeCounts: Record<DayType, number>;
+  /** How many of each day type fell in the window, by day-type id. */
+  dayTypeCounts: Record<number, number>;
+  /**
+   * Those counts as something you can read, with how each day type's meals
+   * compare to that day's target.
+   */
+  dayMix: { id: number; name: string; count: number; planned: number; target: number }[];
   lines: ShopLine[];
   byAisle: { aisle: Aisle; lines: ShopLine[]; kg: number }[];
   totals: Macros;
@@ -93,13 +100,11 @@ export type ShopList = {
   warnings: string[];
 };
 
-const ALL_DAY_TYPES: DayType[] = ["rest", "easy", "session", "double"];
-
 /** Does this meal appear on this kind of day? */
-function appliesOn(meal: PlanMeal, dt: DayType): boolean {
-  const types = meal.day_types;
-  if (!types || types.length === 0 || types.length === ALL_DAY_TYPES.length) return true;
-  return types.includes(dt);
+export function appliesOn(meal: PlanMeal, dayTypeId: number, total: number): boolean {
+  const ids = meal.day_type_ids;
+  if (!ids || ids.length === 0 || ids.length >= total) return true;
+  return ids.includes(dayTypeId);
 }
 
 /**
@@ -109,11 +114,34 @@ function appliesOn(meal: PlanMeal, dt: DayType): boolean {
 export function buildShoppingList(
   meals: PlanMeal[],
   profile: Profile,
+  plan: WeekPlan,
   opts: { days?: number; startDay: string; pantry?: PantryItem[] } = { startDay: "" }
 ): ShopList {
   const days = Math.max(1, Math.round(opts.days ?? profile.shop_days ?? 7));
   const startDay = opts.startDay;
-  const mult = dayMultipliers(profile);
+  const typeCount = plan.order.length;
+
+  /**
+   * What the plan actually comes to on each kind of day.
+   *
+   * The list buys the plan as written — it does not quietly scale portions up
+   * to meet a target, because a bigger day is meant to be handled by the meals
+   * you've put on it, and scaling on top of that would count the difference
+   * twice. If a day type's meals don't add up to its target, that's worth
+   * knowing before you shop, so it becomes a warning rather than a silent fix.
+   */
+  const plannedFor = new Map<number, number>();
+  for (const id of plan.order) {
+    plannedFor.set(
+      id,
+      meals
+        .filter((m) => appliesOn(m, id, typeCount))
+        .reduce(
+          (a, m) => a + totalFor(m.ingredients).kcal * Math.max(0, Number(m.times_per_day ?? 1)),
+          0
+        )
+    );
+  }
 
   const pantry = new Map<string, number>();
   for (const p of opts.pantry ?? []) {
@@ -129,16 +157,16 @@ export function buildShoppingList(
     meals: Set<string>;
   };
   const acc = new Map<string, Acc>();
-  const dayTypeCounts: Record<DayType, number> = { rest: 0, easy: 0, session: 0, double: 0 };
+  const dayTypeCounts: Record<number, number> = {};
 
   for (let d = 0; d < days; d++) {
     const date = addDays(startDay, d);
-    const dt = dayTypeFor(profile, date);
-    dayTypeCounts[dt]++;
-    const k = mult[dt] ?? 1;
+    const id = dayTypeIdFor(plan, date);
+    dayTypeCounts[id] = (dayTypeCounts[id] ?? 0) + 1;
+    const k = 1;
 
     for (const meal of meals) {
-      if (!appliesOn(meal, dt)) continue;
+      if (!appliesOn(meal, id, typeCount)) continue;
       const reps = Math.max(0, Number(meal.times_per_day ?? 1));
       if (reps === 0) continue;
 
@@ -219,7 +247,39 @@ export function buildShoppingList(
   const totals = sumMacros(lines.map((l) => l.macros));
   const totalKg = lines.reduce((s, l) => s + l.needGrams, 0) / 1000;
 
+  const dayMix = plan.order
+    .filter((id) => (dayTypeCounts[id] ?? 0) > 0)
+    .map((id) => ({
+      id,
+      name: targetsFor(plan, id).name,
+      count: dayTypeCounts[id],
+      planned: Math.round(plannedFor.get(id) ?? 0),
+      target: targetsFor(plan, id).kcal,
+    }));
+
   const warnings: string[] = [];
+
+  const mismatched = dayMix.filter(
+    (d) => d.planned > 0 && Math.abs(d.planned - d.target) > Math.max(120, d.target * 0.06)
+  );
+  if (mismatched.length) {
+    const worst = [...mismatched].sort(
+      (a, b) => Math.abs(b.planned - b.target) - Math.abs(a.planned - a.target)
+    )[0];
+    const gap = worst.planned - worst.target;
+    const scope =
+      mismatched.length >= dayMix.length && dayMix.length > 1
+        ? "every kind of day"
+        : mismatched.length === 1
+          ? `${worst.name.toLowerCase()} days`
+          : `${mismatched.length} of your day types`;
+    warnings.push(
+      `This list buys the plan exactly as written, and the plan is off target on ${scope} — ` +
+        `worst is ${worst.name.toLowerCase()}, ${Math.abs(gap).toLocaleString()} kcal ` +
+        `${gap > 0 ? "over" : "under"} (${worst.planned.toLocaleString()} vs ${worst.target.toLocaleString()}). ` +
+        `Balance the portions on the Plan page first, or add a meal that only appears on those days.`
+    );
+  }
   const fresh = lines.filter((l) => l.trips > 1);
   if (fresh.length) {
     warnings.push(
@@ -242,6 +302,7 @@ export function buildShoppingList(
     startDay,
     endDay: addDays(startDay, days - 1),
     dayTypeCounts,
+    dayMix,
     lines,
     byAisle,
     totals,
@@ -281,7 +342,8 @@ export const EMPTY_LIST: ShopList = {
   days: 7,
   startDay: "",
   endDay: "",
-  dayTypeCounts: { rest: 0, easy: 0, session: 0, double: 0 },
+  dayTypeCounts: {},
+  dayMix: [],
   lines: [],
   byAisle: [],
   totals: { ...ZERO_MACROS },

@@ -29,8 +29,9 @@ export async function PUT(req: Request) {
       fibre_per_1000 = ${b.fibre_per_1000},
       carb_floor_per_kg = ${b.carb_floor_per_kg},
       cycling = ${b.cycling},
-      day_adjust = ${JSON.stringify(b.day_adjust)}::jsonb,
-      week = ${JSON.stringify(b.week)}::jsonb,
+      energy_model = ${b.energy_model},
+      base_activity = ${b.base_activity},
+      week_ids = ${JSON.stringify(b.week)}::jsonb,
       shop_days = ${b.shop_days},
       shop_start_dow = ${b.shop_start_dow},
       updated_at = now()

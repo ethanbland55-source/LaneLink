@@ -1,5 +1,6 @@
 import { neon } from "@neondatabase/serverless";
 import { profileFor, TYPICAL_FIBRE_100 } from "./foods";
+import { LEGACY_DAY_TYPE_MAP, SEED_DAY_TYPES, WEEKDAYS } from "./nutrition";
 
 const url = process.env.DATABASE_URL;
 if (!url) {
@@ -80,18 +81,38 @@ async function createSchema() {
   await sql`alter table ingredients add column if not exists pack_grams numeric`;
 
   await sql`alter table meals add column if not exists times_per_day numeric not null default 1`;
-  await sql`alter table meals add column if not exists day_types text[]`;
+  await sql`alter table meals add column if not exists day_types text[]`; // legacy
+  await sql`alter table meals add column if not exists day_type_ids int[]`;
 
   await sql`alter table profile add column if not exists body_fat_pct numeric`;
   await sql`alter table profile add column if not exists fibre_per_1000 numeric not null default 14`;
   await sql`alter table profile add column if not exists carb_floor_per_kg numeric not null default 1.0`;
   await sql`alter table profile add column if not exists cycling boolean not null default false`;
-  await sql`alter table profile add column if not exists day_adjust jsonb`;
-  await sql`alter table profile add column if not exists week jsonb`;
+  await sql`alter table profile add column if not exists day_adjust jsonb`; // legacy
+  await sql`alter table profile add column if not exists week jsonb`; // legacy
+  await sql`alter table profile add column if not exists week_ids jsonb`;
+  await sql`alter table profile add column if not exists base_activity numeric not null default 1.3`;
+  // Deliberately defaulted to the old model: an existing profile keeps the
+  // numbers it had, and opts in to session-based energy from the Plan page.
+  // A brand-new profile is inserted as 'sessions' below.
+  await sql`alter table profile add column if not exists energy_model text not null default 'flat'`;
   await sql`alter table profile add column if not exists shop_days int not null default 7`;
   await sql`alter table profile add column if not exists shop_start_dow int not null default 6`;
 
-  await sql`alter table log_entries add column if not exists day_type text`;
+  await sql`alter table log_entries add column if not exists day_type text`; // legacy
+  await sql`alter table log_entries add column if not exists day_type_id int`;
+
+  // A day type is a name and a list of sessions. Everything else — which meals
+  // appear, what the day costs, which weekdays use it — hangs off these rows.
+  await sql`create table if not exists day_types (
+    id          serial primary key,
+    name        text not null,
+    sort_order  int  not null default 0,
+    sessions    jsonb not null default '[]'::jsonb,
+    fixed_kcal  numeric,
+    percent     numeric,
+    created_at  timestamptz not null default now()
+  )`;
 
   await sql`create table if not exists pantry (
     id serial primary key,
@@ -108,7 +129,10 @@ async function createSchema() {
 
   await sql`create index if not exists log_entries_day_idx on log_entries(day)`;
   await sql`create index if not exists ingredients_meal_idx on ingredients(meal_id)`;
-  await sql`insert into profile (id) values (1) on conflict (id) do nothing`;
+  await sql`
+    insert into profile (id, energy_model, cycling)
+    values (1, 'sessions', true)
+    on conflict (id) do nothing`;
 }
 
 /**
@@ -122,7 +146,73 @@ async function createSchema() {
  * It only ever touches rows that haven't been classified yet, so it costs one
  * query on a warm instance and never overwrites anything you've typed.
  */
+/**
+ * Seed the day types, then move anything written against the old fixed
+ * rest/easy/session/double model onto them.
+ */
+async function migrateDayTypes() {
+  const existing = await sql`select id, name from day_types order by sort_order, id`;
+  let rows = existing as any[];
+
+  if (rows.length === 0) {
+    for (const [i, seed] of SEED_DAY_TYPES.entries()) {
+      await sql`
+        insert into day_types (name, sort_order, sessions)
+        values (${seed.name}, ${i}, ${JSON.stringify(seed.sessions)}::jsonb)`;
+    }
+    rows = (await sql`select id, name from day_types order by sort_order, id`) as any[];
+  }
+
+  const idByName = new Map<string, number>(rows.map((r) => [String(r.name), Number(r.id)]));
+  const legacyId = (label: string): number | null =>
+    idByName.get(LEGACY_DAY_TYPE_MAP[label] ?? "") ?? null;
+
+  // --- the week -----------------------------------------------------------
+  const prof = (await sql`select week, week_ids from profile where id = 1`) as any[];
+  const p = prof[0];
+  if (p && !p.week_ids) {
+    const old = (p.week ?? {}) as Record<string, string>;
+    const week: Record<string, number> = {};
+    for (const d of WEEKDAYS) {
+      const mapped = old[d] ? legacyId(old[d]) : null;
+      // No previous week to convert: a sensible swim week to start from.
+      week[d] =
+        mapped ??
+        idByName.get(
+          d === "sun"
+            ? "Rest"
+            : d === "sat"
+              ? "Double swim"
+              : d === "wed"
+                ? "Gym only"
+                : d === "tue" || d === "fri"
+                  ? "Swim + gym"
+                  : "Swim only"
+        ) ??
+        Number(rows[0]?.id ?? 0);
+    }
+    await sql`update profile set week_ids = ${JSON.stringify(week)}::jsonb where id = 1`;
+  }
+
+  // --- meals --------------------------------------------------------------
+  const meals = (await sql`
+    select id, day_types from meals
+    where day_type_ids is null and day_types is not null`) as any[];
+  for (const m of meals) {
+    const ids = (m.day_types as string[])
+      .map(legacyId)
+      .filter((x): x is number => typeof x === "number");
+    if (!ids.length) continue;
+    await sql`update meals set day_type_ids = ${`{${ids.join(",")}}`}::int[] where id = ${m.id}`;
+  }
+}
+
 async function backfill() {
+  try {
+    await migrateDayTypes();
+  } catch (e) {
+    console.warn("day type migration skipped:", e);
+  }
   try {
     const rows = await sql`
       select id, name, kcal_100, protein_100, carbs_100, fat_100, fibre_100

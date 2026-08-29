@@ -13,7 +13,7 @@ export async function GET() {
     meals.map((m: any) => ({
       ...m,
       times_per_day: Number(m.times_per_day ?? 1),
-      day_types: m.day_types ?? null,
+      day_type_ids: (m.day_type_ids ?? null) as number[] | null,
       ingredients: ings
         .filter((i: any) => i.meal_id === m.id)
         .map((i: any) => ({
@@ -38,30 +38,33 @@ export async function POST(req: Request) {
     insert into meals (name, sort_order)
     values (${name || "New meal"}, coalesce((select max(sort_order) + 1 from meals), 0))
     returning *`;
-  return NextResponse.json({ ...rows[0], times_per_day: 1, day_types: null, ingredients: [] });
+  return NextResponse.json({ ...rows[0], times_per_day: 1, day_type_ids: null, ingredients: [] });
 }
 
 /** Replaces a meal's name and its whole ingredient list in one go. */
 export async function PUT(req: Request) {
   await ensureSchema();
-  const { id, name, ingredients, times_per_day, day_types } = await req.json();
+  const { id, name, ingredients, times_per_day, day_type_ids } = await req.json();
 
   const reps = Number(times_per_day);
-  const allowed = ["rest", "easy", "session", "double"];
-  const picked: string[] = Array.isArray(day_types)
-    ? day_types.filter((d: unknown) => typeof d === "string" && allowed.includes(d))
+
+  // null means "every day type". Anything pointing at a day type that no
+  // longer exists is dropped here rather than left to rot in the array.
+  const live = (await sql`select id from day_types`) as any[];
+  const liveIds = new Set(live.map((r) => Number(r.id)));
+  const picked: number[] = Array.isArray(day_type_ids)
+    ? [...new Set(day_type_ids.map(Number).filter((n: number) => liveIds.has(n)))]
     : [];
-  // null means "every day type" — storing all four would mean the same thing but
-  // reads worse. Sent as an explicit array literal and cast, rather than relying
-  // on the driver to infer text[] from a JS array.
+  // Sent as an explicit array literal and cast, rather than relying on the
+  // driver to infer int[] from a JS array.
   const types: string | null =
-    picked.length > 0 && picked.length < allowed.length ? `{${picked.join(",")}}` : null;
+    picked.length > 0 && picked.length < liveIds.size ? `{${picked.join(",")}}` : null;
 
   await sql`
     update meals set
       name = ${name},
       times_per_day = ${Number.isFinite(reps) && reps > 0 ? reps : 1},
-      day_types = ${types}::text[]
+      day_type_ids = ${types}::int[]
     where id = ${id}`;
 
   await sql`delete from ingredients where meal_id = ${id}`;
