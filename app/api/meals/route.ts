@@ -47,14 +47,21 @@ export async function PUT(req: Request) {
   const { id, name, ingredients, times_per_day, day_types } = await req.json();
 
   const reps = Number(times_per_day);
-  const types: string[] | null =
-    Array.isArray(day_types) && day_types.length > 0 && day_types.length < 4 ? day_types : null;
+  const allowed = ["rest", "easy", "session", "double"];
+  const picked: string[] = Array.isArray(day_types)
+    ? day_types.filter((d: unknown) => typeof d === "string" && allowed.includes(d))
+    : [];
+  // null means "every day type" — storing all four would mean the same thing but
+  // reads worse. Sent as an explicit array literal and cast, rather than relying
+  // on the driver to infer text[] from a JS array.
+  const types: string | null =
+    picked.length > 0 && picked.length < allowed.length ? `{${picked.join(",")}}` : null;
 
   await sql`
     update meals set
       name = ${name},
       times_per_day = ${Number.isFinite(reps) && reps > 0 ? reps : 1},
-      day_types = ${types}
+      day_types = ${types}::text[]
     where id = ${id}`;
 
   await sql`delete from ingredients where meal_id = ${id}`;
