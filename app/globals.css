@@ -44,6 +44,14 @@ body {
   line-height: 0.95;
 }
 
+/* Hero figures use proportional digits — tabular-nums makes a big standalone
+   number look loose. Tabular stays where numbers align in columns. */
+.num-hero {
+  font-weight: 800;
+  letter-spacing: -0.035em;
+  line-height: 0.95;
+}
+
 .label {
   font-size: 0.66rem;
   letter-spacing: 0.12em;

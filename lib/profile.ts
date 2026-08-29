@@ -4,7 +4,16 @@
  * keep their own copy of this and they had already drifted apart.
  */
 
-import { WEEKDAYS, type EnergyModel, type Profile, type WeekMap, type Weekday } from "./nutrition";
+import {
+  WEEKDAYS,
+  goalDef,
+  type EnergyModel,
+  type Goal,
+  type Profile,
+  type ProteinBasis,
+  type WeekMap,
+  type Weekday,
+} from "./nutrition";
 
 function num(v: unknown, fallback: number): number {
   const n = Number(v);
@@ -32,8 +41,21 @@ export function normaliseWeek(raw: unknown): WeekMap {
   return out;
 }
 
+const GOAL_VALUES: Goal[] = ["cut", "maintain", "recomp", "bulk"];
+
 export function normaliseProfile(p: any): Profile {
   const model: EnergyModel = p?.energy_model === "flat" ? "flat" : "sessions";
+  const goal: Goal = GOAL_VALUES.includes(p?.goal) ? p.goal : "maintain";
+  const def = goalDef(goal);
+
+  // An adjustment outside ±40% is a typo, not a phase. Falling back to the
+  // goal's own shape also means a profile written before phases existed comes
+  // out behaving exactly as it did.
+  const adj = (v: unknown, fallback: number) => {
+    const n = Number(v);
+    return Number.isFinite(n) && Math.abs(n) <= 0.4 ? n : fallback;
+  };
+
   return {
     sex: p?.sex === "female" ? "female" : "male",
     dob: p?.dob ? String(p.dob).slice(0, 10) : null,
@@ -43,10 +65,17 @@ export function normaliseProfile(p: any): Profile {
     activity: num(p?.activity, 1.725),
     base_activity: Math.min(1.8, Math.max(1.05, num(p?.base_activity, 1.3))),
     energy_model: model,
-    goal:
-      p?.goal === "bulk" ? "bulk" : p?.goal === "maintain" ? "maintain" : "cut",
-    protein_per_kg: num(p?.protein_per_kg, 2),
-    fat_per_kg: num(p?.fat_per_kg, 0.7),
+    goal,
+    protein_basis: (p?.protein_basis === "lean" ? "lean" : "bodyweight") as ProteinBasis,
+    protein_per_kg: num(p?.protein_per_kg, def.protein.perKg),
+    fat_per_kg: num(p?.fat_per_kg, def.fatPerKg),
+    phase_name: String(p?.phase_name ?? "").slice(0, 60),
+    phase_start: p?.phase_start ? String(p.phase_start).slice(0, 10) : null,
+    phase_weeks: Math.min(52, Math.max(0, Math.round(num(p?.phase_weeks, 0)))),
+    phase_start_adjust: adj(p?.phase_start_adjust, def.start),
+    phase_end_adjust: adj(p?.phase_end_adjust, def.end),
+    calibrated_tdee: optionalNum(p?.calibrated_tdee),
+    use_calibration: p?.use_calibration === undefined ? false : !!p.use_calibration,
     calorie_override: optionalNum(p?.calorie_override),
     fibre_per_1000: num(p?.fibre_per_1000, 14),
     carb_floor_per_kg: num(p?.carb_floor_per_kg, 1),

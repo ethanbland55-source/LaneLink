@@ -8,6 +8,7 @@ import { offTarget, type BoundedItem } from "@/lib/optimise";
 import { dayVolume, volumeHeadline } from "@/lib/prep";
 import { profileFor } from "@/lib/foods";
 import { appliesOn } from "@/lib/shopping";
+import { proteinDistribution } from "@/lib/protein";
 import {
   ACTIVITIES,
   BASE_ACTIVITY_LEVELS,
@@ -23,6 +24,10 @@ import {
   WEEKDAY_LABEL,
   ageFromDob,
   buildWeekPlan,
+  dayKey,
+  goalDef,
+  leanMass,
+  proteinTarget,
   itemMacros,
   macroConsistency,
   normaliseDayType,
@@ -32,6 +37,7 @@ import {
   type DayType,
   type Goal,
   type Profile,
+  type ProteinBasis,
   type Weekday,
 } from "@/lib/nutrition";
 import { DOW_LABELS, SHOP_DAY_OPTIONS, normaliseProfile } from "@/lib/profile";
@@ -126,9 +132,39 @@ export default function PlanPage() {
 
   const drift = useMemo(() => (target ? offTarget(planTotal, target) : null), [planTotal, target]);
   const volume = useMemo(() => dayVolume(activeMeals), [activeMeals]);
+  const protein = useMemo(
+    () => (profile ? proteinDistribution(activeMeals, profile.weight_kg) : null),
+    [activeMeals, profile]
+  );
 
   function set<K extends keyof Profile>(k: K, v: Profile[K]) {
     setProfile((p) => (p ? { ...p, [k]: v } : p));
+  }
+
+  /**
+   * Choosing a goal sets the whole shape of the block, not just a percentage:
+   * where it starts, where it ends, and how protein and fat are worked out.
+   * All of it stays editable underneath.
+   */
+  function pickGoal(g: Goal) {
+    const d = goalDef(g);
+    setProfile((p) =>
+      p
+        ? {
+            ...p,
+            goal: g,
+            phase_start_adjust: d.start,
+            phase_end_adjust: d.end,
+            protein_basis: d.protein.basis,
+            protein_per_kg: d.protein.perKg,
+            fat_per_kg: d.fatPerKg,
+            phase_name: p.phase_name || d.label,
+            // A drifting goal is meaningless without a block to drift across.
+            phase_start: d.start !== d.end ? p.phase_start ?? dayKey() : p.phase_start,
+            phase_weeks: d.start !== d.end && !p.phase_weeks ? 10 : p.phase_weeks,
+          }
+        : p
+    );
   }
 
   async function saveProfile(next?: Profile) {
@@ -589,6 +625,144 @@ export default function PlanPage() {
         </button>
       </section>
 
+      {/* Phase */}
+      <section className="card px-5 py-5">
+        <p className="label">This block</p>
+        <p className="mt-1.5 text-xs leading-relaxed text-[var(--color-mut)]">
+          A block has a start, a length, and a target that can move across it. Starting level with
+          maintenance and drifting gently under is how you get leaner without the training falling
+          apart — the scale barely reacts, and body composition does.
+        </p>
+
+        <div className="mt-4 grid gap-4 sm:grid-cols-2">
+          <Field label="Name">
+            <input
+              className="field w-full"
+              placeholder={goalDef(profile.goal).label}
+              value={profile.phase_name}
+              onChange={(e) => set("phase_name", e.target.value)}
+            />
+          </Field>
+
+          <Field label="Starts">
+            <input
+              type="date"
+              className="field w-full"
+              value={profile.phase_start ?? ""}
+              onChange={(e) => set("phase_start", e.target.value || null)}
+            />
+          </Field>
+
+          <Field label="Length in weeks — 0 to hold the starting figure">
+            <Num
+              value={profile.phase_weeks}
+              onChange={(v) => set("phase_weeks", Math.max(0, Math.round(v)))}
+              step={1}
+            />
+          </Field>
+
+          <div>
+            <span className="label mb-2 block">Right now</span>
+            <div className="sunk px-3 py-3">
+              <p className="num text-xl" style={{ color: "var(--color-accent)" }}>
+                {plan.goalKcal.toLocaleString()}
+              </p>
+              <p className="mt-1 text-[0.7rem] text-[var(--color-mut)]">
+                {plan.phase.week != null
+                  ? `week ${plan.phase.week} of ${plan.phase.weeks} · ${adjLabel(plan.phase.adjust)}`
+                  : adjLabel(plan.phase.adjust)}
+              </p>
+            </div>
+          </div>
+        </div>
+
+        <div className="mt-4 space-y-3">
+          {(
+            [
+              ["phase_start_adjust", "Starts at"],
+              ["phase_end_adjust", "Ends at"],
+            ] as const
+          ).map(([key, label]) => (
+            <div key={key} className="flex items-center gap-3">
+              <span className="w-16 shrink-0 text-xs text-[var(--color-mut)]">{label}</span>
+              <input
+                type="range"
+                min={-30}
+                max={20}
+                step={1}
+                value={Math.round(profile[key] * 100)}
+                className="flex-1 accent-[var(--color-accent)]"
+                onChange={(e) => set(key, Number(e.target.value) / 100)}
+              />
+              <span className="w-20 shrink-0 text-right text-xs tabular-nums text-[var(--color-mut)]">
+                {adjLabel(profile[key])}
+              </span>
+            </div>
+          ))}
+        </div>
+
+        {(() => {
+          // The day where fat gets squeezed is the smallest one, because the
+          // carb floor takes it from fat first. Check every day type and report
+          // the worst rather than whichever one you happen to be looking at.
+          const worst = plan.order
+            .map((i) => targetsFor(plan, i))
+            .sort((a, b) => a.fatPerKg - b.fatPerKg)[0];
+          if (!worst || worst.fatPerKg >= 0.6) return null;
+          return (
+            <p className="mt-4 rounded-xl bg-[#2a2416] px-3.5 py-2.5 text-xs leading-relaxed text-[#ffd08a]">
+              Fat drops to {worst.fatPerKg.toFixed(2)} g/kg on a {worst.name.toLowerCase()} day —
+              the carb floor is taking it. Under about 0.6 g/kg for a long block isn't worth it for
+              the calories it saves; raise fat g/kg, or lower the carb floor so carbs give way
+              instead.
+            </p>
+          );
+        })()}
+
+        <button className="btn btn-accent mt-4 w-full" onClick={() => saveProfile()}>
+          Save block
+        </button>
+      </section>
+
+      {/* Protein distribution */}
+      {protein && protein.meals.length > 0 && (
+        <section className="card px-5 py-5">
+          <div className="flex items-baseline">
+            <p className="label mr-auto">Protein, spread across the day</p>
+            <span
+              className="num text-sm"
+              style={{ color: protein.ok ? "var(--color-accent)" : "var(--color-carbs)" }}
+            >
+              {protein.clearing}/{protein.target}
+            </span>
+          </div>
+
+          <div className="mt-3 space-y-1.5">
+            {protein.meals.map((m, i) => (
+              <div key={i} className="flex items-center gap-3">
+                <span className="mr-auto min-w-0 flex-1 truncate text-sm">{m.name}</span>
+                <div className="h-1.5 w-24 overflow-hidden rounded-full bg-[#23262c]">
+                  <div
+                    className="h-full rounded-full"
+                    style={{
+                      width: `${Math.min(100, m.doses * 100)}%`,
+                      background: m.clears ? MACRO_COLOR.protein : "#3d434e",
+                    }}
+                  />
+                </div>
+                <span className="num w-12 text-right text-sm">{Math.round(m.protein)}g</span>
+              </div>
+            ))}
+          </div>
+
+          <p className="mt-3 text-xs leading-relaxed text-[var(--color-mut)]">
+            {protein.notes.join(" ")} A dose under about {Math.round(protein.thresholdG)} g doesn't
+            clear the threshold that switches muscle protein synthesis on — the protein still gets
+            used, the signal just isn't sent.
+          </p>
+        </section>
+      )}
+
       {/* Shopping */}
       <section className="card px-5 py-5">
         <p className="label">Shopping</p>
@@ -696,26 +870,46 @@ export default function PlanPage() {
 
           <div className="sm:col-span-2">
             <Field label="Goal">
-              <div className="grid grid-cols-3 gap-2">
+              <div className="grid grid-cols-2 gap-2">
                 {GOALS.map((g) => (
                   <button
                     key={g.value}
-                    onClick={() => set("goal", g.value as Goal)}
+                    onClick={() => pickGoal(g.value)}
                     className={profile.goal === g.value ? "btn btn-accent" : "btn"}
                   >
                     {g.label}
                   </button>
                 ))}
               </div>
+              <p className="mt-2 text-xs leading-relaxed text-[var(--color-mut)]">
+                {goalDef(profile.goal).blurb}
+              </p>
             </Field>
           </div>
 
-          <Field label="Protein g/kg">
-            <Num
-              value={profile.protein_per_kg}
-              onChange={(v) => set("protein_per_kg", v)}
-              step={0.1}
-            />
+          <Field
+            label={`Protein g/kg ${profile.protein_basis === "lean" ? "lean mass" : "bodyweight"} · ${Math.round(proteinTarget(profile))} g`}
+          >
+            <div className="flex gap-2">
+              <Num
+                value={profile.protein_per_kg}
+                onChange={(v) => set("protein_per_kg", v)}
+                step={0.1}
+              />
+              <select
+                className="field w-36"
+                value={profile.protein_basis}
+                onChange={(e) => set("protein_basis", e.target.value as ProteinBasis)}
+              >
+                <option value="bodyweight">of bodyweight</option>
+                <option value="lean">of lean mass</option>
+              </select>
+            </div>
+            {profile.protein_basis === "lean" && leanMass(profile) == null && (
+              <p className="mt-2 text-xs leading-relaxed" style={{ color: "var(--color-carbs)" }}>
+                Lean mass needs a body fat percentage — without one this falls back to bodyweight.
+              </p>
+            )}
           </Field>
 
           <Field label="Fat g/kg">
@@ -1064,6 +1258,12 @@ function IngredientRow({
       )}
     </div>
   );
+}
+
+function adjLabel(v: number): string {
+  const n = Math.round(v * 1000) / 10;
+  if (Math.abs(n) < 0.05) return "maintenance";
+  return `${n > 0 ? "+" : ""}${n}% of maintenance`;
 }
 
 function Field({ label, children }: { label: string; children: React.ReactNode }) {

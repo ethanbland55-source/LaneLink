@@ -12,12 +12,22 @@ create table if not exists profile (
   activity          numeric not null default 1.725,  -- legacy all-in-one multiplier
   base_activity     numeric not null default 1.3,     -- everything that isn't a session
   energy_model      text    not null default 'flat',  -- sessions | flat
-  goal              text    not null default 'cut',  -- cut | maintain | bulk
+  goal              text    not null default 'cut',  -- cut | maintain | recomp | bulk
+  protein_basis     text    not null default 'bodyweight', -- bodyweight | lean
   protein_per_kg    numeric not null default 2.0,
   fat_per_kg        numeric not null default 0.7,
   carb_floor_per_kg numeric not null default 1.0,    -- carbs never fall below this
   fibre_per_1000    numeric not null default 14,     -- g fibre per 1000 kcal
   calorie_override  int,                             -- manual kcal target (weekly average)
+  -- A block: a start, a length, and a target that drifts across it.
+  phase_name        text,
+  phase_start       date,
+  phase_weeks       int     not null default 0,      -- 0 = open-ended
+  phase_start_adjust numeric,                        -- e.g. 0.00
+  phase_end_adjust   numeric,                        -- e.g. -0.08
+  -- Expenditure worked out from your own intake and weight trend.
+  calibrated_tdee   numeric,
+  use_calibration   boolean not null default false,
   cycling           boolean not null default false,  -- day-type calorie cycling
   day_adjust        jsonb,                           -- legacy
   week              jsonb,                           -- legacy {"mon":"session",...}
@@ -97,6 +107,16 @@ create table if not exists pantry (
   name       text not null unique,
   grams      numeric not null default 0,
   updated_at timestamptz not null default now()
+);
+
+-- One row per morning on the scale. Waist is optional and weekly is plenty —
+-- in a recomposition it is the number that actually moves.
+create table if not exists weigh_ins (
+  day        date primary key,
+  weight_kg  numeric,
+  waist_cm   numeric,
+  note       text,
+  created_at timestamptz not null default now()
 );
 
 -- Which shopping lines are already in the trolley.

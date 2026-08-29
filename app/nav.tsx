@@ -7,6 +7,7 @@ const TABS = [
   { href: "/", label: "Today" },
   { href: "/plan", label: "Plan" },
   { href: "/shop", label: "Shop" },
+  { href: "/progress", label: "Progress" },
 ];
 
 export function Nav() {
@@ -19,14 +20,14 @@ export function Nav() {
       </span>
 
       {/* Segmented control — the active tab is a filled pill, not a border. */}
-      <nav className="flex gap-1 rounded-full bg-[var(--color-surface)] p-1">
+      <nav className="flex gap-0.5 rounded-full bg-[var(--color-surface)] p-1 sm:gap-1">
         {TABS.map((t) => {
           const active = path === t.href;
           return (
             <Link
               key={t.href}
               href={t.href}
-              className="rounded-full px-3.5 py-1.5 text-sm font-semibold transition sm:px-4"
+              className="rounded-full px-2.5 py-1.5 text-[0.8rem] font-semibold transition sm:px-4 sm:text-sm"
               style={
                 active
                   ? { background: "var(--color-accent)", color: "#10160a" }

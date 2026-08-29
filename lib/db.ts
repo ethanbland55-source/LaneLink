@@ -96,6 +96,14 @@ async function createSchema() {
   // numbers it had, and opts in to session-based energy from the Plan page.
   // A brand-new profile is inserted as 'sessions' below.
   await sql`alter table profile add column if not exists energy_model text not null default 'flat'`;
+  await sql`alter table profile add column if not exists protein_basis text not null default 'bodyweight'`;
+  await sql`alter table profile add column if not exists phase_name text`;
+  await sql`alter table profile add column if not exists phase_start date`;
+  await sql`alter table profile add column if not exists phase_weeks int not null default 0`;
+  await sql`alter table profile add column if not exists phase_start_adjust numeric`;
+  await sql`alter table profile add column if not exists phase_end_adjust numeric`;
+  await sql`alter table profile add column if not exists calibrated_tdee numeric`;
+  await sql`alter table profile add column if not exists use_calibration boolean not null default false`;
   await sql`alter table profile add column if not exists shop_days int not null default 7`;
   await sql`alter table profile add column if not exists shop_start_dow int not null default 6`;
 
@@ -119,6 +127,16 @@ async function createSchema() {
     name text not null unique,
     grams numeric not null default 0,
     updated_at timestamptz not null default now()
+  )`;
+
+  // One row per morning you stood on the scale. Waist is optional and weekly
+  // is plenty — in a recomposition it's the number that actually moves.
+  await sql`create table if not exists weigh_ins (
+    day        date primary key,
+    weight_kg  numeric,
+    waist_cm   numeric,
+    note       text,
+    created_at timestamptz not null default now()
   )`;
 
   await sql`create table if not exists shop_checks (

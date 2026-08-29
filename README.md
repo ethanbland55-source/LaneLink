@@ -10,6 +10,9 @@ Three screens:
   → per-100g macros.
 - **`/shop` — Shopping list.** The plan played forward over however many days you buy
   for, totalled up, rounded to real pack sizes and grouped by aisle.
+- **`/progress` — Weight, waist and calibration.** The trend rather than the number,
+  what the two measurements say together, and what your own data says your
+  maintenance actually is.
 
 The logging day rolls over at **03:00 local time**, so a late-night meal still counts
 toward the day you'd call it.
@@ -44,9 +47,10 @@ Local dev: copy `.env.example` to `.env.local`, fill in `DATABASE_URL`, then
   (BMR × a modest multiplier: sitting, walking about, lectures) plus the cost of
   the sessions you actually did that day. **Maintenance** is the average of those
   across your week.
-- **Target** — maintenance −20% cutting, +12% bulking, or unchanged maintaining.
-  You can also type a manual kcal figure, which is then used as your weekly average.
-- **Protein** — g/kg bodyweight, fixed; this is the one you don't move.
+- **Target** — set by the block you're in (below). You can also type a manual kcal
+  figure, which is then used as your weekly average.
+- **Protein** — g/kg, fixed; this is the one you don't move. Scaled by bodyweight, or
+  by lean mass if you've entered a body fat percentage.
 - **Fat** — g/kg, default 0.7.
 - **Carbs** — every calorie left over, at 4 kcal/g, with a floor you set in g/kg.
   If a low day would push carbs through that floor, fat gives way instead, down to a
@@ -97,6 +101,73 @@ three or four weeks.
 An existing database keeps its old flat-multiplier numbers until you press
 **Switch to session-based energy** on the Plan page, so upgrading never silently moves
 your targets.
+
+## Blocks, and toned maintenance
+
+A goal isn't a percentage, it's a shape over time. A **block** has a name, a start, a
+length in weeks, and a target that can move from one figure to another across it.
+
+**Toned maintenance** is the interesting one. Recomposition — losing fat and gaining
+muscle at the same time — is well documented in trained people, and the levers that
+decide whether it happens are protein, training, and an energy balance somewhere near
+zero rather than a large deficit. So the block:
+
+- **starts level with maintenance** and drifts to about −8% by the end, so nothing
+  about training suffers while you settle in and the deficit arrives slowly enough that
+  the scale barely reacts,
+- **puts protein on lean mass** — 2.8 g/kg of fat-free mass, mid-range of the
+  2.6–3.5 g/kg FFM the recomposition literature points at, which for 78 kg at 14% works
+  out around 188 g, or 2.4 g/kg of bodyweight. Without a body fat figure it falls back
+  to bodyweight, and the result is clamped either way so a mistyped percentage can't
+  ask you to eat 400 g,
+- **holds protein and fat flat on a rest day** and lets carbohydrate absorb the whole
+  swing, with a floor under carbs and a hard 0.45 g/kg floor under fat. If the carb
+  floor ever squeezes fat below 0.6 g/kg the Plan page says so, because a long block on
+  very low fat isn't worth the calories it saves.
+
+The drift composes with everything else: day types still set the shape of the week,
+the week still averages exactly on the block's target for today, and the shopping list
+still buys the plan you actually eat.
+
+Cutting, maintaining and bulking are the same machinery with the start and end set
+equal. Any of them can be given a ramp if you want one.
+
+## Weight, waist and calibration
+
+**Nothing here looks at today's weight.** A morning reading is mostly water, glycogen
+and last night's dinner; it moves ±1 kg for reasons that have nothing to do with fat.
+Everything works off an exponentially weighted trend line and its slope, which is the
+only part of the signal that means anything over a week.
+
+**Waist matters more than weight in a recomp.** Weight is supposed to sit still — that
+*is* the objective — so the scale gives you no feedback for months while the tape does.
+The verdict on the Progress page reads them together: flat weight with the waist coming
+in is "working, don't let the scale talk you out of it"; losing more than 0.7% of
+bodyweight a week is flagged, because past there you're giving lean mass back and in a
+training block you'll feel it in the pool before you see it anywhere else.
+
+**Then it calibrates.** What you ate, minus what your weight did, is what you burned.
+Given about two weeks of daily weigh-ins and confirmed food logs in the same window,
+the app backs out your real expenditure — `mean intake − trend slope × 7,700 kcal/kg` —
+and offers it in place of the formula. On synthetic data with realistic daily noise it
+recovers a known 3,050 kcal expenditure to within about 10 kcal (`bench/recomp.ts`).
+
+Accepting it scales every day type by one factor, so the shape of your week is
+untouched; it's opt-in, it tells you its confidence, and it never rewrites your targets
+on its own. This is the single biggest accuracy gain available — every prediction
+equation in this README is fitted to a population, and you are one person.
+
+## Protein distribution
+
+The daily total does the work; the spread decides whether it's wasted. A dose under
+about **0.4 g/kg of bodyweight** doesn't clear the leucine threshold that switches
+muscle protein synthesis on — the protein is still used, the signal just isn't sent.
+Four or five doses a day, one near training and one before sleep, is where the
+physique-nutrition literature lands.
+
+So the Plan page shows each meal's protein against that threshold, counts how many
+doses actually clear it, and tells you which meal is closest to clearing and by how
+much. A meal eaten twice a day counts as two doses.
 
 ## Recalculate portions
 
@@ -200,6 +271,27 @@ forward day by day from your shop day and totals every ingredient.
 - Tick things off as you go — the ticks are saved server-side, so the phone in the shop
   and the laptop at home agree. *New shop* clears them. There's a copy-to-clipboard
   export and a print stylesheet.
+
+## Where the numbers come from
+
+- Barakat et al. (2020), *Body Recomposition: Can Trained Individuals Build Muscle and
+  Lose Fat at the Same Time?*, Strength & Conditioning Journal — protein at
+  2.6–3.5 g/kg FFM, resistance training at least 3×/week, recomposition observed across
+  a range of energy balances.
+- Iraki, Fitschen, Espinar & Helms (2019), *Nutritional Recommendations for Physique
+  Athletes* — protein 1.8–2.7 g/kg, fat 10–25% of calories with a strong caution
+  against long periods below that, carbohydrate 2–5 g/kg, weight loss ≤0.5% of body
+  mass per week, four or five protein doses a day with one near training and one before
+  sleep.
+- Helms et al. (2014), *A Systematic Review of Dietary Protein During Caloric
+  Restriction in Resistance Trained Lean Athletes* — the case for higher protein
+  expressed per kg of fat-free mass while in a deficit.
+- Ainsworth et al., *Compendium of Physical Activities* — the MET values behind every
+  session cost.
+- Mifflin-St Jeor and Katch-McArdle for BMR; the trend line is the Hacker's Diet EWMA.
+
+They're population averages, not measurements of you. That's exactly why the
+calibration exists — once you have your own data, it wins.
 
 ## Notes
 
