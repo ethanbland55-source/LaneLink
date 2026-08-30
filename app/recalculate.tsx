@@ -51,6 +51,17 @@ export function RecalculateDialog({
   const [mode, setMode] = useState<Mode>(defaultMode);
   const [saving, setSaving] = useState(false);
   const [tab, setTab] = useState<"days" | "splits" | "portions" | "prep">("days");
+  /**
+   * Which meal's internal split is open, if any.
+   *
+   * Closed by default: most meals are a recipe rather than a ratio, and a
+   * per-cent box under every one of them asks you to have an opinion about
+   * how much of your dinner is rice. A meal you have already set shares on
+   * opens straight away, because that one you clearly do.
+   */
+  const [splitOpen, setSplitOpen] = useState<number | null>(
+    () => meals.find((m) => m.ingredients.some((it) => it.share_pct != null))?.id ?? null
+  );
 
   const result = useMemo(() => fitWeek(draft, plan, { mode }), [draft, plan, mode]);
 
@@ -375,9 +386,10 @@ export function RecalculateDialog({
           {tab === "splits" && (
             <div className="space-y-4 pb-2">
               <p className="text-xs leading-relaxed text-[var(--color-mut)]">
-                Nothing in the day&rsquo;s targets says how to divide meals that always appear
-                together, or how much of a bowl should be yoghurt. Say what you want and the fit
-                holds it. Every figure here is a share of the <b>calories</b>.
+                This is plan-building. Nothing in the day&rsquo;s targets says how to divide meals
+                that always appear together, so these say what you want and the fit holds it.
+                Figures are shares of the <b>calories</b>. It shapes the plan you cook to — logging
+                what you ate is untouched by any of it.
               </p>
 
               {/* Between meals that come and go together */}
@@ -409,17 +421,55 @@ export function RecalculateDialog({
                 </div>
               ))}
 
-              {/* Within one meal */}
-              {draft
-                .filter((m) => m.ingredients.length > 1)
-                .map((meal) => {
+              {/* Inside one meal — opt in, because most meals aren't like that */}
+              <div className="sunk px-4 py-3.5">
+                <p className="text-xs font-semibold text-[var(--color-mut)]">Inside a meal</p>
+                <p className="mt-1.5 text-[0.7rem] leading-relaxed text-[var(--color-mut)]">
+                  Some meals you balance deliberately — a yoghurt bowl you want half yoghurt rather
+                  than half granola. Most you don&rsquo;t: chicken and rice is a recipe, not a
+                  ratio. Open one only if it&rsquo;s the first kind.
+                </p>
+
+                <div className="mt-3 flex flex-wrap gap-1.5">
+                  {draft
+                    .filter((m) => m.ingredients.length > 1)
+                    .map((meal) => {
+                      const set = meal.ingredients.some((it) => it.share_pct != null);
+                      const open = splitOpen === meal.id;
+                      return (
+                        <button
+                          key={meal.id}
+                          onClick={() => setSplitOpen(open ? null : meal.id)}
+                          className={open || set ? "btn btn-sm btn-accent" : "btn btn-sm"}
+                        >
+                          {meal.name}
+                          {set && " ·"}
+                        </button>
+                      );
+                    })}
+                </div>
+
+                {(() => {
+                  const meal = draft.find((m) => m.id === splitOpen);
+                  if (!meal) return null;
                   const inner = ingredientSplit.get(meal.id) ?? new Map<number, number>();
                   return (
-                    <div key={`ing-${meal.id}`} className="sunk px-4 py-3.5">
-                      <p className="text-xs font-semibold text-[var(--color-mut)]">
-                        Inside {meal.name.toLowerCase()}
-                        {meal.batch && " — the recipe"}
-                      </p>
+                    <div className="mt-4 border-t border-[#1c1f25] pt-3.5">
+                      <div className="flex items-baseline gap-2">
+                        <p className="mr-auto text-sm font-semibold">{meal.name}</p>
+                        {meal.ingredients.some((it) => it.share_pct != null) && (
+                          <button
+                            className="text-[0.7rem] text-[var(--color-mut)] underline decoration-dotted"
+                            onClick={() =>
+                              meal.ingredients.forEach((_, i) =>
+                                patchItem(meal.id, i, { share_pct: null })
+                              )
+                            }
+                          >
+                            clear
+                          </button>
+                        )}
+                      </div>
                       <div className="mt-3 space-y-2.5">
                         {meal.ingredients.map((it, i) => (
                           <ShareRow
@@ -442,7 +492,8 @@ export function RecalculateDialog({
                       </p>
                     </div>
                   );
-                })}
+                })()}
+              </div>
             </div>
           )}
 

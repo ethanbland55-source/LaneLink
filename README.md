@@ -362,11 +362,20 @@ handful of dates ends up carrying 41% of a session's calories.
 So meals that appear on **exactly the same days** form a group, and each gets a
 per-cent box. Leave it empty and the fit decides; type 20 and it holds the split.
 
-**The same question exists one level down.** Nothing in the targets says how much
-of a yoghurt bowl should be yoghurt either — left alone the fit will happily make
-it half granola if the macros come out a shade closer, and that is not the bowl
-you wanted. So every ingredient of a multi-ingredient meal gets a per-cent box
+**The same question exists one level down, for some meals.** Nothing in the
+targets says how much of a yoghurt bowl should be yoghurt either — left alone the
+fit will happily make it half granola if the macros come out a shade closer, and
+that is not the bowl you wanted. So the ingredients of a meal can be given shares
 too: 50% yoghurt, 40% granola, 10% honey.
+
+It is **opt in per meal**, because most meals are not like that. Chicken and rice
+is a recipe, not a ratio, and a per-cent box under every ingredient of every meal
+asks you to have an opinion about how much of your dinner is rice. Open the one
+meal you actually balance deliberately and leave the rest alone.
+
+All of this is **plan-building**. Shares shape the portions the fit lands on, and
+that is the whole of what they do — nothing in the log, the shopping list or the
+cook list reads them.
 
 Every figure is a share of the **calories**, at both levels, because that is the
 thing being divided. By weight a yoghurt bowl is 80% yoghurt and the number tells
