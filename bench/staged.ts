@@ -41,7 +41,7 @@ const BANDS: Record<string, [number, number, number]> = {
   "Greek Yohurt": [400, 550, 10],
   "Protein Grenola": [50, 110, 5],
   Bagel: [85, 170, 85],
-  "Peanut Butter": [10, 35, 1],
+  "Peanut Butter": [10, 35, 1],  // 3 g is not a portion; the 46 kcal it costs is 20 a day
 };
 
 function vars(meals: any[], mealIds: number[]): Var[] {

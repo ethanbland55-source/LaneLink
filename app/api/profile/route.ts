@@ -109,6 +109,7 @@ export async function PUT(req: Request) {
       plan_bf_pct = ${b.plan_bf_pct},
       plan_updated_on = ${b.plan_updated_on || null},
       auto_roll = ${b.auto_roll},
+      periodise = ${b.periodise},
       updated_at = now()
     where id = 1
     returning *,

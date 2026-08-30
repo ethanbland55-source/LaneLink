@@ -129,6 +129,8 @@ async function createSchema() {
   await sql`alter table profile add column if not exists plan_bf_pct numeric`;
   await sql`alter table profile add column if not exists plan_updated_on date`;
   await sql`alter table profile add column if not exists auto_roll boolean not null default true`;
+  // Lean protein and fat toward the days with training in them.
+  await sql`alter table profile add column if not exists periodise boolean not null default true`;
 
   await sql`alter table log_entries add column if not exists day_type text`; // legacy
   await sql`alter table log_entries add column if not exists day_type_id int`;

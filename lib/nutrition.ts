@@ -139,6 +139,8 @@ export type Profile = {
   plan_updated_on: string | null;
   /** Whether shopping day rebuilds the plan by itself. */
   auto_roll: boolean;
+  /** Lean protein and fat toward the days with training in them. */
+  periodise: boolean;
   /** Off means one flat number every day, and the week grid is ignored. */
   cycling: boolean;
   week: WeekMap;
@@ -469,9 +471,9 @@ export function proteinIsAssumed(p: Profile): boolean {
   return p.protein_basis === "lean" && leanMass(p) == null;
 }
 
-function macrosFor(p: Profile, kcal: number): Macros {
-  const protein = proteinTarget(p);
-  let fat = p.fat_per_kg * planWeight(p);
+function macrosFor(p: Profile, kcal: number, mul = { protein: 1, fat: 1 }): Macros {
+  const protein = proteinTarget(p) * mul.protein;
+  let fat = p.fat_per_kg * planWeight(p) * mul.fat;
   const carbFloor = (p.carb_floor_per_kg ?? 1) * planWeight(p);
 
   let carbs = (kcal - protein * 4 - fat * 9) / 4;
@@ -582,6 +584,10 @@ export function buildWeekPlan(
     balance = maintenance > 0 ? goalKcal / maintenance : 1;
   }
 
+  // Protein and fat lean toward the days that earn them, averaging out across
+  // the week so the figures you set still mean what they say.
+  const muls = loadMultipliers(types, week);
+
   const floor = bmr(p) * 1.05;
   const byId: Record<number, Targets> = {};
   for (const t of types) {
@@ -592,7 +598,7 @@ export function buildWeekPlan(
     else kcal = raw * balance;
     kcal = Math.max(floor, kcal);
 
-    const m = macrosFor(p, kcal);
+    const m = macrosFor(p, kcal, p.periodise ? muls.get(t.id) ?? undefined : undefined);
     byId[t.id] = {
       ...m,
       dayTypeId: t.id,
@@ -843,4 +849,109 @@ export function carbCheck(p: Profile, plan: WeekPlan): CarbCheck[] {
               : "low_by_design",
     };
   });
+}
+
+/* ------------------------------------------------------------------ */
+/* How much the day's training moves protein and fat                    */
+/* ------------------------------------------------------------------ */
+
+/**
+ * Protein and fat lean on the day, gently.
+ *
+ * Carbohydrate periodisation is well established — fuel the work required, and
+ * the swing is large. Protein and fat are a different and weaker case, and the
+ * honest version of it is this:
+ *
+ *  - **Protein should not swing much.** Muscle protein synthesis stays raised
+ *    for a day or two after a session (Phillips et al. 1997), so a rest day
+ *    between two training days is still working through the last one. In a
+ *    deficit, protein protects lean mass on every day, trained or not
+ *    (Mettler et al. 2010). Anyone who drops protein hard on rest days is
+ *    doing something the evidence does not support.
+ *  - **But a range is a range.** The recommendations are bands, not points —
+ *    2.3–3.1 g/kg of fat-free mass through a deficit (Helms et al. 2014).
+ *    Sitting near the bottom of that band on a day with no training and near
+ *    the top on a hard double is periodisation *within* the evidence rather
+ *    than outside it, and it is what a periodised framework actually does
+ *    (Stellingwerff et al. 2019).
+ *  - **Fat as grams per kilo was the wrong shape.** Fat guidance is written as
+ *    a share of energy — roughly 20–35% for athletes (Thomas et al. 2016),
+ *    lower for physique work (Iraki et al. 2019) — over a floor for hormonal
+ *    health. A flat gram figure inverts that: 63 g is 25% of a 2,239 kcal rest
+ *    day and 17% of a 3,365 kcal training day, so the current model quietly
+ *    makes rest days the *fattiest* ones. Leaning fat toward the bigger day
+ *    brings both closer to the middle of the band.
+ *
+ * The spread is deliberately small, and the week still averages exactly the
+ * figure you set — this moves protein and fat *between* days, it does not add
+ * any. Turn it off and every day gets the same, as before.
+ */
+export const LOAD_SPREAD = { protein: 0.1, fat: 0.14 };
+
+/**
+ * Where each day type sits between the lightest day of the week and the
+ * heaviest, by MET-weighted training minutes. 0 on the lightest, 1 on the
+ * heaviest, and 0.5 for everything when every day is the same.
+ */
+export function loadPositions(types: DayType[], week: WeekMap): Map<number, number> {
+  const used = new Set(WEEKDAYS.map((d) => week[d]));
+  const loads = new Map(types.map((t) => [t.id, trainingLoad(t)]));
+  const inWeek = [...loads.entries()].filter(([id]) => used.has(id)).map(([, v]) => v);
+
+  const lo = inWeek.length ? Math.min(...inWeek) : 0;
+  const hi = inWeek.length ? Math.max(...inWeek) : 0;
+  const span = hi - lo;
+
+  const out = new Map<number, number>();
+  for (const t of types) {
+    const v = loads.get(t.id) ?? 0;
+    // Day types outside the week still get a sensible position rather than
+    // falling off the end of a scale built without them.
+    out.set(t.id, span > 1e-9 ? Math.max(0, Math.min(1, (v - lo) / span)) : 0.5);
+  }
+  return out;
+}
+
+/**
+ * Multipliers on protein and fat, one per day type, averaging exactly 1 across
+ * the week you actually eat.
+ *
+ * The normalisation is the point. Without it, leaning protein toward training
+ * days would quietly raise or lower the weekly total depending on how the week
+ * happens to be shaped, and the figure you set would stop meaning anything.
+ */
+export function loadMultipliers(
+  types: DayType[],
+  week: WeekMap,
+  spread: { protein: number; fat: number } = LOAD_SPREAD
+): Map<number, { protein: number; fat: number }> {
+  const pos = loadPositions(types, week);
+  const raw = new Map<number, { protein: number; fat: number }>();
+  for (const t of types) {
+    const x = (pos.get(t.id) ?? 0.5) - 0.5; // -0.5 .. +0.5
+    raw.set(t.id, {
+      protein: 1 + 2 * x * spread.protein,
+      fat: 1 + 2 * x * spread.fat,
+    });
+  }
+
+  // Weighted mean over the seven days as mapped, then divide it out.
+  let n = 0;
+  let sumP = 0;
+  let sumF = 0;
+  for (const d of WEEKDAYS) {
+    const m = raw.get(week[d]);
+    if (!m) continue;
+    n++;
+    sumP += m.protein;
+    sumF += m.fat;
+  }
+  const meanP = n ? sumP / n : 1;
+  const meanF = n ? sumF / n : 1;
+
+  const out = new Map<number, { protein: number; fat: number }>();
+  for (const [id, m] of raw) {
+    out.set(id, { protein: m.protein / (meanP || 1), fat: m.fat / (meanF || 1) });
+  }
+  return out;
 }

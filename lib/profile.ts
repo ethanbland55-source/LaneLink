@@ -119,6 +119,7 @@ export function normaliseProfile(p: any): Profile {
     plan_bf_pct: optionalNum(p?.plan_bf_pct),
     plan_updated_on: isoDate(p?.plan_updated_on),
     auto_roll: p?.auto_roll === undefined ? true : !!p.auto_roll,
+    periodise: p?.periodise === undefined ? true : !!p.periodise,
     cycling: p?.cycling === undefined ? true : !!p.cycling,
     week: normaliseWeek(p?.week_ids ?? p?.week),
     shop_days: Math.min(21, Math.max(1, Math.round(num(p?.shop_days, 7)))),

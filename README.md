@@ -585,6 +585,48 @@ it, both of which are deliberately unkind:
 The caveat gets the same weight as the claim, because for half this list the
 caveat *is* the finding.
 
+## Leaning protein and fat on the day
+
+Carbohydrate periodisation is well established. Protein and fat are a weaker
+case, and this is the honest version of it.
+
+**Protein should not swing much.** Muscle protein synthesis stays raised for a
+day or two after a session (Phillips et al. 1997), so a rest day between two
+training days is still working through the last one. In a deficit, protein
+protects lean mass on every day, trained or not (Mettler et al. 2010). Anyone
+who drops protein hard on rest days is doing something the evidence does not
+support.
+
+**But a range is a range.** The recommendations are bands, not points —
+2.3–3.1 g/kg of fat-free mass through a deficit (Helms et al. 2014). Sitting
+near the bottom of that band on a day with no training and near the top on a
+hard double is periodisation *within* the evidence rather than outside it, and
+it is what a periodised framework actually does (Stellingwerff et al. 2019).
+
+**Fat as grams per kilo was the wrong shape.** Fat guidance is written as a
+share of energy — roughly 20–35% for athletes (Thomas et al. 2016), lower for
+physique work (Iraki et al. 2019) — over a floor for hormonal health. A flat
+gram figure inverts that:
+
+```
+                     flat 63 g            leaning on the day
+  Rest day           63 g = 25% of kcal   50 g = 20%
+  Swim only          63 g = 18%           63 g = 18%
+  Swim + gym         63 g = 17%           67 g = 18%
+```
+
+The old model quietly made the rest day the fattiest one of the week.
+
+The spread is small (±10% on protein, ±14% on fat) and **the week still
+averages exactly the figures you set** — it moves protein and fat between days
+rather than adding any. `periodise` on the profile turns it off.
+
+It also happens to make the plan solvable. With protein and fat identical on
+every day, the difference between a rest day and a swim day is 100%
+carbohydrate, and nothing real is 100% carbohydrate — so no arrangement of
+portions could put both days on target at once. Letting the training day carry
+the protein and fat that comes with the extra food closes that gap.
+
 ## Fuelling the work
 
 The check a percentage-based macro split can never make, and the one that matters

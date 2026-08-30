@@ -83,6 +83,7 @@ export const REAL_PROFILE: Profile = {
   plan_bf_pct: null,
   plan_updated_on: null,
   auto_roll: true,
+  periodise: true,
   week: { mon: 4, tue: 3, wed: 3, thu: 4, fri: 3, sat: 4, sun: 1 },
   shop_days: 7,
   shop_start_dow: 6,

@@ -127,6 +127,33 @@ export const CITATIONS: Record<string, Citation> = {
     supports:
       "Four moderate doses every three hours beat the same protein in two large ones or eight small ones.",
   },
+  phillips1997: {
+    key: "phillips1997",
+    authors: "Phillips SM, Tipton KD, Aarsland A, Wolf SE, Wolfe RR",
+    year: 1997,
+    title: "Mixed muscle protein synthesis and breakdown after resistance exercise in humans",
+    source: "Am J Physiol 273(1):E99–E107",
+    supports:
+      "Muscle protein synthesis stays raised for a day or two after a session — which is why a rest day between two training days is not really a day off, and why its protein should not fall far.",
+  },
+  mettler2010: {
+    key: "mettler2010",
+    authors: "Mettler S, Mitchell N, Tipton KD",
+    year: 2010,
+    title: "Increased protein intake reduces lean body mass loss during weight loss in athletes",
+    source: "Med Sci Sports Exerc 42(2):326–337",
+    supports:
+      "In a deficit, protein protects lean mass every day — including the ones you don't train.",
+  },
+  stellingwerff2019: {
+    key: "stellingwerff2019",
+    authors: "Stellingwerff T, Morton JP, Burke LM",
+    year: 2019,
+    title: "A Framework for Periodized Nutrition for Athletics",
+    source: "Int J Sport Nutr Exerc Metab 29(2):141–151",
+    supports:
+      "Matching the day's nutrition to the day's work: carbohydrate strongly, protein and fat gently, within their ranges rather than outside them.",
+  },
   helms2014: {
     key: "helms2014",
     authors: "Helms ER, Aragon AA, Fitschen PJ",
