@@ -38,6 +38,14 @@ create table if not exists profile (
   week_ids          jsonb,                           -- {"mon": 3, "tue": 4, ...} -> day_types.id
   shop_days         int     not null default 7,      -- days of food per shop
   shop_start_dow    int     not null default 6,      -- 0 = Sunday … 6 = Saturday
+  -- The figures this week's targets are built on, snapshotted on shopping day.
+  -- Deliberately separate from weight_kg: the plan must not move under you
+  -- every time you stand on the scale, only once a week, so that what you buy
+  -- and what you eat agree all week. See lib/weekly.ts.
+  plan_weight_kg    numeric,
+  plan_bf_pct       numeric,
+  plan_updated_on   date,
+  auto_roll         boolean not null default true,
   updated_at        timestamptz not null default now(),
   constraint profile_singleton check (id = 1)
 );
@@ -94,6 +102,9 @@ create table if not exists ingredients (
   min_grams       numeric,
   max_grams       numeric,
   locked          boolean not null default false,
+  -- Share of this ingredient's meal, by calories, 0-100. The same idea as
+  -- meals.share_pct one level down.
+  share_pct       numeric,
   sort_order      int  not null default 0
 );
 
@@ -105,6 +116,7 @@ create table if not exists log_entries (
   meal_name  text not null,
   day_type     text,                                 -- legacy
   day_type_id  int,
+  at_time      text,                                 -- 'HH:MM' it was eaten
   confirmed  boolean not null default false,
   kcal       numeric not null default 0,
   protein    numeric not null default 0,
@@ -112,6 +124,38 @@ create table if not exists log_entries (
   fat        numeric not null default 0,
   items      jsonb   not null default '[]'::jsonb,
   created_at timestamptz not null default now()
+);
+
+-- Supplements are a fixed dose you tick off, not an ingredient the optimiser
+-- may resize. Modelling them as ingredients would let the fit shrink your
+-- creatine to help hit a carb target, and make the shopping list try to buy 5 g
+-- of it. Macros are per dose and usually all zero.
+create table if not exists supplements (
+  id            serial primary key,
+  name          text    not null,
+  dose          numeric not null default 0,
+  unit          text    not null default 'g',      -- g | mg | mcg | IU | capsule | scoop | ml
+  timing        text    not null default 'anytime',
+  meal_id       int references meals(id) on delete set null,  -- taken with this meal
+  day_type_ids  int[],                             -- null = every day type
+  times_per_day numeric not null default 1,
+  kcal          numeric not null default 0,
+  protein       numeric not null default 0,
+  carbs         numeric not null default 0,
+  fat           numeric not null default 0,
+  note          text,
+  sort_order    int     not null default 0,
+  created_at    timestamptz not null default now()
+);
+
+-- One row per supplement actually taken on a day.
+create table if not exists supplement_log (
+  day           date not null,
+  supplement_id int  not null references supplements(id) on delete cascade,
+  taken         int  not null default 1,
+  at_time       text,
+  created_at    timestamptz not null default now(),
+  primary key (day, supplement_id)
 );
 
 -- What's already in the cupboard, subtracted from the shopping list.
@@ -131,7 +175,19 @@ create table if not exists weigh_ins (
   weight_kg  numeric,
   waist_cm   numeric,
   tag        text not null default 'morning',   -- morning | other | evening
+  at_time    text,                              -- 'HH:MM'; beats the tag when set
   note       text,
+  -- Measurements taken alongside, so body fat can trend rather than being a
+  -- figure typed in once months ago. Tape in cm, skinfolds in mm.
+  neck_cm       numeric,
+  hip_cm        numeric,
+  sf_chest      numeric,
+  sf_abdomen    numeric,
+  sf_thigh      numeric,
+  sf_tricep     numeric,
+  sf_suprailiac numeric,
+  bf_pct        numeric,                        -- worked out on write
+  bf_method     text,                           -- tape | skinfold | manual
   created_at timestamptz not null default now()
 );
 

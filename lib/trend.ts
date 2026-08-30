@@ -42,6 +42,8 @@ export type WeighIn = {
   weight_kg: number | null;
   waist_cm: number | null;
   tag?: Tag | null;
+  /** Clock time you stood on the scale, "HH:MM". Null on older readings. */
+  at_time?: string | null;
 };
 
 export type IntakeDay = { day: string; kcal: number };
@@ -66,30 +68,73 @@ export const MAX_PULL = 1.5;
 export const KCAL_PER_KG = 7700;
 
 /**
- * Starting assumptions for how much heavier a reading is at each time of day,
- * used until there's enough of your own data to replace them. The typical
- * diurnal swing is around a kilo, most of it food and fluid still in transit.
+ * How the day makes you heavier.
+ *
+ * You are lightest first thing and gain through the day as food and fluid
+ * arrive faster than they leave — around a kilo by the evening, essentially
+ * none of it fat. Three buckets (morning / daytime / evening) capture that
+ * roughly; an actual clock time captures it properly, because 09:00 and 11:30
+ * are both "morning" and are not the same reading.
+ *
+ * So the correction is a **rate per hour since waking**, flattening off once
+ * the day's food is mostly in. A reading with a time uses its real hour; one
+ * with only a tag uses the hour that tag stands for, so nothing logged before
+ * this existed is thrown away.
  */
-export const DEFAULT_WEIGHT_OFFSET: Record<Tag, number> = {
-  morning: 0,
-  other: 0.5,
-  evening: 1.1,
-};
+export const WAKE_HOUR = 6;
+
+/** Population starting point, kg gained per hour awake, until yours is known. */
+export const DEFAULT_RISE_PER_HOUR = 0.085;
+
+/** Past this the day's intake is in and the curve flattens. */
+export const RISE_PLATEAU_HOURS = 14;
 
 /** The same for the tape — a waist reads fuller after a day of eating. */
-export const DEFAULT_WAIST_OFFSET: Record<Tag, number> = {
-  morning: 0,
-  other: 0.6,
-  evening: 1.2,
-};
+export const DEFAULT_WAIST_RISE_PER_HOUR = 0.09;
+
+/** The hour a tag stands for, when there's no clock time to use instead. */
+export const TAG_HOUR: Record<Tag, number> = { morning: 7, other: 14, evening: 21 };
+
+/** Hours awake at a given clock hour, clamped to the part of the curve that rises. */
+export function hoursAwake(hour: number): number {
+  return Math.max(0, Math.min(RISE_PLATEAU_HOURS, hour - WAKE_HOUR));
+}
+
+/** "07:45" -> 7.75. Anything unparseable comes back null. */
+export function parseClock(at: string | null | undefined): number | null {
+  if (!at) return null;
+  const m = /^(\d{1,2}):(\d{2})$/.exec(at.trim());
+  if (!m) return null;
+  const h = Number(m[1]);
+  const min = Number(m[2]);
+  if (!(h >= 0 && h < 24 && min >= 0 && min < 60)) return null;
+  return h + min / 60;
+}
+
+/** The hour to correct this reading from — its own, or the one its tag implies. */
+export function hourOf(e: WeighIn): number {
+  return parseClock(e.at_time) ?? TAG_HOUR[tagOf(e)];
+}
 
 export type Offsets = {
+  /** kg gained per hour awake, measured on you where possible. */
+  risePerHour: number;
+  waistRisePerHour: number;
+  /** What that comes to at each tag's hour — for display, and for old readings. */
   weight: Record<Tag, number>;
   waist: Record<Tag, number>;
-  /** Which tags had enough readings to be measured rather than assumed. */
+  /** True when the rate was measured on you rather than assumed. */
   learned: Tag[];
+  measured: boolean;
+  /** How many readings had a real clock time to learn from. */
+  timed: number;
   counts: Record<Tag, number>;
 };
+
+/** What a reading taken this many hours after waking reads heavy by. */
+export function riseAt(hours: number, perHour: number): number {
+  return Math.max(0, Math.min(RISE_PLATEAU_HOURS, hours)) * perHour;
+}
 
 function toDate(day: string): Date {
   return new Date(day + "T12:00:00");
@@ -106,86 +151,105 @@ function tagOf(e: WeighIn): Tag {
   return e.tag === "evening" || e.tag === "other" ? e.tag : "morning";
 }
 
-/** EWMA with the per-reading influence cap, over pre-sorted values. */
-function smooth(values: { day: string; v: number }[]): Map<string, number> {
-  const out = new Map<string, number>();
-  if (!values.length) return out;
-  let trend = values[0].v;
-  for (const p of values) {
-    const pull = Math.max(-MAX_PULL, Math.min(MAX_PULL, p.v - trend));
-    trend = trend + ALPHA * pull;
-    out.set(p.day, trend);
-  }
-  return out;
-}
-
 /**
- * How much heavier each tag reads than a morning weigh-in — measured on you.
+ * How fast the day makes *you* heavier — measured rather than assumed.
  *
- * Build a provisional trend from morning readings alone, then ask what each
- * other tag sat above it. Uses the median so one odd reading can't set the
- * offset, and needs a handful of examples before it will believe itself;
- * otherwise the population defaults stand.
+ * Two obvious approaches both fail. Measuring later readings against a trend
+ * built from morning ones biases *low*, because a "morning" reading is already
+ * an hour or two into the rise, so the baseline it sets is too heavy. Choosing
+ * the rate that makes the corrected readings sit tightest around their own
+ * trend is circular — the trend chases the correction, and it biases *high*.
+ *
+ * What works is pairs. Take two readings a few days apart: your real weight
+ * has barely moved between them, so almost all of the difference between them
+ * is the difference in what time of day they were taken. Divide one by the
+ * other and you have the rate, with the trend cancelled out rather than
+ * estimated. The median across every such pair is the robust version, so one
+ * odd reading can't set it.
+ *
+ * It needs readings genuinely spread across the day. Weigh at 07:00 every
+ * morning and there is nothing here to learn, so the population figure stands
+ * — which is close enough that the trend is usable from the first week either
+ * way.
  */
 export function learnOffsets(entries: WeighIn[]): Offsets {
   const counts: Record<Tag, number> = { morning: 0, evening: 0, other: 0 };
-  for (const e of entries) if (e.weight_kg != null) counts[tagOf(e)]++;
+  let timed = 0;
+  for (const e of entries) {
+    if (e.weight_kg == null) continue;
+    counts[tagOf(e)]++;
+    if (parseClock(e.at_time) != null) timed++;
+  }
 
-  const weight = { ...DEFAULT_WEIGHT_OFFSET };
-  const waist = { ...DEFAULT_WAIST_OFFSET };
+  let risePerHour = DEFAULT_RISE_PER_HOUR;
+  let measured = false;
   const learned: Tag[] = [];
 
-  const reference = entries
-    .filter((e) => e.weight_kg != null && tagOf(e) === "morning")
-    .map((e) => ({ day: e.day, v: Number(e.weight_kg) }))
-    .sort((a, b) => a.day.localeCompare(b.day));
+  const points = entries
+    .filter((e) => e.weight_kg != null && Number(e.weight_kg) > 0)
+    .map((e) => ({
+      t: toDate(e.day).getTime() / 86_400_000,
+      w: Number(e.weight_kg),
+      h: hoursAwake(hourOf(e)),
+    }))
+    .sort((a, b) => a.t - b.t);
 
-  if (reference.length >= 8) {
-    const ref = smooth(reference);
-    const days = [...ref.keys()];
+  /** Days apart two readings may be and still be treated as the same weight. */
+  const NEAR_DAYS = 4;
+  /** Hours apart they must be for the division to mean anything. */
+  const MIN_HOUR_GAP = 2;
 
-    /** The morning trend nearest this day, if there is one close enough. */
-    const nearby = (day: string): number | null => {
-      let best: string | null = null;
-      let bestGap = Infinity;
-      for (const d of days) {
-        const gap = Math.abs(toDate(d).getTime() - toDate(day).getTime()) / 86_400_000;
-        if (gap < bestGap) {
-          bestGap = gap;
-          best = d;
-        }
-      }
-      return best != null && bestGap <= 5 ? ref.get(best)! : null;
-    };
-
-    for (const tag of ["evening", "other"] as Tag[]) {
-      const diffs: number[] = [];
-      for (const e of entries) {
-        if (e.weight_kg == null || tagOf(e) !== tag) continue;
-        const base = nearby(e.day);
-        if (base != null) diffs.push(Number(e.weight_kg) - base);
-      }
-      if (diffs.length >= 4) {
-        diffs.sort((a, b) => a - b);
-        const median = diffs[Math.floor(diffs.length / 2)];
-        weight[tag] = Math.max(-3, Math.min(3, median));
-        learned.push(tag);
-      }
+  const rates: number[] = [];
+  for (let i = 0; i < points.length; i++) {
+    for (let j = i + 1; j < points.length; j++) {
+      const dt = points[j].t - points[i].t;
+      if (dt > NEAR_DAYS) break; // sorted, so nothing later is closer
+      const dh = points[j].h - points[i].h;
+      if (Math.abs(dh) < MIN_HOUR_GAP) continue;
+      rates.push((points[j].w - points[i].w) / dh);
     }
   }
 
-  return { weight, waist, learned, counts };
+  if (rates.length >= 8) {
+    rates.sort((a, b) => a - b);
+    const median = rates[Math.floor(rates.length / 2)];
+    // Outside this band it isn't a diurnal swing, it's bad data.
+    if (median >= 0 && median <= 0.25) {
+      risePerHour = Math.round(median * 1000) / 1000;
+      measured = true;
+      for (const t of ["evening", "other"] as Tag[]) if (counts[t] > 0) learned.push(t);
+    }
+  }
+
+  // The waist follows the same food and fluid, so scale the population ratio
+  // between them rather than pretending to have measured it separately.
+  const waistRisePerHour =
+    (risePerHour / DEFAULT_RISE_PER_HOUR) * DEFAULT_WAIST_RISE_PER_HOUR;
+
+  const at = (t: Tag) => riseAt(hoursAwake(TAG_HOUR[t]), risePerHour);
+  const atWaist = (t: Tag) => riseAt(hoursAwake(TAG_HOUR[t]), waistRisePerHour);
+
+  return {
+    risePerHour,
+    waistRisePerHour,
+    weight: { morning: at("morning"), other: at("other"), evening: at("evening") },
+    waist: { morning: atWaist("morning"), other: atWaist("other"), evening: atWaist("evening") },
+    learned,
+    measured,
+    timed,
+    counts,
+  };
 }
 
 /** Every reading corrected to what it would have read first thing. */
 export function normalise(entries: WeighIn[], offsets?: Offsets): WeighIn[] {
   const o = offsets ?? learnOffsets(entries);
   return entries.map((e) => {
-    const tag = tagOf(e);
+    const h = hoursAwake(hourOf(e));
     return {
       ...e,
-      weight_kg: e.weight_kg == null ? null : Number(e.weight_kg) - o.weight[tag],
-      waist_cm: e.waist_cm == null ? null : Number(e.waist_cm) - o.waist[tag],
+      weight_kg: e.weight_kg == null ? null : Number(e.weight_kg) - riseAt(h, o.risePerHour),
+      waist_cm: e.waist_cm == null ? null : Number(e.waist_cm) - riseAt(h, o.waistRisePerHour),
     };
   });
 }

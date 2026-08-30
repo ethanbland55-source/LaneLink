@@ -117,7 +117,11 @@ for (let d = 0; d < 28; d++) {
   });
 }
 const off = learnOffsets(mixed);
-console.log(`  learned evening offset ${off.weight.evening.toFixed(2)} kg (true 1.20), learned: [${off.learned.join(", ")}]`);
+console.log(
+  `  learned ${(off.risePerHour * 1000).toFixed(0)} g/hr awake -> evening reads ` +
+    `${off.weight.evening.toFixed(2)} kg heavy (true 1.20), measured: ${off.measured}`
+);
+console.log("  (tags only, no clock times — the hour is inferred from the tag)");
 const corrected = weightRate(mixed);
 const uncorrected = weightRate(mixed.map((e) => ({ ...e, tag: "morning" as const })));
 console.log(`  trend now ${corrected?.current.toFixed(2)} kg, drifting ${corrected?.kgPerWeek.toFixed(3)} kg/wk (true 0.000)`);

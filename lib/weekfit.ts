@@ -47,6 +47,7 @@ import {
   type Macros,
   type WeekPlan,
 } from "./nutrition";
+import { fixedMacros, type Supplement } from "./supplements";
 
 export type { PlanMeal };
 
@@ -105,6 +106,8 @@ export function mealGroups(meals: PlanMeal[], totalTypes: number): MealGroup[] {
 /* ------------------------------------------------------------------ */
 
 export type WeekFit = {
+  /** The meals the fit is actually over: food-bearing, recipe shares applied. */
+  meals: PlanMeal[];
   items: BoundedItem[];
   slots: Slot[];
   rows: DayRow[];
@@ -122,8 +125,14 @@ export type WeekFit = {
  * it, and how heavily it counts — a day type used three times a week matters
  * three times as much as one used once.
  */
-export function buildWeekFit(meals: PlanMeal[], plan: WeekPlan): WeekFit {
-  const withFood = meals.filter((m) => m.ingredients.length > 0);
+export function buildWeekFit(
+  meals: PlanMeal[],
+  plan: WeekPlan,
+  supplements: Supplement[] = []
+): WeekFit {
+  // Recipe shares are applied before anything is collapsed, so the tray the
+  // solver sees is the tray you asked for.
+  const withFood = applyRecipeShares(meals.filter((m) => m.ingredients.length > 0));
   const { items, slots } = collapse(withFood);
   const totalTypes = plan.order.length;
 
@@ -145,6 +154,9 @@ export function buildWeekFit(meals: PlanMeal[], plan: WeekPlan): WeekFit {
       if (!meal) return 0;
       return appliesOn(meal, id, totalTypes) ? repsOf(meal) : 0;
     }),
+    // Supplements are a dose, not a portion: they count toward the day and the
+    // fit fills what's left, rather than being shrunk to help it hit a number.
+    fixed: fixedMacros(supplements, id, totalTypes),
   }));
 
   const groups = mealGroups(withFood, totalTypes);
@@ -156,10 +168,11 @@ export function buildWeekFit(meals: PlanMeal[], plan: WeekPlan): WeekFit {
   });
 
   return {
+    meals: withFood,
     items,
     slots,
     rows,
-    shares: buildShares(groups, varsByMeal),
+    shares: buildShares(groups, varsByMeal, withFood, slots),
     groups,
     unusedDayTypes: rows
       .filter((r) => r.weight === 0)
@@ -168,55 +181,159 @@ export function buildWeekFit(meals: PlanMeal[], plan: WeekPlan): WeekFit {
 }
 
 /**
- * Turn the shares you typed into a rule the solver can weigh.
+ * Turn the shares you typed into fractions that add to one.
  *
- * A share only means anything where two or more meals come and go together, so
- * groups of one are skipped. Where you have set some shares but not all, the
- * ones you set are honoured and the rest divide what's left in the proportion
- * they are already in — so setting one number doesn't silently rewrite the
- * others.
+ * The ones you set are honoured, clamped so they can never between them claim
+ * more than the whole. Anything you left blank divides what's left in the
+ * proportion it is already in — so setting one number doesn't silently rewrite
+ * the others, which is the behaviour that makes the boxes safe to touch.
+ *
+ * Returns null when you haven't set any, because a rule that only restates the
+ * current split does nothing except slow the solver down.
  */
-function buildShares(groups: MealGroup[], varsByMeal: Map<number, number[]>): ShareRule[] {
+function wantedShares<T>(
+  parts: T[],
+  shareOf: (p: T) => number | null | undefined,
+  kcalOf: (p: T) => number
+): number[] | null {
+  if (parts.length < 2) return null;
+  if (!parts.some((p) => shareOf(p) != null)) return null;
+
+  const want = new Array<number>(parts.length).fill(0);
+  let claimed = 0;
+  parts.forEach((p, i) => {
+    const v = shareOf(p);
+    if (v == null) return;
+    want[i] = Math.min(1, Math.max(0, Number(v) / 100));
+    claimed += want[i];
+  });
+  if (claimed > 1) {
+    parts.forEach((_, i) => (want[i] /= claimed));
+    claimed = 1;
+  }
+
+  const restIdx = parts.map((p, i) => (shareOf(p) == null ? i : -1)).filter((i) => i >= 0);
+  const restKcal = restIdx.reduce((a, i) => a + kcalOf(parts[i]), 0);
+  for (const i of restIdx) {
+    want[i] =
+      restKcal > 0 ? (1 - claimed) * (kcalOf(parts[i]) / restKcal) : (1 - claimed) / restIdx.length;
+  }
+  return want;
+}
+
+/**
+ * Every share rule the solver should weigh.
+ *
+ * Two levels, the same idea at each:
+ *
+ *  - **Between meals** that appear on exactly the same days. They rise and
+ *    fall together, so nothing in the day's targets can divide them.
+ *  - **Between the ingredients of one meal.** Nothing in the targets says how
+ *    much of a yoghurt bowl should be yoghurt either — the fit will happily
+ *    make it two-thirds granola if the macros come out a shade closer, and
+ *    that is not the bowl you wanted.
+ *
+ * Cooked-ahead meals are left out of the ingredient level on purpose: their
+ * proportions are the recipe, fixed when you filled the tray, and are applied
+ * directly rather than fitted. See `applyRecipeShares`.
+ */
+function buildShares(
+  groups: MealGroup[],
+  varsByMeal: Map<number, number[]>,
+  meals: PlanMeal[],
+  slots: Slot[]
+): ShareRule[] {
   const rules: ShareRule[] = [];
+  const mealKcal = (m: PlanMeal) => sumMacros(m.ingredients.map(itemMacros)).kcal * repsOf(m);
 
+  // --- between meals that share their days ---
   for (const g of groups) {
-    if (g.meals.length < 2) continue;
-    const stated = g.meals.filter((m) => m.share_pct != null);
-    if (!stated.length) continue;
-
-    const kcalOf = (m: PlanMeal) => sumMacros(m.ingredients.map(itemMacros)).kcal * repsOf(m);
-
-    // Your figures first, clamped so they can never claim more than the whole.
-    let claimed = 0;
-    const want = new Map<number, number>();
-    for (const m of stated) {
-      const f = Math.min(1, Math.max(0, Number(m.share_pct) / 100));
-      want.set(m.id, f);
-      claimed += f;
-    }
-    if (claimed > 1) {
-      for (const m of stated) want.set(m.id, (want.get(m.id) ?? 0) / claimed);
-      claimed = 1;
-    }
-
-    const rest = g.meals.filter((m) => m.share_pct == null);
-    const restKcal = rest.reduce((a, m) => a + kcalOf(m), 0);
-    for (const m of rest) {
-      want.set(m.id, restKcal > 0 ? (1 - claimed) * (kcalOf(m) / restKcal) : (1 - claimed) / rest.length);
-    }
-
+    const want = wantedShares(g.meals, (m) => m.share_pct, mealKcal);
+    if (!want) continue;
     rules.push({
-      members: g.meals.map((m) => ({
+      members: g.meals.map((m, i) => ({
         mealId: m.id,
         name: m.name,
         vars: varsByMeal.get(m.id) ?? [],
         reps: repsOf(m),
-        want: want.get(m.id) ?? 0,
+        want: want[i],
+      })),
+    });
+  }
+
+  // --- between the ingredients of one meal ---
+  for (const meal of meals) {
+    if (meal.batch) continue; // the recipe is the ratio; see applyRecipeShares
+
+    const rows = meal.ingredients
+      .map((it, index) => ({
+        it,
+        index,
+        v: slots.findIndex((s) => s.kind === "item" && s.mealId === meal.id && s.index === index),
+      }))
+      .filter((r) => r.v >= 0);
+
+    const want = wantedShares(
+      rows,
+      (r) => r.it.share_pct,
+      (r) => itemMacros(r.it).kcal
+    );
+    if (!want) continue;
+
+    rules.push({
+      members: rows.map((r, i) => ({
+        mealId: meal.id,
+        name: `${meal.name} · ${r.it.name}`,
+        vars: [r.v],
+        reps: repsOf(meal),
+        want: want[i],
       })),
     });
   }
 
   return rules;
+}
+
+/**
+ * Ingredient shares on a cooked-ahead meal are the recipe, not a preference.
+ *
+ * A tray collapses to one variable because that is what it physically is —
+ * you can serve more tray, not more of the chicken in it. So a share here
+ * cannot be fitted; it has to be *applied*, by re-proportioning what goes in
+ * before the tray is weighed. The tray stays the same size and the mix inside
+ * it moves, which is exactly what you would do at the hob.
+ */
+export function applyRecipeShares(meals: PlanMeal[]): PlanMeal[] {
+  return meals.map((meal) => {
+    if (!meal.batch || meal.ingredients.length < 2) return meal;
+    const want = wantedShares(
+      meal.ingredients,
+      (it) => it.share_pct,
+      (it) => itemMacros(it).kcal
+    );
+    if (!want) return meal;
+
+    const totalGrams = meal.ingredients.reduce((a, i) => a + (Number(i.grams) || 0), 0);
+    const totalKcal = sumMacros(meal.ingredients.map(itemMacros)).kcal;
+    if (totalGrams <= 0 || totalKcal <= 0) return meal;
+
+    // Grams that would give each ingredient the calorie share asked for.
+    const raw = meal.ingredients.map((it, i) => {
+      const per = (Number(it.kcal_100) || 0) / 100;
+      return per > 0 ? (want[i] * totalKcal) / per : Number(it.grams) || 0;
+    });
+    const rawTotal = raw.reduce((a, b) => a + b, 0);
+    if (rawTotal <= 0) return meal;
+
+    const k = totalGrams / rawTotal;
+    return {
+      ...meal,
+      ingredients: meal.ingredients.map((it, i) => ({
+        ...it,
+        grams: Math.round(raw[i] * k * 10) / 10,
+      })),
+    };
+  });
 }
 
 /* ------------------------------------------------------------------ */
@@ -233,17 +350,18 @@ export type WeekFitResult = SolveResult & {
 export function fitWeek(
   meals: PlanMeal[],
   plan: WeekPlan,
-  opts: { mode?: Mode; continuous?: boolean } = {}
+  opts: { mode?: Mode; continuous?: boolean; supplements?: Supplement[] } = {}
 ): WeekFitResult {
-  const fit = buildWeekFit(meals, plan);
+  const fit = buildWeekFit(meals, plan, opts.supplements);
   const res = solveRows(fit.items, fit.rows, {
     mode: opts.mode ?? "balanced",
     continuous: opts.continuous,
     shares: fit.shares,
   });
 
-  const withFood = meals.filter((m) => m.ingredients.length > 0);
-  const fitted = expand(withFood, fit.slots, res.grams);
+  // Expand over the same meals the fit was built on, so a batch whose recipe
+  // shares moved its proportions keeps them.
+  const fitted = expand(fit.meals, fit.slots, res.grams);
   const byId = new Map(fitted.map((m) => [m.id, m]));
 
   return {
@@ -268,7 +386,11 @@ export type DayStanding = {
 };
 
 /** What each kind of day adds up to right now, before any fitting. */
-export function weekStanding(meals: PlanMeal[], plan: WeekPlan): DayStanding[] {
+export function weekStanding(
+  meals: PlanMeal[],
+  plan: WeekPlan,
+  supplements: Supplement[] = []
+): DayStanding[] {
   const totalTypes = plan.order.length;
   const daysUsing = new Map<number, number>();
   for (const d of WEEKDAYS) {
@@ -278,11 +400,18 @@ export function weekStanding(meals: PlanMeal[], plan: WeekPlan): DayStanding[] {
 
   return plan.order.map((id) => {
     const on = meals.filter((m) => appliesOn(m, id, totalTypes));
-    const planned = sumMacros(
+    const food = sumMacros(
       on.flatMap((m) =>
         Array.from({ length: repsOf(m) }, () => sumMacros(m.ingredients.map(itemMacros)))
       )
     );
+    const extra = fixedMacros(supplements, id, totalTypes);
+    const planned: Macros = {
+      kcal: food.kcal + extra.kcal,
+      protein: food.protein + extra.protein,
+      carbs: food.carbs + extra.carbs,
+      fat: food.fat + extra.fat,
+    };
     return {
       id,
       name: targetsFor(plan, id).name,
@@ -297,9 +426,10 @@ export function weekStanding(meals: PlanMeal[], plan: WeekPlan): DayStanding[] {
 /** The weekly average of what the plan actually delivers, and of the targets. */
 export function weeklyAverage(
   meals: PlanMeal[],
-  plan: WeekPlan
+  plan: WeekPlan,
+  supplements: Supplement[] = []
 ): { planned: Macros; target: Macros } {
-  const standing = weekStanding(meals, plan);
+  const standing = weekStanding(meals, plan, supplements);
   const planned: Macros = { kcal: 0, protein: 0, carbs: 0, fat: 0 };
   const target: Macros = { kcal: 0, protein: 0, carbs: 0, fat: 0 };
   let n = 0;

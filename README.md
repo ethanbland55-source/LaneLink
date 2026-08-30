@@ -11,12 +11,32 @@ Four screens:
   the week, and your meals: meals → ingredients → per-100g macros.
 - **`/shop` — Shopping list.** The plan played forward over however many days you buy
   for, totalled up, rounded to real pack sizes and grouped by aisle.
-- **`/progress` — Weight, waist and calibration.** The trend rather than the number,
-  what the two measurements say together, and what your own data says your
-  maintenance actually is.
+- **`/progress` — Weight, measurements and calibration.** Weigh in with the time you
+  did it, take a tape or caliper measurement and get a body fat figure out of it, see
+  the trend rather than the number, and roll the whole plan forward on shopping day.
 
 The logging day rolls over at **03:00 local time**, so a late-night meal still counts
 toward the day you'd call it.
+
+## Signing in
+
+There's a door on the front: `admin` / `1234` by default. It is a **doorstop, not
+a lock** — it keeps the page away from someone who stumbles on the address and
+that is all it does.
+
+It is at least an honest one. The check runs on the server and sets a signed
+cookie, so it can't be stepped over in devtools the way a password compared in
+the browser can, and the middleware covers `/api/*` as well as the pages — a
+login that only hides the screens leaves the data sitting open behind them.
+
+Set these three in the environment and it becomes real security, with no code
+change:
+
+```
+AUTH_USER=…        # defaults to admin
+AUTH_PASSWORD=…    # defaults to 1234
+AUTH_SECRET=…      # a long random string; this is what makes the cookie unforgeable
+```
 
 ## Deploy
 
@@ -162,62 +182,138 @@ can't reach a big day, the cook list tells you which day and by how much, and th
 the mechanism already there — a meal restricted to those day types, like a shake or a
 bagel, plated fresh.
 
-## Weight, waist and calibration
+## Weight, waist and body fat
 
-**Nothing here looks at today's weight.** A morning reading is mostly water, glycogen
-and last night's dinner; it moves ±1 kg for reasons that have nothing to do with fat.
-Everything works off an exponentially weighted trend line and its slope, which is the
-only part of the signal that means anything over a week.
+### Say what time you weighed
 
-**You don't have to weigh at the same time every day.** Time of day is *bias*, not
-noise — an evening reading is about a kilo heavier, every time, so averaging morning and
-evening readings together doesn't cancel out, it drags the line around according to when
-you happened to stand on the scale. Tag each reading and it's corrected to
-morning-equivalent before anything else touches it, using an offset the app measures
-from your own data once there are a few of each (it starts from a population default and
-switches over). In testing, a flat 78 kg with two evening weigh-ins a week reads as
-78.35 kg drifting up 0.04 kg/week if the tags are ignored, and 78.01 kg drifting
-0.00 kg/week once they're used.
+You are lightest first thing and gain roughly a kilo through the day as food
+and fluid arrive faster than they leave. None of it is fat, and all of it lands
+in the trend if nothing corrects for it.
 
-A single reading also can't drag the trend more than 1.5 kg, so a mistyped 87 for 78
-moves it by 0.09 kg rather than 9.
+So a weigh-in carries a **clock time**. That is strictly better than the three
+buckets it replaces, because 09:00 and 11:30 are both "morning" and are not the
+same reading. The correction is a rate per hour awake, flattening off once the
+day's food is in.
 
-**The waist is a weekly job, not a daily one.** Three points spread over ten days is
-enough for a slope, and the tape gets the same time-of-day correction as the scale.
+**The rate is measured on you.** Two readings a few days apart are the same
+real weight, so almost all of the difference between them is the difference in
+what time they were taken — divide one by the other and you have the rate, with
+the trend cancelled out rather than estimated. The median across every such
+pair is the robust version.
 
-**Waist matters more than weight in a recomp.** Weight is supposed to sit still — that
-*is* the objective — so the scale gives you no feedback for months while the tape does.
-The verdict on the Progress page reads them together: flat weight with the waist coming
-in is "working, don't let the scale talk you out of it"; losing more than 0.7% of
-bodyweight a week is flagged, because past there you're giving lean mass back and in a
-training block you'll feel it in the pool before you see it anywhere else.
+That estimator took two goes. Measuring later readings against a trend built
+from morning ones biases *low*, because a "morning" reading is already an hour
+into the rise. Choosing the rate that makes corrected readings sit tightest
+around their own trend is circular — the trend chases the correction — and
+biases *high*. Pairs avoid both.
 
-**Body fat, without knowing your body fat.** Lean-mass protein targets want a
-percentage and most people don't have one, so the app will estimate it from a tape using
-the US Navy circumference method — height, neck and waist. Neck is a one-off; the waist
-you're measuring anyway, so the estimate keeps itself current. It's worth ±3–4 points
-against a DEXA scan, but most of that error is a fixed offset for a given build, which
-makes the absolute number approximate and the *direction it moves* the part worth
-trusting. Don't read a rising lean-mass figure as muscle gained — a shrinking waist at
-the same weight will produce one whether or not any muscle appeared.
+On a synthetic subject genuinely flat at 78.00 kg, weighing at seven different
+times of day, true rise 100 g/hr (`bench/weekly.ts`):
 
-**Waist matters more than weight in a recomp.** Weight is supposed to sit still — that
-*is* the objective — so the scale gives you no feedback for months while the tape does.
-The verdict on the Progress page reads them together: flat weight with the waist coming
-in is "working, don't let the scale talk you out of it"; losing more than 0.7% of
-bodyweight a week is flagged, because past there you're giving lean mass back and in a
-training block you'll feel it in the pool before you see it anywhere else.
+```
+                      reads as        drifting
+with clock times      78.00 kg        0.000 kg/wk     learned 97 g/hr
+with tags only        78.18 kg        0.006 kg/wk
+ignoring the time     78.54 kg        0.025 kg/wk
+```
 
-**Then it calibrates.** What you ate, minus what your weight did, is what you burned.
-Given about two weeks of daily weigh-ins and confirmed food logs in the same window,
-the app backs out your real expenditure — `mean intake − trend slope × 7,700 kcal/kg` —
-and offers it in place of the formula. On synthetic data with realistic daily noise it
-recovers a known 3,050 kcal expenditure to within about 10 kcal (`bench/recomp.ts`).
+Half a kilo of phantom weight and a fake upward drift, removed by knowing what
+time it was.
+
+### Body fat, three ways
+
+Pick whichever suits what you own. All of it lives with the weigh-in, so the
+figure trends instead of being something you typed in once months ago.
+
+| | needs | accuracy |
+| --- | --- | --- |
+| **Tape measure** | neck, waist (hips for women) | ±3–4 points |
+| **Calipers** | three pinches | ±3 points, better on lean people |
+| **Type it in** | a DEXA or InBody scan | whatever the scan was |
+
+The tape is the US Navy circumference method; the calipers are Jackson–Pollock
+3-site converted with Siri. Each site says where to put the tape or the
+calipers and nothing more — consistency matters more than being exactly on the
+anatomical landmark, because a repeatable 2 mm error cancels out of every
+difference and a wandering one does not.
+
+Both are **attribution-blind**: they see a smaller waist or a thinner pinch and
+call all of it fat. Over a few weeks that is usually right. Over a few days it
+is mostly water. And most of the error against a scan is a fixed offset for
+your build, which is why the direction it moves is worth more than the number.
+
+## The weekly roll
+
+Your weight moves every day. **Your plan must not.**
+
+If targets tracked the scale, Tuesday's porridge would be a different size from
+Monday's for reasons that are mostly water, the shopping list would disagree
+with the plan it was built from by Wednesday, and the containers in the fridge
+would be wrong for the day they were opened.
+
+So the plan is built on a **snapshot**, taken once a week **on your shopping
+day**. Between rolls the numbers hold perfectly still: what you bought is what
+you cook is what you eat. On shopping day the trend weight and the latest body
+fat figure are read once, every target is rebuilt around them, and that is the
+week you then shop for.
+
+It reads the **trend**, not the scale — a single reading is noise, and the EWMA
+of the last fortnight is the number that means something. It won't run at all
+on fewer than three weigh-ins, because rebuilding a week's targets on one
+reading would be worse than leaving last week's alone.
+
+```
+  Sat  measure ──► corrected for the time ──► trend
+                                               │
+                                               ▼
+                                        roll the snapshot
+                                               │
+                          ┌────────────────────┼────────────────────┐
+                          ▼                    ▼                    ▼
+                    day-type targets    rebalance the week    shopping list
+  Sun–Fri  ............ all of it holds still ............
+```
+
+Happens by itself when you open the app on or after shopping day; there's a
+switch on Progress to do it by hand instead, and a line saying what the plan is
+built on and when it changes next.
+
+## Meal times
+
+Tapping a meal logs it now, which is what you want nine times in ten. The clock
+beside it is for the tenth, when you're catching up in the evening — and every
+logged meal shows its time inline, editable, because getting it wrong by an
+hour is common and re-logging the meal to fix it is not a reasonable thing to
+ask.
+
+What the times are actually *for*: the daily protein total is doing the work,
+and the spacing decides how much of that work lands. Muscle protein synthesis
+rises for about three hours after a dose that clears the threshold and then
+settles back whether or not more protein arrives — so four doses three to five
+hours apart raise it four times, and the same protein in two sittings raises it
+twice. Today tells you where the day's longest gap was, and whether the last
+real dose was close enough to sleep to shorten the overnight fast.
+
+It says nothing at all until you start logging times, which is the honest limit
+of it.
+
+## Calibration — what your maintenance actually is
+
+**What you ate, minus what your weight did, is what you burned.** Given about two
+weeks of daily weigh-ins and confirmed food logs in the same window, the app backs out
+your real expenditure — `mean intake − trend slope × 7,700 kcal/kg` — and offers it in
+place of the formula. On synthetic data with realistic daily noise it recovers a known
+3,050 kcal expenditure to within about 10 kcal (`bench/recomp.ts`).
 
 Accepting it scales every day type by one factor, so the shape of your week is
 untouched; it's opt-in, it tells you its confidence, and it never rewrites your targets
 on its own. This is the single biggest accuracy gain available — every prediction
 equation in this README is fitted to a population, and you are one person.
+
+It rests on the same corrected trend the weekly roll does, which is the other reason
+the weigh-in time is worth typing: a slope contaminated by what time you stood on the
+scale produces a maintenance figure that is wrong by whatever that contamination came
+to, times 7,700.
 
 ## Protein distribution
 
@@ -230,6 +326,26 @@ physique-nutrition literature lands.
 So the Plan page shows each meal's protein against that threshold, counts how many
 doses actually clear it, and tells you which meal is closest to clearing and by how
 much. A meal eaten twice a day counts as two doses.
+
+## Sheets on a phone
+
+A `position: fixed` overlay with a scrolling area inside it is where iOS Safari
+does its worst, so the rebalance dialog is a proper bottom sheet
+(`app/sheet.tsx`) rather than a div that happens to be on top. Everything it
+does is a thing that actually went wrong:
+
+- **The page scrolled behind it.** Dragging the header, the backdrop or the
+  footer scrolled the document underneath; so did reaching the end of the inner
+  scroll and carrying on. `overscroll-behavior: contain` fixes the second. Only
+  pinning the body — `position: fixed`, remembering the offset — fixes the
+  first, and remembering it is what stops the page jumping to the top when the
+  sheet closes.
+- **The keyboard hid the field you were typing in.** `dvh` accounts for browser
+  chrome and not for the keyboard, so a fixed sheet stayed full height and the
+  input went under it. The sheet is sized from `visualViewport` instead, which
+  is the only thing that knows.
+- **It didn't move like a sheet.** There's a grip, it follows your thumb, and a
+  flick past 110px closes it. Tapping the backdrop closes it; so does Escape.
 
 ## Rebalance the week
 
@@ -286,13 +402,41 @@ handful of dates ends up carrying 41% of a session's calories.
 So meals that appear on **exactly the same days** form a group, and each gets a
 per-cent box. Leave it empty and the fit decides; type 20 and it holds the split.
 
+**The same question exists one level down, for some meals.** Nothing in the
+targets says how much of a yoghurt bowl should be yoghurt either — left alone the
+fit will happily make it half granola if the macros come out a shade closer, and
+that is not the bowl you wanted. So the ingredients of a meal can be given shares
+too: 50% yoghurt, 40% granola, 10% honey.
+
+It is **opt in per meal**, because most meals are not like that. Chicken and rice
+is a recipe, not a ratio, and a per-cent box under every ingredient of every meal
+asks you to have an opinion about how much of your dinner is rice. Open the one
+meal you actually balance deliberately and leave the rest alone.
+
+All of this is **plan-building**. Shares shape the portions the fit lands on, and
+that is the whole of what they do — nothing in the log, the shopping list or the
+cook list reads them.
+
+Every figure is a share of the **calories**, at both levels, because that is the
+thing being divided. By weight a yoghurt bowl is 80% yoghurt and the number tells
+you nothing.
+
+On a **cooked-ahead** meal the ingredient shares are the *recipe* rather than a
+preference — you cannot serve more of the chicken in a tray, only more tray. So
+they are applied directly: the amounts are re-proportioned to match, the tray
+stays the same size, and the fit then sizes the serving.
+
 It is a soft term on purpose, swept against the real plan: below about 0.05 it barely
 moves the split, above about 1.0 it will buy the split with 100 kcal a day. At 0.3 the
 split moves as far as the portion limits allow *and* the mean daily miss improves,
 because pinning the degenerate direction leaves a better-posed problem behind.
 
-Where a limit still blocks it, the row says so and offers the fix: *"held at its
-smallest allowed size — tap to allow 64 g and reach 20%"*.
+Where a limit blocks it, the row says so and offers the fix: *"held at its
+smallest allowed size — tap to allow 64 g and reach 20%"*. Where nothing is in
+the way and the split still hasn't landed, that is the macros disagreeing, and it
+says that instead: *"nothing's in the way — the macros land closer at 46%"*. A
+typed number sitting next to a different achieved one with no explanation is the
+one thing this must never do.
 
 ### What it knows about food
 
@@ -407,28 +551,146 @@ forward day by day from your shop day and totals every ingredient.
   and the laptop at home agree. *New shop* clears them. There's a copy-to-clipboard
   export and a print stylesheet.
 
+## Supplements
+
+A supplement is **a dose you take, not a portion you weigh**, and modelling it as
+an ingredient breaks two things at once: the optimiser would shrink your creatine
+to help hit a carb target, and the shopping list would try to buy 5 g of it. So
+they live in their own table, contribute their macros to the day as a fixed cost
+the fit cannot negotiate with, and get ticked off rather than weighed.
+
+They can be attached to a meal, restricted to particular day types, and taken
+more than once a day. Almost all of them carry no macros at all; the ones that do
+— a whey scoop is 120 kcal and 25 g of protein — matter, because a plan that
+ignores them is 25 g of protein wrong every day.
+
+**Each one is graded, and the grades are the point.** Creatine and vitamin K2 are
+not the same proposition, and a list that presents them identically launders the
+weak one. Grades follow the IOC consensus statement and the IJSNEM review beside
+it, both of which are deliberately unkind:
+
+| | grade | why |
+| --- | --- | --- |
+| Creatine monohydrate | **Strong** | Repeat-sprint work, training quality, a little lean mass |
+| Caffeine | **Strong** | 3–6 mg/kg, an hour before |
+| Whey protein | **Strong** | For reaching a protein target, not for anything the protein wouldn't do |
+| Beta-alanine | Moderate | Buffers the 1–4 minute window — a 100 or a 200, almost exactly |
+| Sodium bicarbonate | Moderate | Same window, outside the muscle. Gut upset is common |
+| Vitamin D3 | Moderate | Corrects a shortfall. Indoor athletes are the at-risk group |
+| Iron | Moderate | Only on a blood test. Genuinely harmful in excess |
+| Magnesium | Limited | Helps where intake is low; not shown to add anything on top |
+| Omega-3 | Limited | Two portions of oily fish a week does the same |
+| Vitamin K2 | **Not shown to help** | No performance evidence. It's on the list because people take it with D3 |
+
+The caveat gets the same weight as the claim, because for half this list the
+caveat *is* the finding.
+
+## Fuelling the work
+
+The check a percentage-based macro split can never make, and the one that matters
+most in a pool.
+
+**Carbohydrate requirement scales with the training a day holds, not with the size
+of its calorie budget.** Burke's bands, in grams per kg of bodyweight per day:
+
+| | g/kg | when |
+| --- | --- | --- |
+| Light | 3–5 | Little or no training |
+| Moderate | 5–7 | About an hour of real work |
+| High | 6–10 | One to three hours — a normal pool day |
+| Very high | 8–12 | Four hours plus, or two hard sessions |
+
+Days are placed by **MET-weighted** training minutes rather than clock minutes, so
+an hour of technique doesn't count like an hour of main set.
+
+Two things it is careful about:
+
+- **Under the band on a light day is the point**, not a fault — fuelling for the
+  work required means low days are meant to be low. Only a *training* day under
+  its band is called a problem.
+- **The bands assume energy balance.** In a deficit you can't clear them and
+  shouldn't try. The useful reading is whether the training days carry more than
+  the rest days, and the fix for a shortfall is usually to move carbohydrate
+  toward the session rather than to add any.
+
+On the plan that prompted this: swim days sit at 5.4 g/kg against a 6–10 band,
+three days a week. That is a training-quality finding a calorie-based view would
+never have surfaced.
+
 ## Where the numbers come from
 
-- Barakat et al. (2020), *Body Recomposition: Can Trained Individuals Build Muscle and
-  Lose Fat at the Same Time?*, Strength & Conditioning Journal — protein at
-  2.6–3.5 g/kg FFM, resistance training at least 3×/week, recomposition observed across
-  a range of energy balances.
-- Iraki, Fitschen, Espinar & Helms (2019), *Nutritional Recommendations for Physique
-  Athletes* — protein 1.8–2.7 g/kg, fat 10–25% of calories with a strong caution
-  against long periods below that, carbohydrate 2–5 g/kg, weight loss ≤0.5% of body
-  mass per week, four or five protein doses a day with one near training and one before
-  sleep.
-- Helms et al. (2014), *A Systematic Review of Dietary Protein During Caloric
-  Restriction in Resistance Trained Lean Athletes* — the case for higher protein
-  expressed per kg of fat-free mass while in a deficit.
-- Ainsworth et al., *Compendium of Physical Activities* — the MET values behind every
-  session cost.
-- Hodgdon & Beckett (1984), the US Navy circumference equations — the tape body fat
-  estimate, quoted at roughly ±3–4 percentage points against hydrostatic weighing.
-- Mifflin-St Jeor and Katch-McArdle for BMR; the trend line is the Hacker's Diet EWMA.
+Every constant that could have been guessed is pinned to a source instead, and
+`lib/evidence.ts` is the register of them — so the app can answer "why that
+number?" on screen, and so changing a constant means changing its citation too.
 
-They're population averages, not measurements of you. That's exactly why the
-calibration exists — once you have your own data, it wins.
+Position stands and consensus statements are preferred over single trials
+throughout: they are a field's considered summary rather than one result, and
+they are what a sports dietitian would actually work from.
+
+**Framework and energy**
+- Thomas DT, Erdman KA, Burke LM (2016). Position of the Academy of Nutrition and
+  Dietetics, Dietitians of Canada, and the ACSM: Nutrition and Athletic
+  Performance. *Med Sci Sports Exerc* 48(3):543–568.
+- Mifflin MD, St Jeor ST, Hill LA, et al. (1990). A new predictive equation for
+  resting energy expenditure in healthy individuals. *Am J Clin Nutr* 51(2):241–247.
+- Ainsworth BE, Haskell WL, Herrmann SD, et al. (2011). 2011 Compendium of
+  Physical Activities. *Med Sci Sports Exerc* 43(8):1575–1581.
+
+**Carbohydrate, and swimming**
+- Burke LM, Hawley JA, Wong SHS, Jeukendrup AE (2011). Carbohydrates for training
+  and competition. *J Sports Sci* 29(sup1):S17–S27.
+- Shaw G, Boyd KT, Burke LM, Koivisto A (2014). Nutrition for swimming.
+  *Int J Sport Nutr Exerc Metab* 24(4):360–372.
+- Impey SG, Hearris MA, Hammond KM, et al. (2018). Fuel for the Work Required.
+  *Sports Med* 48:1031–1048.
+
+**Protein**
+- Jäger R, Kerksick CM, Campbell BI, et al. (2017). ISSN Position Stand: protein
+  and exercise. *J Int Soc Sports Nutr* 14:20.
+- Morton RW, Murphy KT, McKellar SR, et al. (2018). A systematic review,
+  meta-analysis and meta-regression of the effect of protein supplementation on
+  resistance training-induced gains. *Br J Sports Med* 52:376–384.
+- Areta JL, Burke LM, Ross ML, et al. (2013). Timing and distribution of protein
+  ingestion during prolonged recovery from resistance exercise alters myofibrillar
+  protein synthesis. *J Physiol* 591(9):2319–2331.
+- Helms ER, Aragon AA, Fitschen PJ (2014). Evidence-based recommendations for
+  natural bodybuilding contest preparation. *J Int Soc Sports Nutr* 11:20.
+
+**Recomposition**
+- Barakat C, Pearson J, Escalante G, Campbell B, De Souza EO (2020). Body
+  Recomposition: Can Trained Individuals Build Muscle and Lose Fat at the Same
+  Time? *Strength Cond J* 42(5):7–21.
+- Iraki J, Fitschen P, Espinar S, Helms E (2019). Nutrition Recommendations for
+  Bodybuilders in the Off-Season. *Sports* 7(7):154.
+
+**Supplements**
+- Maughan RJ, Burke LM, Dvorak J, et al. (2018). IOC consensus statement: dietary
+  supplements and the high-performance athlete. *Br J Sports Med* 52:439–455.
+- Peeling P, Binnie MJ, Goods PSR, Sim M, Burke LM (2018). Evidence-Based
+  Supplements for the Enhancement of Athletic Performance.
+  *Int J Sport Nutr Exerc Metab* 28(2):178–187.
+- Kreider RB, Kalman DS, Antonio J, et al. (2017). ISSN position stand: safety and
+  efficacy of creatine supplementation. *J Int Soc Sports Nutr* 14:18.
+- Owens DJ, Allison R, Close GL (2018). Vitamin D and the Athlete: Current
+  Perspectives and New Challenges. *Sports Med* 48(Suppl 1):3–16.
+
+**Body composition**
+- Hodgdon JA, Beckett MB (1984). Prediction of percent body fat for U.S. Navy men
+  and women from body circumferences and height. *Naval Health Research Center*.
+- Jackson AS, Pollock ML (1978). Generalized equations for predicting body density
+  of men. *Br J Nutr* 40(3):497–504.
+- Siri WE (1961). Body composition from fluid spaces and density.
+  *Techniques for Measuring Body Composition*, National Academy of Sciences.
+
+Every one of these is fitted to a population, and you are one person. They are
+the right place to start and the wrong place to finish — which is exactly what
+the calibration on the Progress page is for, and why it wins once it has three
+weeks of your own data.
+
+**None of this is medical advice.** Two things in particular belong to a doctor
+rather than an app: iron, which is harmful in excess and should only ever follow
+a blood test, and vitamin D, where the whole effect is correcting a deficiency
+you would need a test to establish.
 
 ## Notes
 

@@ -46,6 +46,11 @@ export type BoundedItem = Item & {
   max_grams?: number | null;
   locked?: boolean;
   /**
+   * Share of its meal's calories, 0-100, or null to let the fit decide.
+   * The same idea as a meal's share of its group, one level down.
+   */
+  share_pct?: number | null;
+  /**
    * Suppress whole-unit snapping. Set on a composite that stands in for a
    * cooked batch: a tray called "Bagel & eggs" is served by weight, and must
    * not inherit the bagel's "whole units only" rule.
@@ -226,6 +231,12 @@ export type DayRow = {
   weight: number;
   target: Macros;
   counts: number[];
+  /**
+   * Macros on this day that are not up for negotiation — supplements, which
+   * are a dose you take rather than a portion you weigh. Counted toward the
+   * target so the food fills what's left, never resized to help hit it.
+   */
+  fixed?: Macros;
 };
 
 /**
@@ -293,7 +304,7 @@ function macroCost(ctx: Ctx, target: Macros, t: Macros): number {
 
 /** Totals for one kind of day: each portion counted as often as it is eaten. */
 function rowTotals(ctx: Ctx, row: DayRow, grams: number[]): Macros {
-  const out: Macros = { ...ZERO_MACROS };
+  const out: Macros = row.fixed ? { ...row.fixed } : { ...ZERO_MACROS };
   for (let i = 0; i < ctx.ds.length; i++) {
     const n = row.counts[i];
     if (!n) continue;
@@ -406,7 +417,7 @@ function minimiseAlong(ctx: Ctx, bases: Macros[], i: number, b: Bounds, grams: n
 /** Each day's totals with portion `i` taken out. */
 function basesWithout(ctx: Ctx, i: number, grams: number[]): Macros[] {
   return ctx.rows.map((row) => {
-    const out: Macros = { ...ZERO_MACROS };
+    const out: Macros = row.fixed ? { ...row.fixed } : { ...ZERO_MACROS };
     for (let j = 0; j < ctx.ds.length; j++) {
       if (j === i) continue;
       const n = row.counts[j];
@@ -687,10 +698,11 @@ export function solveRows(items: BoundedItem[], rows: DayRow[], opts: Options = 
       },
       feasible,
       unreachable: KEYS.flatMap((k) => {
-        if (row.target[k] > feasible.max[k])
-          return [{ key: k, by: row.target[k] - feasible.max[k] }];
-        if (row.target[k] < feasible.min[k])
-          return [{ key: k, by: row.target[k] - feasible.min[k] }];
+        // The supplement part of the day is already spoken for, so what the
+        // food has to reach is the target minus it.
+        const need = row.target[k] - (row.fixed?.[k] ?? 0);
+        if (need > feasible.max[k]) return [{ key: k, by: need - feasible.max[k] }];
+        if (need < feasible.min[k]) return [{ key: k, by: need - feasible.min[k] }];
         return [];
       }),
     };

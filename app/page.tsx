@@ -10,6 +10,7 @@ import {
   dayTypeIdFor,
   itemMacros,
   normaliseDayType,
+  planWeight,
   sumMacros,
   targetsFor,
   totalFor,
@@ -18,6 +19,16 @@ import {
   type Profile,
 } from "@/lib/nutrition";
 import { activityLabel } from "@/lib/activities";
+import { doseSpacing } from "@/lib/protein";
+import {
+  TIMING_LABEL,
+  doseLabel,
+  repsOf as suppReps,
+  specFor,
+  suppAppliesOn,
+  type Supplement,
+} from "@/lib/supplements";
+import { GRADE_COLOUR } from "@/lib/evidence";
 import { appliesOn } from "@/lib/shopping";
 import { servingGrams } from "@/lib/batch";
 
@@ -36,6 +47,8 @@ type Entry = {
   meal_id: number | null;
   meal_name: string;
   confirmed: boolean;
+  /** Clock time it was eaten, "HH:MM". Null on anything logged before times. */
+  at_time?: string | null;
   items: Item[];
 };
 
@@ -51,19 +64,31 @@ export default function TodayPage() {
   const [followToday, setFollowToday] = useState(true);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
+  /** Which meal has its "had it earlier" time picker open. */
+  const [timeFor, setTimeFor] = useState<number | null>(null);
+  const [pickTime, setPickTime] = useState("");
+  const [supplements, setSupplements] = useState<Supplement[]>([]);
+  /** How many of each supplement have been taken today. */
+  const [takenMap, setTakenMap] = useState<Map<number, number>>(new Map());
 
   const load = useCallback(async (d: string) => {
     try {
-      const [p, m, l, dt] = await Promise.all([
+      const [p, m, l, dt, su, sl] = await Promise.all([
         fetch("/api/profile").then((r) => r.json()),
         fetch("/api/meals").then((r) => r.json()),
         fetch(`/api/log?day=${d}`).then((r) => r.json()),
         fetch("/api/day-types").then((r) => r.json()),
+        fetch("/api/supplements").then((r) => r.json()),
+        fetch(`/api/supplement-log?day=${d}`).then((r) => r.json()),
       ]);
       setProfile(normaliseProfile(p));
       setMeals(m);
       setEntries(l);
       setDayTypes((dt as any[]).map((x, i) => normaliseDayType(x, i)));
+      setSupplements(su as Supplement[]);
+      setTakenMap(
+        new Map((sl as any[]).map((r) => [Number(r.supplement_id), Number(r.taken)]))
+      );
       setError(null);
     } catch {
       setError("Can't reach the database.");
@@ -122,14 +147,50 @@ export default function TodayPage() {
     [plan, dayTypeId]
   );
 
-  const eaten = useMemo(
-    () => sumMacros(entries.filter((e) => e.confirmed).map((e) => totalFor(e.items))),
-    [entries]
+  const todaysSupps = useMemo(
+    () => supplements.filter((s) => suppAppliesOn(s, dayTypeId, dayTypes.length)),
+    [supplements, dayTypeId, dayTypes.length]
   );
+
+  /**
+   * What's gone in. Supplements count only once actually ticked off, the same
+   * as a meal counts only once confirmed — a plan is not a record.
+   */
+  const eaten = useMemo(() => {
+    const food = sumMacros(entries.filter((e) => e.confirmed).map((e) => totalFor(e.items)));
+    for (const s of todaysSupps) {
+      const n = takenMap.get(s.id) ?? 0;
+      if (!n) continue;
+      food.kcal += (Number(s.kcal) || 0) * n;
+      food.protein += (Number(s.protein) || 0) * n;
+      food.carbs += (Number(s.carbs) || 0) * n;
+      food.fat += (Number(s.fat) || 0) * n;
+    }
+    return food;
+  }, [entries, todaysSupps, takenMap]);
 
   const suggested = useMemo(
     () => meals.filter((m) => appliesOn(m, dayTypeId, dayTypes.length)),
     [meals, dayTypeId, dayTypes.length]
+  );
+
+  /**
+   * What the times you logged actually say. Only meals with a time can be
+   * placed, so this stays quiet until there are at least two of them.
+   */
+  const spacing = useMemo(
+    () =>
+      profile
+        ? doseSpacing(
+            entries.map((e) => ({
+              name: e.meal_name,
+              protein: totalFor(e.items).protein,
+              at: e.at_time ?? null,
+            })),
+            planWeight(profile)
+          )
+        : null,
+    [entries, profile]
   );
 
   /** Step a day back or forward; stop auto-rollover unless we're on today. */
@@ -150,7 +211,16 @@ export default function TodayPage() {
     return meal.ingredients.map(stripItem);
   }
 
-  async function addMeal(meal: Meal) {
+  /**
+   * Log a meal at a time.
+   *
+   * Tapping the row logs it now, which is what you want nine times in ten;
+   * the clock is there for the tenth, when you're catching up in the evening.
+   * A day you're browsing back to has no "now" worth recording, so it goes in
+   * without a time rather than stamping it with the time you happened to
+   * remember.
+   */
+  async function addMeal(meal: Meal, at?: string) {
     const res = await fetch("/api/log", {
       method: "POST",
       headers: { "content-type": "application/json" },
@@ -160,10 +230,27 @@ export default function TodayPage() {
         meal_name: meal.name,
         day_type_id: dayTypeId,
         items: itemsFor(meal),
+        at_time: day === dayKey() || at !== undefined ? at ?? null : null,
       }),
     });
     const created = await res.json();
-    setEntries((e) => [...e, created]);
+    setEntries((e) => sortByTime([...e, created]));
+  }
+
+  /** Change the time a logged meal was eaten. */
+  async function setEntryTime(entry: Entry, at: string) {
+    const res = await fetch("/api/log", {
+      method: "PATCH",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({
+        id: entry.id,
+        items: entry.items,
+        confirmed: entry.confirmed,
+        at_time: at,
+      }),
+    });
+    const saved = await res.json();
+    setEntries((list) => sortByTime(list.map((e) => (e.id === saved.id ? { ...saved } : e))));
   }
 
   async function saveEntry(entry: Entry, confirmed: boolean) {
@@ -173,7 +260,22 @@ export default function TodayPage() {
       body: JSON.stringify({ id: entry.id, items: entry.items, confirmed }),
     });
     const saved = await res.json();
-    setEntries((list) => list.map((e) => (e.id === saved.id ? { ...saved } : e)));
+    setEntries((list) => sortByTime(list.map((e) => (e.id === saved.id ? { ...saved } : e))));
+  }
+
+  /** Today's supplements, and what they add to the day whether ticked or not. */
+  async function setTaken(s: Supplement, taken: number) {
+    setTakenMap((m) => new Map(m).set(s.id, taken));
+    await fetch("/api/supplement-log", {
+      method: "PUT",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({
+        day,
+        supplement_id: s.id,
+        taken,
+        at_time: taken > 0 ? nowClock() : null,
+      }),
+    });
   }
 
   async function confirmAll() {
@@ -319,8 +421,8 @@ export default function TodayPage() {
           </Link>
         </section>
       ) : (
-        <section className="card px-5 py-4">
-          <div className="mb-3 flex items-center">
+        <section className="card px-4 py-4 sm:px-5">
+          <div className="mb-3 flex items-center gap-2">
             <p className="label mr-auto">Add a meal</p>
             {pending > 0 && (
               <button className="btn btn-sm btn-accent" onClick={confirmAll}>
@@ -328,44 +430,94 @@ export default function TodayPage() {
               </button>
             )}
           </div>
-          <div className="flex flex-wrap gap-2">
+
+          {/* A list, not a wrapped row of pills. Full-width rows give a thumb
+              something to aim at and leave room to say what each meal is. */}
+          <div className="space-y-1.5">
             {suggested.map((m) => {
-              // Show what you'd actually log today, which for a batch is
-              // today's serving rather than the plan's base one.
               const t = totalFor(itemsFor(m));
               const used = entries.filter((e) => e.meal_id === m.id).length;
               const planned = Math.max(1, Number(m.times_per_day ?? 1));
+              const done = used >= planned;
+              const open = timeFor === m.id;
+
               return (
-                <button
-                  key={m.id}
-                  onClick={() => addMeal(m)}
-                  className="sunk group flex items-center gap-2.5 px-3.5 py-2.5 text-left transition hover:bg-[#161a1f]"
-                >
-                  <span className="text-lg font-light leading-none text-[var(--color-accent)]">+</span>
-                  <span>
-                    <span className="block text-sm font-semibold">{m.name}</span>
-                    <span className="block text-xs tabular-nums text-[var(--color-mut)]">
-                      {Math.round(t.kcal)} kcal
-                      {planned > 1 && ` · ${planned}× a day`}
-                      {m.batch && <> · weigh {Math.round(servingGrams(m as any))} g</>}
-                    </span>
-                  </span>
-                  {used > 0 && (
-                    <span
-                      className="num ml-1 rounded-full px-1.5 py-0.5 text-[0.65rem]"
-                      style={{
-                        background:
-                          used >= planned ? "var(--color-accent)" : "var(--color-raised)",
-                        color: used >= planned ? "#10160a" : "var(--color-mut)",
-                      }}
+                <div key={m.id} className="sunk overflow-hidden">
+                  <div className="flex items-stretch">
+                    <button
+                      onClick={() => addMeal(m, nowClock())}
+                      className="flex min-w-0 flex-1 items-center gap-3 px-3.5 py-3 text-left transition hover:bg-[#161a1f]"
                     >
-                      {used}
-                    </span>
+                      <span
+                        className="flex h-7 w-7 shrink-0 items-center justify-center rounded-full text-lg font-light leading-none"
+                        style={
+                          done
+                            ? { background: "var(--color-accent)", color: "#10160a" }
+                            : { background: "var(--color-raised)", color: "var(--color-accent)" }
+                        }
+                      >
+                        {done ? "✓" : "+"}
+                      </span>
+                      <span className="min-w-0 flex-1">
+                        <span className="block truncate text-sm font-semibold">{m.name}</span>
+                        <span className="block truncate text-xs tabular-nums text-[var(--color-mut)]">
+                          {Math.round(t.kcal)} kcal · {Math.round(t.protein)}P{" "}
+                          {Math.round(t.carbs)}C {Math.round(t.fat)}F
+                          {m.batch && ` · weigh ${Math.round(servingGrams(m as any))} g`}
+                        </span>
+                      </span>
+                      {used > 0 && (
+                        <span className="num shrink-0 text-xs text-[var(--color-mut)]">
+                          {used}/{planned}
+                        </span>
+                      )}
+                    </button>
+
+                    <button
+                      onClick={() => {
+                        setTimeFor(open ? null : m.id);
+                        setPickTime(nowClock());
+                      }}
+                      aria-label={`Add ${m.name} at a specific time`}
+                      aria-expanded={open}
+                      title="Had it earlier? Pick the time"
+                      className="shrink-0 border-l border-[#1c1f25] px-3.5 transition hover:bg-[#161a1f]"
+                      style={{ color: open ? "var(--color-accent)" : "#545b68" }}
+                    >
+                      <ClockIcon />
+                    </button>
+                  </div>
+
+                  {/* Had it earlier — pick the time before it goes in. */}
+                  {open && (
+                    <div className="flex flex-wrap items-center gap-2 border-t border-[#1c1f25] px-3.5 py-3">
+                      <span className="text-xs text-[var(--color-mut)]">Had it at</span>
+                      <input
+                        type="time"
+                        className="field w-28 py-1.5"
+                        aria-label="Time you ate it"
+                        value={pickTime}
+                        onChange={(e) => setPickTime(e.target.value)}
+                      />
+                      <button
+                        className="btn btn-sm btn-accent ml-auto"
+                        onClick={() => {
+                          addMeal(m, pickTime);
+                          setTimeFor(null);
+                        }}
+                      >
+                        Add
+                      </button>
+                      <button className="btn btn-sm btn-quiet" onClick={() => setTimeFor(null)}>
+                        Cancel
+                      </button>
+                    </div>
                   )}
-                </button>
+                </div>
               );
             })}
           </div>
+
           {suggested.length < meals.length && (
             <p className="mt-3 text-xs text-[var(--color-mut)]">
               {meals.length - suggested.length} meal
@@ -373,6 +525,72 @@ export default function TodayPage() {
               {target.name.toLowerCase()} day.
             </p>
           )}
+        </section>
+      )}
+
+      {/* Supplements */}
+      {todaysSupps.length > 0 && (
+        <section className="card px-4 py-4 sm:px-5">
+          <div className="mb-3 flex items-baseline">
+            <p className="label mr-auto">Supplements</p>
+            <p className="text-xs text-[var(--color-mut)]">
+              {todaysSupps.filter((s) => (takenMap.get(s.id) ?? 0) >= suppReps(s)).length} of{" "}
+              {todaysSupps.length} taken
+            </p>
+          </div>
+
+          <div className="space-y-1.5">
+            {todaysSupps.map((s) => {
+              const reps = suppReps(s);
+              const taken = takenMap.get(s.id) ?? 0;
+              const done = taken >= reps;
+              const spec = specFor(s.name);
+              return (
+                <div key={s.id} className="sunk flex items-center gap-3 px-3.5 py-3">
+                  <button
+                    className="tick"
+                    data-on={done}
+                    aria-pressed={done}
+                    aria-label={`${done ? "Untake" : "Take"} ${s.name}`}
+                    // Taken twice a day? Each tap counts one more, then resets.
+                    onClick={() => setTaken(s, done ? 0 : taken + 1)}
+                  >
+                    {done ? "✓" : taken > 0 ? taken : ""}
+                  </button>
+                  <span className="min-w-0 flex-1">
+                    <span className="block truncate text-sm font-medium">{s.name}</span>
+                    <span className="block truncate text-xs text-[var(--color-mut)]">
+                      {doseLabel(s)}
+                      {reps > 1 && ` · ${reps}× a day`}
+                      {` · ${TIMING_LABEL[s.timing].toLowerCase()}`}
+                      {s.kcal > 0 && ` · ${s.kcal} kcal`}
+                    </span>
+                  </span>
+                  {spec && (
+                    <span
+                      className="h-2 w-2 shrink-0 rounded-full"
+                      style={{ background: GRADE_COLOUR[spec.grade] }}
+                      title={`${spec.name}: ${spec.what}`}
+                    />
+                  )}
+                </div>
+              );
+            })}
+          </div>
+        </section>
+      )}
+
+      {/* What the times say */}
+      {spacing && spacing.timed.length >= 2 && spacing.notes.length > 0 && (
+        <section className="card px-5 py-4">
+          <p className="label">How the day was spread</p>
+          <ul className="mt-2 space-y-1.5">
+            {spacing.notes.map((n, i) => (
+              <li key={i} className="text-xs leading-relaxed text-[var(--color-mut)]">
+                {n}
+              </li>
+            ))}
+          </ul>
         </section>
       )}
 
@@ -385,7 +603,19 @@ export default function TodayPage() {
               <div key={e.id} className="card overflow-hidden">
                 <div className="flex items-center gap-3 px-5 pt-4">
                   <div className="mr-auto min-w-0">
-                    <p className="truncate font-semibold">{e.meal_name}</p>
+                    <div className="flex items-baseline gap-2">
+                      <p className="truncate font-semibold">{e.meal_name}</p>
+                      {/* The time is editable in place: getting it wrong by an
+                          hour is common and re-logging the meal to fix it is
+                          not a reasonable thing to ask. */}
+                      <input
+                        type="time"
+                        aria-label={`Time you ate ${e.meal_name}`}
+                        className="field-bare num shrink-0 rounded-md border px-1 py-0.5 text-xs text-[var(--color-mut)]"
+                        value={e.at_time ?? ""}
+                        onChange={(ev) => ev.target.value && setEntryTime(e, ev.target.value)}
+                      />
+                    </div>
                     <div className="mt-1">
                       <MacroChips m={t} />
                     </div>
@@ -452,6 +682,37 @@ function stripItem(i: Item): Item {
     carbs_100: Number(i.carbs_100),
     fat_100: Number(i.fat_100),
   };
+}
+
+/** The clock right now, as the time input wants it. */
+function nowClock(): string {
+  const d = new Date();
+  return `${String(d.getHours()).padStart(2, "0")}:${String(d.getMinutes()).padStart(2, "0")}`;
+}
+
+/**
+ * The day's log in the order it happened.
+ *
+ * Anything logged before meal times existed has no time, and goes last rather
+ * than pretending to be midnight — an untimed meal at the top of the list
+ * would misrepresent the day every bit as much as a wrong time would.
+ */
+function sortByTime<T extends { at_time?: string | null; id: number }>(list: T[]): T[] {
+  return [...list].sort((a, b) => {
+    if (a.at_time && b.at_time) return a.at_time.localeCompare(b.at_time) || a.id - b.id;
+    if (a.at_time) return -1;
+    if (b.at_time) return 1;
+    return a.id - b.id;
+  });
+}
+
+function ClockIcon() {
+  return (
+    <svg width="15" height="15" viewBox="0 0 24 24" fill="none" aria-hidden="true">
+      <circle cx="12" cy="12" r="9" stroke="currentColor" strokeWidth="2" />
+      <path d="M12 7v5l3.5 2" stroke="currentColor" strokeWidth="2" strokeLinecap="round" />
+    </svg>
+  );
 }
 
 function prettyDay(d: string) {

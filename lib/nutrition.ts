@@ -19,6 +19,7 @@
 import { profileFor } from "./foods";
 import { normaliseSessions, sessionsKcal, type Session } from "./activities";
 import { assumedBodyFat, navyBodyFat, type BfEstimate } from "./bodyfat";
+import { carbBandFor, type CarbBand } from "./evidence";
 
 export type Goal = "cut" | "maintain" | "recomp" | "bulk";
 
@@ -128,6 +129,16 @@ export type Profile = {
   use_calibration: boolean;
   calorie_override: number | null;
   carb_floor_per_kg: number;
+  /**
+   * The figures this week's targets are built on, snapshotted on shopping day.
+   * Separate from weight_kg on purpose: the plan must not move under you every
+   * time you stand on the scale. See lib/weekly.ts.
+   */
+  plan_weight_kg: number | null;
+  plan_bf_pct: number | null;
+  plan_updated_on: string | null;
+  /** Whether shopping day rebuilds the plan by itself. */
+  auto_roll: boolean;
   /** Off means one flat number every day, and the week grid is ignored. */
   cycling: boolean;
   week: WeekMap;
@@ -301,14 +312,32 @@ export function phaseOf(p: Profile, today: string): Phase {
  * waist moves — which is the half of it worth trusting.
  */
 export function estimatedBodyFat(p: Profile): BfEstimate | null {
+  const kg = planWeight(p);
+
+  // The figure the weekly roll took off your measurements wins: it came from
+  // an actual tape or an actual set of calipers on an actual day, which beats
+  // re-deriving one from whatever happens to be in the settings.
+  if (p.plan_bf_pct != null && p.plan_bf_pct > 0) {
+    const pct = p.plan_bf_pct;
+    return {
+      pct,
+      leanKg: Math.round(kg * (1 - pct / 100) * 10) / 10,
+      fatKg: Math.round(kg * (pct / 100) * 10) / 10,
+      error: 3,
+      method: "manual",
+      label: "measured this week",
+    };
+  }
+
   if (p.bf_source === "manual" && p.body_fat_pct != null && p.body_fat_pct > 0) {
     const pct = p.body_fat_pct;
     return {
       pct,
-      leanKg: Math.round(p.weight_kg * (1 - pct / 100) * 10) / 10,
-      fatKg: Math.round(p.weight_kg * (pct / 100) * 10) / 10,
+      leanKg: Math.round(kg * (1 - pct / 100) * 10) / 10,
+      fatKg: Math.round(kg * (pct / 100) * 10) / 10,
       error: 0,
-      method: "measured",
+      method: "manual",
+      label: "measured",
     };
   }
   if (p.bf_source === "tape" && p.neck_cm && p.waist_cm) {
@@ -318,17 +347,28 @@ export function estimatedBodyFat(p: Profile): BfEstimate | null {
       neckCm: p.neck_cm,
       waistCm: p.waist_cm,
       hipCm: p.hip_cm,
-      weightKg: p.weight_kg,
+      weightKg: kg,
     });
   }
   return null;
+}
+
+/**
+ * The bodyweight every target is worked out from.
+ *
+ * Defined here rather than imported from lib/weekly.ts so that the maths in
+ * this file has no dependency on the rolling machinery — it just needs to know
+ * which number to use, and the answer is "the snapshot, if there is one".
+ */
+export function planWeight(p: Profile): number {
+  return p.plan_weight_kg != null && p.plan_weight_kg > 0 ? p.plan_weight_kg : p.weight_kg;
 }
 
 /** Lean body mass, when a body fat figure is available from anywhere. */
 export function leanMass(p: Profile): number | null {
   const bf = estimatedBodyFat(p);
   if (!bf || bf.pct <= 0 || bf.pct >= 60) return null;
-  return p.weight_kg * (1 - bf.pct / 100);
+  return planWeight(p) * (1 - bf.pct / 100);
 }
 
 /** Katch-McArdle if we know lean mass, otherwise Mifflin-St Jeor. */
@@ -336,7 +376,7 @@ export function bmr(p: Profile): number {
   const lbm = leanMass(p);
   if (lbm != null) return 370 + 21.6 * lbm;
   const age = ageFromDob(p.dob);
-  const base = 10 * p.weight_kg + 6.25 * p.height_cm - 5 * age;
+  const base = 10 * planWeight(p) + 6.25 * p.height_cm - 5 * age;
   return p.sex === "female" ? base - 161 : base + 5;
 }
 
@@ -352,7 +392,7 @@ export function baseline(p: Profile): number {
 /** What one day type costs before the week is balanced against your goal. */
 export function dayTypeCost(p: Profile, dt: DayType): number {
   if (p.energy_model === "sessions") {
-    return baseline(p) + sessionsKcal(p.weight_kg, dt.sessions);
+    return baseline(p) + sessionsKcal(planWeight(p), dt.sessions);
   }
   return baseline(p) * (1 + (dt.percent ?? 0));
 }
@@ -415,13 +455,13 @@ export function proteinTarget(p: Profile): number {
     // jump — 2.8 g/kg of lean mass and 2.8 g/kg of bodyweight are not the
     // same number. Assume a plausible body fat figure instead, erring on the
     // high side so the target doesn't inflate.
-    const lean = lbm ?? p.weight_kg * (1 - assumedBodyFat(p.sex) / 100);
+    const lean = lbm ?? planWeight(p) * (1 - assumedBodyFat(p.sex) / 100);
     raw = p.protein_per_kg * lean;
   } else {
-    raw = p.protein_per_kg * p.weight_kg;
+    raw = p.protein_per_kg * planWeight(p);
   }
 
-  return Math.min(3.2 * p.weight_kg, Math.max(1.4 * p.weight_kg, raw));
+  return Math.min(3.2 * planWeight(p), Math.max(1.4 * planWeight(p), raw));
 }
 
 /** True when the lean-mass target is running on an assumption, not a figure. */
@@ -431,15 +471,15 @@ export function proteinIsAssumed(p: Profile): boolean {
 
 function macrosFor(p: Profile, kcal: number): Macros {
   const protein = proteinTarget(p);
-  let fat = p.fat_per_kg * p.weight_kg;
-  const carbFloor = (p.carb_floor_per_kg ?? 1) * p.weight_kg;
+  let fat = p.fat_per_kg * planWeight(p);
+  const carbFloor = (p.carb_floor_per_kg ?? 1) * planWeight(p);
 
   let carbs = (kcal - protein * 4 - fat * 9) / 4;
 
   // On a low day, protect carbohydrate before fat — you still have to train on
   // it. Fat gives way down to a hard 0.45 g/kg hormonal floor.
   if (carbs < carbFloor) {
-    const fatFloor = 0.45 * p.weight_kg;
+    const fatFloor = 0.45 * planWeight(p);
     const needed = (carbFloor - carbs) * 4;
     const giveable = Math.max(0, (fat - fatFloor) * 9);
     fat -= Math.min(needed, giveable) / 9;
@@ -558,9 +598,9 @@ export function buildWeekPlan(
       dayTypeId: t.id,
       name: t.name,
       fatPct: kcal > 0 ? (m.fat * 9) / kcal : 0,
-      fatPerKg: p.weight_kg > 0 ? m.fat / p.weight_kg : 0,
+      fatPerKg: planWeight(p) > 0 ? m.fat / planWeight(p) : 0,
       cost: Math.round(raw),
-      sessionKcal: Math.round(sessionsKcal(p.weight_kg, t.sessions)),
+      sessionKcal: Math.round(sessionsKcal(planWeight(p), t.sessions)),
       multiplier: goalKcal > 0 ? kcal / goalKcal : 1,
       sessions: t.sessions,
     };
@@ -708,4 +748,99 @@ export function macroConsistency(i: Item): { ok: boolean; implied: number; state
 /** Cooked weight of a raw ingredient, from the food knowledge base. */
 export function cookedGrams(i: Item): number {
   return (Number(i.grams) || 0) * profileFor(i.name, i).rawToCooked;
+}
+
+/* ------------------------------------------------------------------ */
+/* Fuelling the work                                                   */
+/* ------------------------------------------------------------------ */
+
+/**
+ * MET-weighted training minutes for a day type.
+ *
+ * The carbohydrate bands in the position stands are written in hours of
+ * training per day, which quietly assumes those hours are hard. An hour of
+ * technique work and an hour of main set are not the same glycogen cost, so
+ * minutes are weighted by intensity above rest and normalised so that a
+ * 7-MET hour counts as an hour.
+ */
+export function trainingLoad(dt: DayType): number {
+  return (dt.sessions ?? []).reduce(
+    (a, s) => a + Math.max(0, Number(s.minutes) || 0) * (Math.max(1, Number(s.met) || 1) - 1) / 6,
+    0
+  );
+}
+
+export type CarbCheck = {
+  dayTypeId: number;
+  name: string;
+  band: CarbBand;
+  loadMinutes: number;
+  /** What the plan's carb target comes to, per kg of bodyweight. */
+  perKg: number;
+  grams: number;
+  /** The band's range in grams for this bodyweight. */
+  lowGrams: number;
+  highGrams: number;
+  /**
+   * `low_by_design` is the important one. Under the band on a day with little
+   * training in it is carbohydrate periodisation working as intended, not a
+   * fault; under it on a training day is under-fuelling the work.
+   */
+  verdict: "under_fuelled" | "low_by_design" | "in" | "over";
+};
+
+/**
+ * Is each kind of day carrying the carbohydrate its training actually asks for?
+ *
+ * This is the check that matters most to a swimmer and the one a
+ * percentage-of-calories split will never make. Carbohydrate requirement
+ * scales with the work done, not with the size of the day's calorie budget —
+ * so a hard pool session inside a modest deficit is exactly the situation
+ * where a macro split derived from percentages under-fuels, and exactly the
+ * situation a swimmer is in most of the time.
+ *
+ * Bands from Burke et al. (2011), carried forward by the ACSM/AND/DC position
+ * stand (Thomas et al. 2016) and applied to swimming by Shaw et al. (2014).
+ *
+ * Two honest caveats, both of which the app repeats on screen:
+ *
+ *  - **The bands assume energy balance.** In a deficit you cannot hit the top
+ *    of them and should not try; the useful reading is whether the *training*
+ *    days are carrying more than the rest days, not whether every day clears
+ *    the bar.
+ *  - **Being under on a light day is the point.** Fuelling for the work
+ *    required (Impey et al. 2018) means low days are meant to be low. Only a
+ *    training day under its band is a problem, and only that one is called one.
+ *
+ * Reported and never silently corrected: under-fuelling costs training quality
+ * rather than body composition, and the fix is usually to move carbohydrate
+ * toward the session rather than to add any.
+ */
+export function carbCheck(p: Profile, plan: WeekPlan): CarbCheck[] {
+  const kg = planWeight(p);
+  return plan.dayTypes.map((dt) => {
+    const t = targetsFor(plan, dt.id);
+    const load = trainingLoad(dt);
+    const band = carbBandFor(load);
+    const lowGrams = Math.round(band.low * kg);
+    const highGrams = Math.round(band.high * kg);
+    return {
+      dayTypeId: dt.id,
+      name: dt.name,
+      band,
+      loadMinutes: Math.round(load),
+      perKg: kg > 0 ? Math.round((t.carbs / kg) * 10) / 10 : 0,
+      grams: t.carbs,
+      lowGrams,
+      highGrams,
+      verdict:
+        t.carbs > highGrams
+          ? "over"
+          : t.carbs >= lowGrams
+            ? "in"
+            : load >= 45
+              ? "under_fuelled"
+              : "low_by_design",
+    };
+  });
 }

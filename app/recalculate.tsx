@@ -8,7 +8,6 @@ import {
   MODES,
   type BoundedItem,
   type DayResult,
-  type MacroKey,
   type Mode,
   type ShareOutcome,
   type Suggestion,
@@ -16,10 +15,10 @@ import {
 import { smartBounds, VOLUME_FOODS } from "@/lib/foods";
 import { dayVolume, fillerSuggestions, volumeHeadline } from "@/lib/prep";
 import { servingGrams, type PlanMeal } from "@/lib/batch";
-import { fitWeek, mealGroups, repsOf } from "@/lib/weekfit";
+import { appliesOn, fitWeek, mealGroups, repsOf } from "@/lib/weekfit";
 import type { WeekPlan } from "@/lib/nutrition";
-
-const KEYS: MacroKey[] = ["kcal", "protein", "carbs", "fat"];
+import type { Supplement } from "@/lib/supplements";
+import { Sheet } from "./sheet";
 
 /**
  * Rebalance the week.
@@ -37,12 +36,20 @@ const KEYS: MacroKey[] = ["kcal", "protein", "carbs", "fat"];
 export function RecalculateDialog({
   meals,
   plan,
+  supplements = [],
   defaultMode = "balanced",
   onClose,
   onApply,
 }: {
   meals: PlanMeal[];
   plan: WeekPlan;
+  /**
+   * Counted toward every day and never resized. Passing them in matters even
+   * when they're all zero-macro: the Plan page's headline already includes
+   * them, and a dialog that didn't would quietly disagree with the page that
+   * opened it the moment anything with calories in it went on the list.
+   */
+  supplements?: Supplement[];
   defaultMode?: Mode;
   onClose: () => void;
   onApply: (meals: PlanMeal[]) => Promise<void>;
@@ -51,8 +58,22 @@ export function RecalculateDialog({
   const [mode, setMode] = useState<Mode>(defaultMode);
   const [saving, setSaving] = useState(false);
   const [tab, setTab] = useState<"days" | "splits" | "portions" | "prep">("days");
+  /**
+   * Which meal's internal split is open, if any.
+   *
+   * Closed by default: most meals are a recipe rather than a ratio, and a
+   * per-cent box under every one of them asks you to have an opinion about
+   * how much of your dinner is rice. A meal you have already set shares on
+   * opens straight away, because that one you clearly do.
+   */
+  const [splitOpen, setSplitOpen] = useState<number | null>(
+    () => meals.find((m) => m.ingredients.some((it) => it.share_pct != null))?.id ?? null
+  );
 
-  const result = useMemo(() => fitWeek(draft, plan, { mode }), [draft, plan, mode]);
+  const result = useMemo(
+    () => fitWeek(draft, plan, { mode, supplements }),
+    [draft, plan, mode, supplements]
+  );
 
   const live = result.days.filter((d) => d.weight > 0);
   const unused = result.days.filter((d) => d.weight === 0);
@@ -85,6 +106,57 @@ export function RecalculateDialog({
     }
     return out;
   }, [groups, result.meals]);
+
+  /** What each meal's own ingredients came out at, as a share of that meal. */
+  const ingredientSplit = useMemo(() => {
+    const out = new Map<number, Map<number, number>>();
+    for (const m of result.meals) {
+      if (m.ingredients.length < 2) continue;
+      const ks = m.ingredients.map(
+        (i) => ((Number(i.grams) || 0) * (Number(i.kcal_100) || 0)) / 100
+      );
+      const total = ks.reduce((a, b) => a + b, 0);
+      const inner = new Map<number, number>();
+      ks.forEach((k, i) => inner.set(i, total > 0 ? k / total : 0));
+      out.set(m.id, inner);
+    }
+    return out;
+  }, [result.meals]);
+
+  /**
+   * Which meals make up each kind of day, and which of those are the extras.
+   *
+   * The whole model in one line per day: the lightest day is the meals you eat
+   * whatever happens, and every bigger day is that plus what gets added to it.
+   * Worth showing, because a fit that lands five day types at once looks
+   * exactly like one that landed the day you happened to be looking at.
+   */
+  const dayMeals = useMemo(() => {
+    const total = plan.order.length;
+    const namesFor = (id: number) =>
+      draft.filter((m) => m.ingredients.length > 0 && appliesOn(m, id, total)).map((m) => m.name);
+
+    const live = result.days.filter((d) => d.weight > 0);
+    if (!live.length) return new Map<number, { base: string[]; extra: string[] }>();
+
+    // The base is the day with the fewest meals on it — the ones that are
+    // there whatever the week is doing.
+    const baseId = live.reduce((a, d) =>
+      namesFor(d.id).length < namesFor(a.id).length ? d : a
+    ).id;
+    const baseNames = namesFor(baseId);
+    const baseSet = new Set(baseNames);
+
+    const out = new Map<number, { base: string[]; extra: string[] }>();
+    for (const d of result.days) {
+      const all = namesFor(d.id);
+      out.set(d.id, {
+        base: all.filter((n) => baseSet.has(n)),
+        extra: all.filter((n) => !baseSet.has(n)),
+      });
+    }
+    return out;
+  }, [draft, plan.order.length, result.days]);
 
   const volume = useMemo(() => dayVolume(result.meals), [result.meals]);
   const fillers = useMemo(
@@ -160,10 +232,33 @@ export function RecalculateDialog({
     );
   }
 
-  /** Widen a meal's band so the split you asked for becomes reachable. */
+  /**
+   * Widen whatever is in the way of the split you asked for.
+   *
+   * A meal's share is blocked by the meal as a whole, so its band moves in
+   * proportion. An ingredient's share is blocked by that one ingredient, so
+   * only its limit moves — widening its neighbours would be answering a
+   * question nobody asked.
+   */
   function unblockShare(s: ShareOutcome) {
     const meal = draft.find((m) => m.id === s.mealId);
     if (!meal || !s.suggestGrams) return;
+
+    const dot = s.name.indexOf(" · ");
+    if (dot >= 0) {
+      const ingName = s.name.slice(dot + 3);
+      const index = meal.ingredients.findIndex((it) => it.name === ingName);
+      if (index < 0) return;
+      patchItem(
+        meal.id,
+        index,
+        s.blocked === "min"
+          ? { min_grams: Math.max(0, Math.floor(s.suggestGrams)) }
+          : { max_grams: Math.ceil(s.suggestGrams) }
+      );
+      return;
+    }
+
     const base = servingGrams(meal) || 1;
     const k = s.suggestGrams / base;
     setDraft((ms) =>
@@ -215,10 +310,17 @@ export function RecalculateDialog({
     setSaving(true);
     // The shares you set here are part of the answer, so they are saved with it.
     await onApply(
-      result.meals.map((m) => ({
-        ...m,
-        share_pct: draft.find((d) => d.id === m.id)?.share_pct ?? null,
-      }))
+      result.meals.map((m) => {
+        const d = draft.find((x) => x.id === m.id);
+        return {
+          ...m,
+          share_pct: d?.share_pct ?? null,
+          ingredients: m.ingredients.map((it, i) => ({
+            ...it,
+            share_pct: d?.ingredients[i]?.share_pct ?? null,
+          })),
+        };
+      })
     );
     setSaving(false);
   }
@@ -226,10 +328,9 @@ export function RecalculateDialog({
   const offDays = live.filter((d) => !d.hit.kcal);
 
   return (
-    <div className="fixed inset-0 z-50 flex items-end justify-center bg-black/75 backdrop-blur-sm sm:items-center sm:p-6">
-      <div className="card flex max-h-[92dvh] w-full max-w-2xl flex-col rounded-b-none sm:max-h-[88dvh] sm:rounded-b-[1.25rem]">
+    <Sheet onClose={onClose} label="Rebalance the week">
         {/* Header */}
-        <div className="flex items-start gap-3 px-5 pb-3 pt-5">
+        <div className="flex shrink-0 items-start gap-3 px-5 pb-3 pt-2 sm:pt-5">
           <div className="mr-auto min-w-0">
             <h2 className="truncate text-lg font-bold tracking-tight">Rebalance the week</h2>
             <p className="mt-0.5 text-xs text-[var(--color-mut)]">
@@ -242,7 +343,7 @@ export function RecalculateDialog({
         </div>
 
         {/* Headline: does the week work? */}
-        <div className="mx-5 mt-1 flex items-baseline gap-3 rounded-xl bg-[#0e1013] px-4 py-3">
+        <div className="mx-5 mt-1 flex shrink-0 items-baseline gap-3 rounded-xl bg-[#0e1013] px-4 py-3">
           <span className="label mr-auto">Week average</span>
           <span className="num text-2xl" style={{ color: MACRO_COLOR.kcal }}>
             {Math.round(result.weekly.after.kcal).toLocaleString()}
@@ -254,7 +355,7 @@ export function RecalculateDialog({
         </div>
 
         {/* Tabs */}
-        <div className="mt-4 flex flex-wrap gap-1 px-5 pb-1">
+        <div className="mt-4 flex shrink-0 flex-wrap gap-1 px-5 pb-1">
           {(
             [
               ["days", "Every day"],
@@ -275,12 +376,14 @@ export function RecalculateDialog({
             ))}
         </div>
 
-        {/* Body */}
-        <div className="mt-3 min-h-0 flex-1 overflow-y-auto px-5 pb-1">
+        {/* Body. `overscroll-contain` stops the page behind scrolling once
+            this reaches its end — the other half of the fix is the body pin
+            in <Sheet>. */}
+        <div className="overscroll-contain mt-3 min-h-0 flex-1 overflow-y-auto px-5 pb-1">
           {tab === "days" && (
             <div className="space-y-2 pb-2">
               {live.map((d) => (
-                <DayCard key={d.id} day={d} />
+                <DayCard key={d.id} day={d} meals={dayMeals.get(d.id)} />
               ))}
 
               {unused.length > 0 && (
@@ -329,9 +432,13 @@ export function RecalculateDialog({
           {tab === "splits" && (
             <div className="space-y-4 pb-2">
               <p className="text-xs leading-relaxed text-[var(--color-mut)]">
-                These meals come and go together, so the fit knows what they add up to but not how
-                to divide them. Say what you want and it will hold that split.
+                This is plan-building. Nothing in the day&rsquo;s targets says how to divide meals
+                that always appear together, so these say what you want and the fit holds it.
+                Figures are shares of the <b>calories</b>. It shapes the plan you cook to — logging
+                what you ate is untouched by any of it.
               </p>
+
+              {/* Between meals that come and go together */}
               {groups.map((g) => (
                 <div key={g.key} className="sunk px-4 py-3.5">
                   {/* Sentence case, not the uppercase label style — a list of
@@ -342,62 +449,97 @@ export function RecalculateDialog({
                       : "Eaten every day"}
                   </p>
                   <div className="mt-3 space-y-2.5">
-                    {g.meals.map((m) => {
-                      const out = result.shares.find((s) => s.mealId === m.id);
-                      const draftMeal = draft.find((d) => d.id === m.id);
-                      return (
-                        <div key={m.id}>
-                          <div className="flex flex-wrap items-center gap-2">
-                            <span className="mr-auto min-w-0 basis-24 truncate text-sm font-medium">
-                              {m.name}
-                            </span>
-                            <input
-                              type="number"
-                              inputMode="numeric"
-                              min={0}
-                              max={100}
-                              placeholder="auto"
-                              aria-label={`${m.name} share of the group, per cent`}
-                              className="field w-[4.6rem] px-2 py-1.5 text-right text-sm"
-                              value={draftMeal?.share_pct ?? ""}
-                              onChange={(e) =>
-                                patchMeal(m.id, {
-                                  share_pct:
-                                    e.target.value === "" ? null : Number(e.target.value),
-                                })
-                              }
-                            />
-                            <span className="text-xs text-[var(--color-mut)]">%</span>
-                            <span className="shrink-0 text-[#454b57]">→</span>
-                            <span
-                              className="num w-12 shrink-0 text-right text-sm"
-                              title="What it actually came out as"
-                              style={{
-                                color: out?.blocked ? "var(--color-carbs)" : "var(--color-accent)",
-                              }}
-                            >
-                              {Math.round((splitOf.get(m.id) ?? 0) * 100)}%
-                            </span>
-                          </div>
-                          {out?.blocked && (
-                            <button
-                              className="mt-1.5 text-left text-[0.7rem] leading-relaxed text-[#ffd08a] underline decoration-dotted"
-                              onClick={() => unblockShare(out)}
-                            >
-                              Held at its {out.blocked === "min" ? "smallest" : "largest"} allowed
-                              size — tap to allow {out.suggestGrams} g and reach{" "}
-                              {Math.round(out.want * 100)}%
-                            </button>
-                          )}
-                        </div>
-                      );
-                    })}
+                    {g.meals.map((m) => (
+                      <ShareRow
+                        key={m.id}
+                        name={m.name}
+                        value={draft.find((d) => d.id === m.id)?.share_pct ?? null}
+                        got={splitOf.get(m.id) ?? 0}
+                        outcome={result.shares.find((s) => s.mealId === m.id && s.name === m.name)}
+                        onChange={(v) => patchMeal(m.id, { share_pct: v })}
+                        onUnblock={unblockShare}
+                      />
+                    ))}
                   </div>
                   <p className="mt-2.5 text-[0.7rem] text-[var(--color-mut)]">
                     Leave a box empty to let the fit decide that one.
                   </p>
                 </div>
               ))}
+
+              {/* Inside one meal — opt in, because most meals aren't like that */}
+              <div className="sunk px-4 py-3.5">
+                <p className="text-xs font-semibold text-[var(--color-mut)]">Inside a meal</p>
+                <p className="mt-1.5 text-[0.7rem] leading-relaxed text-[var(--color-mut)]">
+                  Some meals you balance deliberately — a yoghurt bowl you want half yoghurt rather
+                  than half granola. Most you don&rsquo;t: chicken and rice is a recipe, not a
+                  ratio. Open one only if it&rsquo;s the first kind.
+                </p>
+
+                <div className="mt-3 flex flex-wrap gap-1.5">
+                  {draft
+                    .filter((m) => m.ingredients.length > 1)
+                    .map((meal) => {
+                      const set = meal.ingredients.some((it) => it.share_pct != null);
+                      const open = splitOpen === meal.id;
+                      return (
+                        <button
+                          key={meal.id}
+                          onClick={() => setSplitOpen(open ? null : meal.id)}
+                          className={open || set ? "btn btn-sm btn-accent" : "btn btn-sm"}
+                        >
+                          {meal.name}
+                          {set && " ·"}
+                        </button>
+                      );
+                    })}
+                </div>
+
+                {(() => {
+                  const meal = draft.find((m) => m.id === splitOpen);
+                  if (!meal) return null;
+                  const inner = ingredientSplit.get(meal.id) ?? new Map<number, number>();
+                  return (
+                    <div className="mt-4 border-t border-[#1c1f25] pt-3.5">
+                      <div className="flex items-baseline gap-2">
+                        <p className="mr-auto text-sm font-semibold">{meal.name}</p>
+                        {meal.ingredients.some((it) => it.share_pct != null) && (
+                          <button
+                            className="text-[0.7rem] text-[var(--color-mut)] underline decoration-dotted"
+                            onClick={() =>
+                              meal.ingredients.forEach((_, i) =>
+                                patchItem(meal.id, i, { share_pct: null })
+                              )
+                            }
+                          >
+                            clear
+                          </button>
+                        )}
+                      </div>
+                      <div className="mt-3 space-y-2.5">
+                        {meal.ingredients.map((it, i) => (
+                          <ShareRow
+                            key={i}
+                            name={it.name}
+                            value={it.share_pct ?? null}
+                            got={inner.get(i) ?? 0}
+                            outcome={result.shares.find(
+                              (s) => s.name === `${meal.name} · ${it.name}`
+                            )}
+                            onChange={(v) => patchItem(meal.id, i, { share_pct: v })}
+                            onUnblock={unblockShare}
+                          />
+                        ))}
+                      </div>
+                      <p className="mt-2.5 text-[0.7rem] leading-relaxed text-[var(--color-mut)]">
+                        {meal.batch
+                          ? "Cooked ahead, so this is the recipe rather than a preference — the amounts are re-proportioned to match and the whole tray is then sized to fit the day."
+                          : "Leave a box empty to let the fit decide that one."}
+                      </p>
+                    </div>
+                  );
+                })()}
+              </div>
             </div>
           )}
 
@@ -493,7 +635,7 @@ export function RecalculateDialog({
         </div>
 
         {/* Footer */}
-        <div className="safe-b flex gap-2 border-t border-[#1c1f25] px-5 pt-4">
+        <div className="safe-b flex shrink-0 gap-2 border-t border-[#1c1f25] px-5 pt-4">
           <button className="btn flex-1" onClick={onClose}>
             Cancel
           </button>
@@ -501,12 +643,91 @@ export function RecalculateDialog({
             {saving ? "Applying…" : "Apply"}
           </button>
         </div>
-      </div>
-    </div>
+    </Sheet>
   );
 }
 
 /* -------------------------------------------------------------------- */
+
+/**
+ * One share: what you want of it, and what it actually came out as.
+ *
+ * The same row serves a meal's share of its group and an ingredient's share of
+ * its meal, because they are the same question asked one level apart, and
+ * showing them differently would only suggest they behave differently.
+ */
+function ShareRow({
+  name,
+  value,
+  got,
+  outcome,
+  onChange,
+  onUnblock,
+}: {
+  name: string;
+  value: number | null;
+  got: number;
+  outcome?: ShareOutcome;
+  onChange: (v: number | null) => void;
+  onUnblock: (s: ShareOutcome) => void;
+}) {
+  // Three points either way is inside the noise of rounding a portion to
+  // something you can weigh; past that the difference is real.
+  const missed = value != null && Math.abs(got - value / 100) > 0.03;
+
+  return (
+    <div>
+      <div className="flex flex-wrap items-center gap-2">
+        <span className="mr-auto min-w-0 flex-1 basis-20 truncate text-sm font-medium">{name}</span>
+        <input
+          type="number"
+          inputMode="numeric"
+          min={0}
+          max={100}
+          placeholder="auto"
+          aria-label={`${name} share of the calories, per cent`}
+          className="field w-[3.9rem] px-2 py-1.5 text-right text-sm"
+          value={value ?? ""}
+          onChange={(e) => onChange(e.target.value === "" ? null : Number(e.target.value))}
+        />
+        <span className="text-xs text-[var(--color-mut)]">%</span>
+        <span className="shrink-0 text-[#454b57]">→</span>
+        <span
+          className="num w-12 shrink-0 text-right text-sm"
+          title="What it actually came out as"
+          style={{
+            color: outcome?.blocked
+              ? "var(--color-carbs)"
+              : missed
+                ? "var(--color-mut)"
+                : "var(--color-accent)",
+          }}
+        >
+          {Math.round(got * 100)}%
+        </span>
+      </div>
+      {outcome?.blocked ? (
+        <button
+          className="mt-1.5 text-left text-[0.7rem] leading-relaxed text-[#ffd08a] underline decoration-dotted"
+          onClick={() => onUnblock(outcome)}
+        >
+          Held at its {outcome.blocked === "min" ? "smallest" : "largest"} allowed size — tap to
+          allow {outcome.suggestGrams} g and reach {Math.round(outcome.want * 100)}%
+        </button>
+      ) : (
+        // Not every miss is a limit. Once nothing is pinned, a share that still
+        // hasn't landed is the macros disagreeing — and saying so is better
+        // than leaving a typed 50 sitting next to a 43% with no explanation.
+        missed && (
+          <p className="mt-1.5 text-[0.7rem] leading-relaxed text-[#5b6270]">
+            Nothing&rsquo;s in the way — the macros land closer at {Math.round(got * 100)}%. Lock a
+            portion, or narrow its limits, to insist.
+          </p>
+        )
+      )}
+    </div>
+  );
+}
 
 /** "swim only and swim + gym" — a list a person would say out loud. */
 function dayList(ids: number[], days: { id: number; name: string }[]): string {
@@ -545,7 +766,13 @@ function Delta({ value, tol }: { value: number; tol: number }) {
  * misses. The calorie line leads because that is the one that decides the
  * outcome; the macros sit underneath for when you want them.
  */
-function DayCard({ day }: { day: DayResult }) {
+function DayCard({
+  day,
+  meals,
+}: {
+  day: DayResult;
+  meals?: { base: string[]; extra: string[] };
+}) {
   return (
     <div className="sunk px-4 py-3">
       <div className="flex items-baseline gap-2">
@@ -576,6 +803,22 @@ function DayCard({ day }: { day: DayResult }) {
           </span>
         ))}
       </div>
+
+      {/* What this day is made of. The extras are the point: a swim day is the
+          everyday meals plus what gets added, and the fit solved both. */}
+      {meals && (meals.base.length > 0 || meals.extra.length > 0) && (
+        <p className="mt-2 text-[0.68rem] leading-relaxed text-[#5b6270]">
+          {meals.base.join(" · ").toLowerCase()}
+          {meals.extra.length > 0 && (
+            <>
+              {meals.base.length > 0 && " "}
+              <span style={{ color: "var(--color-protein)" }}>
+                + {meals.extra.join(" · ").toLowerCase()}
+              </span>
+            </>
+          )}
+        </p>
+      )}
     </div>
   );
 }
