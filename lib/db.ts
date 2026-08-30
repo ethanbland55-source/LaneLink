@@ -148,6 +148,36 @@ async function createSchema() {
     created_at  timestamptz not null default now()
   )`;
 
+  // Supplements are a fixed dose you tick off, not an ingredient the fit can
+  // resize. Kept in their own table for exactly that reason.
+  await sql`create table if not exists supplements (
+    id            serial primary key,
+    name          text    not null,
+    dose          numeric not null default 0,
+    unit          text    not null default 'g',
+    timing        text    not null default 'anytime',
+    meal_id       int references meals(id) on delete set null,
+    day_type_ids  int[],
+    times_per_day numeric not null default 1,
+    kcal          numeric not null default 0,
+    protein       numeric not null default 0,
+    carbs         numeric not null default 0,
+    fat           numeric not null default 0,
+    note          text,
+    sort_order    int     not null default 0,
+    created_at    timestamptz not null default now()
+  )`;
+
+  // One row per supplement actually taken on a day.
+  await sql`create table if not exists supplement_log (
+    day           date not null,
+    supplement_id int  not null references supplements(id) on delete cascade,
+    taken         int  not null default 1,
+    at_time       text,
+    created_at    timestamptz not null default now(),
+    primary key (day, supplement_id)
+  )`;
+
   await sql`create table if not exists pantry (
     id serial primary key,
     name text not null unique,

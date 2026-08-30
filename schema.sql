@@ -126,6 +126,38 @@ create table if not exists log_entries (
   created_at timestamptz not null default now()
 );
 
+-- Supplements are a fixed dose you tick off, not an ingredient the optimiser
+-- may resize. Modelling them as ingredients would let the fit shrink your
+-- creatine to help hit a carb target, and make the shopping list try to buy 5 g
+-- of it. Macros are per dose and usually all zero.
+create table if not exists supplements (
+  id            serial primary key,
+  name          text    not null,
+  dose          numeric not null default 0,
+  unit          text    not null default 'g',      -- g | mg | mcg | IU | capsule | scoop | ml
+  timing        text    not null default 'anytime',
+  meal_id       int references meals(id) on delete set null,  -- taken with this meal
+  day_type_ids  int[],                             -- null = every day type
+  times_per_day numeric not null default 1,
+  kcal          numeric not null default 0,
+  protein       numeric not null default 0,
+  carbs         numeric not null default 0,
+  fat           numeric not null default 0,
+  note          text,
+  sort_order    int     not null default 0,
+  created_at    timestamptz not null default now()
+);
+
+-- One row per supplement actually taken on a day.
+create table if not exists supplement_log (
+  day           date not null,
+  supplement_id int  not null references supplements(id) on delete cascade,
+  taken         int  not null default 1,
+  at_time       text,
+  created_at    timestamptz not null default now(),
+  primary key (day, supplement_id)
+);
+
 -- What's already in the cupboard, subtracted from the shopping list.
 create table if not exists pantry (
   id         serial primary key,

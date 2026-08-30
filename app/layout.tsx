@@ -1,6 +1,6 @@
 import type { Metadata, Viewport } from "next";
 import "./globals.css";
-import { Nav } from "./nav";
+import { Shell } from "./shell";
 
 export const metadata: Metadata = {
   title: "Meal Hub",
@@ -17,8 +17,7 @@ export default function RootLayout({ children }: { children: React.ReactNode }) 
   return (
     <html lang="en-GB">
       <body className="min-h-screen">
-        <Nav />
-        <main className="mx-auto max-w-3xl px-4 pb-24 pt-5">{children}</main>
+        <Shell>{children}</Shell>
       </body>
     </html>
   );

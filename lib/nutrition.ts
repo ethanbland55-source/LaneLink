@@ -19,6 +19,7 @@
 import { profileFor } from "./foods";
 import { normaliseSessions, sessionsKcal, type Session } from "./activities";
 import { assumedBodyFat, navyBodyFat, type BfEstimate } from "./bodyfat";
+import { carbBandFor, type CarbBand } from "./evidence";
 
 export type Goal = "cut" | "maintain" | "recomp" | "bulk";
 
@@ -747,4 +748,99 @@ export function macroConsistency(i: Item): { ok: boolean; implied: number; state
 /** Cooked weight of a raw ingredient, from the food knowledge base. */
 export function cookedGrams(i: Item): number {
   return (Number(i.grams) || 0) * profileFor(i.name, i).rawToCooked;
+}
+
+/* ------------------------------------------------------------------ */
+/* Fuelling the work                                                   */
+/* ------------------------------------------------------------------ */
+
+/**
+ * MET-weighted training minutes for a day type.
+ *
+ * The carbohydrate bands in the position stands are written in hours of
+ * training per day, which quietly assumes those hours are hard. An hour of
+ * technique work and an hour of main set are not the same glycogen cost, so
+ * minutes are weighted by intensity above rest and normalised so that a
+ * 7-MET hour counts as an hour.
+ */
+export function trainingLoad(dt: DayType): number {
+  return (dt.sessions ?? []).reduce(
+    (a, s) => a + Math.max(0, Number(s.minutes) || 0) * (Math.max(1, Number(s.met) || 1) - 1) / 6,
+    0
+  );
+}
+
+export type CarbCheck = {
+  dayTypeId: number;
+  name: string;
+  band: CarbBand;
+  loadMinutes: number;
+  /** What the plan's carb target comes to, per kg of bodyweight. */
+  perKg: number;
+  grams: number;
+  /** The band's range in grams for this bodyweight. */
+  lowGrams: number;
+  highGrams: number;
+  /**
+   * `low_by_design` is the important one. Under the band on a day with little
+   * training in it is carbohydrate periodisation working as intended, not a
+   * fault; under it on a training day is under-fuelling the work.
+   */
+  verdict: "under_fuelled" | "low_by_design" | "in" | "over";
+};
+
+/**
+ * Is each kind of day carrying the carbohydrate its training actually asks for?
+ *
+ * This is the check that matters most to a swimmer and the one a
+ * percentage-of-calories split will never make. Carbohydrate requirement
+ * scales with the work done, not with the size of the day's calorie budget —
+ * so a hard pool session inside a modest deficit is exactly the situation
+ * where a macro split derived from percentages under-fuels, and exactly the
+ * situation a swimmer is in most of the time.
+ *
+ * Bands from Burke et al. (2011), carried forward by the ACSM/AND/DC position
+ * stand (Thomas et al. 2016) and applied to swimming by Shaw et al. (2014).
+ *
+ * Two honest caveats, both of which the app repeats on screen:
+ *
+ *  - **The bands assume energy balance.** In a deficit you cannot hit the top
+ *    of them and should not try; the useful reading is whether the *training*
+ *    days are carrying more than the rest days, not whether every day clears
+ *    the bar.
+ *  - **Being under on a light day is the point.** Fuelling for the work
+ *    required (Impey et al. 2018) means low days are meant to be low. Only a
+ *    training day under its band is a problem, and only that one is called one.
+ *
+ * Reported and never silently corrected: under-fuelling costs training quality
+ * rather than body composition, and the fix is usually to move carbohydrate
+ * toward the session rather than to add any.
+ */
+export function carbCheck(p: Profile, plan: WeekPlan): CarbCheck[] {
+  const kg = planWeight(p);
+  return plan.dayTypes.map((dt) => {
+    const t = targetsFor(plan, dt.id);
+    const load = trainingLoad(dt);
+    const band = carbBandFor(load);
+    const lowGrams = Math.round(band.low * kg);
+    const highGrams = Math.round(band.high * kg);
+    return {
+      dayTypeId: dt.id,
+      name: dt.name,
+      band,
+      loadMinutes: Math.round(load),
+      perKg: kg > 0 ? Math.round((t.carbs / kg) * 10) / 10 : 0,
+      grams: t.carbs,
+      lowGrams,
+      highGrams,
+      verdict:
+        t.carbs > highGrams
+          ? "over"
+          : t.carbs >= lowGrams
+            ? "in"
+            : load >= 45
+              ? "under_fuelled"
+              : "low_by_design",
+    };
+  });
 }

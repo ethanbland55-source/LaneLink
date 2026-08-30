@@ -9,6 +9,9 @@ import { appliesOn, mealGroups, weekStanding, weeklyAverage, type PlanMeal } fro
 import { dayVolume, volumeHeadline } from "@/lib/prep";
 import { profileFor } from "@/lib/foods";
 import { proteinDistribution } from "@/lib/protein";
+import { fixedMacros, type Supplement } from "@/lib/supplements";
+import { short } from "@/lib/evidence";
+import { AddSupplement, References, SupplementRow } from "../supplements-ui";
 import {
   ACTIVITIES,
   BASE_ACTIVITY_LEVELS,
@@ -24,6 +27,7 @@ import {
   WEEKDAY_LABEL,
   ageFromDob,
   buildWeekPlan,
+  carbCheck,
   dayKey,
   estimatedBodyFat,
   goalDef,
@@ -76,6 +80,7 @@ export default function PlanPage() {
   const [profile, setProfile] = useState<Profile | null>(null);
   const [meals, setMeals] = useState<Meal[]>([]);
   const [dayTypes, setDayTypes] = useState<DayType[]>([]);
+  const [supplements, setSupplements] = useState<Supplement[]>([]);
   const [saved, setSaved] = useState<string | null>(null);
   const [loading, setLoading] = useState(true);
   const [showRecalc, setShowRecalc] = useState(false);
@@ -84,10 +89,11 @@ export default function PlanPage() {
 
   useEffect(() => {
     (async () => {
-      const [p, m, dt] = await Promise.all([
+      const [p, m, dt, su] = await Promise.all([
         fetch("/api/profile").then((r) => r.json()),
         fetch("/api/meals").then((r) => r.json()),
         fetch("/api/day-types").then((r) => r.json()),
+        fetch("/api/supplements").then((r) => r.json()),
       ]);
       setProfile(normaliseProfile(p));
       setMeals(
@@ -100,6 +106,7 @@ export default function PlanPage() {
         }))
       );
       setDayTypes((dt as any[]).map((x, i) => normaliseDayType(x, i)));
+      setSupplements(su as Supplement[]);
       setLoading(false);
     })();
   }, []);
@@ -148,14 +155,36 @@ export default function PlanPage() {
    * time is exactly how that goes unnoticed.
    */
   const standing = useMemo(
-    () => (plan ? weekStanding(meals, plan) : []),
-    [meals, plan]
+    () => (plan ? weekStanding(meals, plan, supplements) : []),
+    [meals, plan, supplements]
   );
   const weekAvg = useMemo(
-    () => (plan ? weeklyAverage(meals, plan) : { planned: ZERO_MACROS, target: ZERO_MACROS }),
-    [meals, plan]
+    () =>
+      plan
+        ? weeklyAverage(meals, plan, supplements)
+        : { planned: ZERO_MACROS, target: ZERO_MACROS },
+    [meals, plan, supplements]
   );
   const unusedTypes = standing.filter((d) => d.days === 0);
+
+  /** What the supplements add to the day being looked at. */
+  const suppMacros = useMemo(
+    () => fixedMacros(supplements, planFor, dayTypes.length),
+    [supplements, planFor, dayTypes.length]
+  );
+
+  /** Whether each kind of day carries the carbohydrate its training asks for. */
+  const fuel = useMemo(
+    () => (profile && plan ? carbCheck(profile, plan) : []),
+    [profile, plan]
+  );
+  const usedDayTypes = useMemo(
+    () => new Set(standing.filter((d) => d.days > 0).map((d) => d.id)),
+    [standing]
+  );
+  const underFuelled = fuel.filter(
+    (c) => c.verdict === "under_fuelled" && usedDayTypes.has(c.dayTypeId)
+  );
 
   /** Meals that share their days with another meal — the only ones a share means anything for. */
   const shareGroups = useMemo(() => {
@@ -363,6 +392,39 @@ export default function PlanPage() {
             }
       )
     );
+  }
+
+  /* ---- supplements ---- */
+
+  async function addSupp(s: Partial<Supplement>) {
+    const res = await fetch("/api/supplements", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify(s),
+    });
+    const created = await res.json();
+    setSupplements((list) => [...list, created]);
+    flash("Added");
+  }
+
+  function patchSupp(id: number, p: Partial<Supplement>) {
+    setSupplements((list) => list.map((s) => (s.id === id ? { ...s, ...p } : s)));
+  }
+
+  async function saveSupp(id: number) {
+    const s = supplements.find((x) => x.id === id);
+    if (!s) return;
+    await fetch("/api/supplements", {
+      method: "PUT",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify(s),
+    });
+    flash("Saved");
+  }
+
+  async function deleteSupp(id: number) {
+    await fetch(`/api/supplements?id=${id}`, { method: "DELETE" });
+    setSupplements((list) => list.filter((s) => s.id !== id));
   }
 
   function flash(msg: string) {
@@ -635,6 +697,122 @@ export default function PlanPage() {
           {advanced ? "Hide limits" : "Show limits"}
         </button>
       </div>
+
+      {/* Supplements */}
+      <section className="card px-4 py-4 sm:px-5">
+        <div className="flex items-baseline">
+          <p className="label mr-auto">Supplements</p>
+          {suppMacros.kcal > 0 && (
+            <p className="text-xs text-[var(--color-mut)]">
+              +{Math.round(suppMacros.kcal)} kcal, {Math.round(suppMacros.protein)} g protein a day
+            </p>
+          )}
+        </div>
+        <p className="mt-1.5 text-xs leading-relaxed text-[var(--color-mut)]">
+          A dose you take, not a portion you weigh — so the fit counts them toward the day and
+          never resizes them to hit a number. Each one is graded on the evidence behind it, which
+          for some of them is the most useful thing on the card.
+        </p>
+
+        {supplements.length > 0 && (
+          <div className="mt-3 space-y-1.5">
+            {supplements.map((s) => (
+              <SupplementRow
+                key={s.id}
+                s={s}
+                meals={meals.map((m) => ({ id: m.id, name: m.name }))}
+                dayTypes={plan.dayTypes.map((d) => ({ id: d.id, name: d.name }))}
+                onPatch={(p) => patchSupp(s.id, p)}
+                onSave={() => saveSupp(s.id)}
+                onDelete={() => deleteSupp(s.id)}
+              />
+            ))}
+          </div>
+        )}
+
+        <AddSupplement onAdd={addSupp} existing={supplements.map((s) => s.name)} />
+      </section>
+
+      {/* Fuelling the work */}
+      <section className="card px-5 py-5">
+        <p className="label">Fuelling the work</p>
+        <p className="mt-1.5 text-xs leading-relaxed text-[var(--color-mut)]">
+          Carbohydrate need scales with the training a day holds, not with the size of its calorie
+          budget — which is the check a percentage-based macro split can never make, and the one
+          that matters most in a pool. Bands from {short("burke2011")}, applied to swimming by{" "}
+          {short("shaw2014")}.
+        </p>
+
+        <div className="mt-4 space-y-1.5">
+          {fuel
+            .filter((c) => usedDayTypes.has(c.dayTypeId))
+            .map((c) => {
+              const colour =
+                c.verdict === "under_fuelled"
+                  ? "var(--color-carbs)"
+                  : c.verdict === "in"
+                    ? "var(--color-accent)"
+                    : "var(--color-mut)";
+              return (
+                <div key={c.dayTypeId} className="sunk px-3.5 py-2.5">
+                  <div className="flex flex-wrap items-baseline gap-x-2 gap-y-1">
+                    <span className="mr-auto text-sm font-medium">{c.name}</span>
+                    <span className="text-[0.68rem] text-[#5b6270]">
+                      {c.band.label.toLowerCase()} · {c.loadMinutes} min
+                    </span>
+                    <span className="num text-sm" style={{ color: colour }}>
+                      {c.perKg} g/kg
+                    </span>
+                  </div>
+                  <p className="mt-1 text-[0.68rem] text-[#5b6270]">
+                    {c.grams} g of a {c.lowGrams}–{c.highGrams} g band
+                    {c.verdict === "under_fuelled" && (
+                      <span style={{ color: "var(--color-carbs)" }}>
+                        {" "}
+                        — under-fuelled for the work
+                      </span>
+                    )}
+                    {c.verdict === "low_by_design" && " — low, which is the point on a light day"}
+                  </p>
+                </div>
+              );
+            })}
+        </div>
+
+        {underFuelled.length > 0 && (
+          <div className="mt-3 rounded-xl bg-[#2a2416] px-3.5 py-3 text-xs leading-relaxed text-[#ffd08a]">
+            <p>
+              {underFuelled.map((c) => c.name.toLowerCase()).join(" and ")}{" "}
+              {underFuelled.length === 1 ? "sits" : "sit"} below the band its training asks for.
+              You&rsquo;re running a deficit, so you can&rsquo;t clear these and shouldn&rsquo;t
+              try — the bands assume energy balance. What you can do is put the carbohydrate you do
+              have around the session rather than spreading it flat: a pre-swim top-up and a
+              post-swim refill buy more training quality than the same grams at breakfast.
+            </p>
+          </div>
+        )}
+
+        <details className="mt-3">
+          <summary className="cursor-pointer text-xs text-[var(--color-mut)]">
+            Where these numbers come from
+          </summary>
+          <References
+            keys={[
+              "burke2011",
+              "thomas2016",
+              "shaw2014",
+              "impey2018",
+              "jager2017",
+              "morton2018",
+              "helms2014",
+              "barakat2020",
+              "areta2013",
+              "mifflin1990",
+              "ainsworth2011",
+            ]}
+          />
+        </details>
+      </section>
 
       {/* Your week */}
       <section className="card px-5 py-5">

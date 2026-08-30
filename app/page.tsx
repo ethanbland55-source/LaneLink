@@ -20,6 +20,15 @@ import {
 } from "@/lib/nutrition";
 import { activityLabel } from "@/lib/activities";
 import { doseSpacing } from "@/lib/protein";
+import {
+  TIMING_LABEL,
+  doseLabel,
+  repsOf as suppReps,
+  specFor,
+  suppAppliesOn,
+  type Supplement,
+} from "@/lib/supplements";
+import { GRADE_COLOUR } from "@/lib/evidence";
 import { appliesOn } from "@/lib/shopping";
 import { servingGrams } from "@/lib/batch";
 
@@ -58,19 +67,28 @@ export default function TodayPage() {
   /** Which meal has its "had it earlier" time picker open. */
   const [timeFor, setTimeFor] = useState<number | null>(null);
   const [pickTime, setPickTime] = useState("");
+  const [supplements, setSupplements] = useState<Supplement[]>([]);
+  /** How many of each supplement have been taken today. */
+  const [takenMap, setTakenMap] = useState<Map<number, number>>(new Map());
 
   const load = useCallback(async (d: string) => {
     try {
-      const [p, m, l, dt] = await Promise.all([
+      const [p, m, l, dt, su, sl] = await Promise.all([
         fetch("/api/profile").then((r) => r.json()),
         fetch("/api/meals").then((r) => r.json()),
         fetch(`/api/log?day=${d}`).then((r) => r.json()),
         fetch("/api/day-types").then((r) => r.json()),
+        fetch("/api/supplements").then((r) => r.json()),
+        fetch(`/api/supplement-log?day=${d}`).then((r) => r.json()),
       ]);
       setProfile(normaliseProfile(p));
       setMeals(m);
       setEntries(l);
       setDayTypes((dt as any[]).map((x, i) => normaliseDayType(x, i)));
+      setSupplements(su as Supplement[]);
+      setTakenMap(
+        new Map((sl as any[]).map((r) => [Number(r.supplement_id), Number(r.taken)]))
+      );
       setError(null);
     } catch {
       setError("Can't reach the database.");
@@ -129,10 +147,27 @@ export default function TodayPage() {
     [plan, dayTypeId]
   );
 
-  const eaten = useMemo(
-    () => sumMacros(entries.filter((e) => e.confirmed).map((e) => totalFor(e.items))),
-    [entries]
+  const todaysSupps = useMemo(
+    () => supplements.filter((s) => suppAppliesOn(s, dayTypeId, dayTypes.length)),
+    [supplements, dayTypeId, dayTypes.length]
   );
+
+  /**
+   * What's gone in. Supplements count only once actually ticked off, the same
+   * as a meal counts only once confirmed — a plan is not a record.
+   */
+  const eaten = useMemo(() => {
+    const food = sumMacros(entries.filter((e) => e.confirmed).map((e) => totalFor(e.items)));
+    for (const s of todaysSupps) {
+      const n = takenMap.get(s.id) ?? 0;
+      if (!n) continue;
+      food.kcal += (Number(s.kcal) || 0) * n;
+      food.protein += (Number(s.protein) || 0) * n;
+      food.carbs += (Number(s.carbs) || 0) * n;
+      food.fat += (Number(s.fat) || 0) * n;
+    }
+    return food;
+  }, [entries, todaysSupps, takenMap]);
 
   const suggested = useMemo(
     () => meals.filter((m) => appliesOn(m, dayTypeId, dayTypes.length)),
@@ -226,6 +261,21 @@ export default function TodayPage() {
     });
     const saved = await res.json();
     setEntries((list) => sortByTime(list.map((e) => (e.id === saved.id ? { ...saved } : e))));
+  }
+
+  /** Today's supplements, and what they add to the day whether ticked or not. */
+  async function setTaken(s: Supplement, taken: number) {
+    setTakenMap((m) => new Map(m).set(s.id, taken));
+    await fetch("/api/supplement-log", {
+      method: "PUT",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({
+        day,
+        supplement_id: s.id,
+        taken,
+        at_time: taken > 0 ? nowClock() : null,
+      }),
+    });
   }
 
   async function confirmAll() {
@@ -475,6 +525,58 @@ export default function TodayPage() {
               {target.name.toLowerCase()} day.
             </p>
           )}
+        </section>
+      )}
+
+      {/* Supplements */}
+      {todaysSupps.length > 0 && (
+        <section className="card px-4 py-4 sm:px-5">
+          <div className="mb-3 flex items-baseline">
+            <p className="label mr-auto">Supplements</p>
+            <p className="text-xs text-[var(--color-mut)]">
+              {todaysSupps.filter((s) => (takenMap.get(s.id) ?? 0) >= suppReps(s)).length} of{" "}
+              {todaysSupps.length} taken
+            </p>
+          </div>
+
+          <div className="space-y-1.5">
+            {todaysSupps.map((s) => {
+              const reps = suppReps(s);
+              const taken = takenMap.get(s.id) ?? 0;
+              const done = taken >= reps;
+              const spec = specFor(s.name);
+              return (
+                <div key={s.id} className="sunk flex items-center gap-3 px-3.5 py-3">
+                  <button
+                    className="tick"
+                    data-on={done}
+                    aria-pressed={done}
+                    aria-label={`${done ? "Untake" : "Take"} ${s.name}`}
+                    // Taken twice a day? Each tap counts one more, then resets.
+                    onClick={() => setTaken(s, done ? 0 : taken + 1)}
+                  >
+                    {done ? "✓" : taken > 0 ? taken : ""}
+                  </button>
+                  <span className="min-w-0 flex-1">
+                    <span className="block truncate text-sm font-medium">{s.name}</span>
+                    <span className="block truncate text-xs text-[var(--color-mut)]">
+                      {doseLabel(s)}
+                      {reps > 1 && ` · ${reps}× a day`}
+                      {` · ${TIMING_LABEL[s.timing].toLowerCase()}`}
+                      {s.kcal > 0 && ` · ${s.kcal} kcal`}
+                    </span>
+                  </span>
+                  {spec && (
+                    <span
+                      className="h-2 w-2 shrink-0 rounded-full"
+                      style={{ background: GRADE_COLOUR[spec.grade] }}
+                      title={`${spec.name}: ${spec.what}`}
+                    />
+                  )}
+                </div>
+              );
+            })}
+          </div>
         </section>
       )}
 

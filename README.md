@@ -18,6 +18,26 @@ Four screens:
 The logging day rolls over at **03:00 local time**, so a late-night meal still counts
 toward the day you'd call it.
 
+## Signing in
+
+There's a door on the front: `admin` / `1234` by default. It is a **doorstop, not
+a lock** — it keeps the page away from someone who stumbles on the address and
+that is all it does.
+
+It is at least an honest one. The check runs on the server and sets a signed
+cookie, so it can't be stepped over in devtools the way a password compared in
+the browser can, and the middleware covers `/api/*` as well as the pages — a
+login that only hides the screens leaves the data sitting open behind them.
+
+Set these three in the environment and it becomes real security, with no code
+change:
+
+```
+AUTH_USER=…        # defaults to admin
+AUTH_PASSWORD=…    # defaults to 1234
+AUTH_SECRET=…      # a long random string; this is what makes the cookie unforgeable
+```
+
 ## Deploy
 
 1. Push this folder to a GitHub repo.
@@ -511,28 +531,146 @@ forward day by day from your shop day and totals every ingredient.
   and the laptop at home agree. *New shop* clears them. There's a copy-to-clipboard
   export and a print stylesheet.
 
+## Supplements
+
+A supplement is **a dose you take, not a portion you weigh**, and modelling it as
+an ingredient breaks two things at once: the optimiser would shrink your creatine
+to help hit a carb target, and the shopping list would try to buy 5 g of it. So
+they live in their own table, contribute their macros to the day as a fixed cost
+the fit cannot negotiate with, and get ticked off rather than weighed.
+
+They can be attached to a meal, restricted to particular day types, and taken
+more than once a day. Almost all of them carry no macros at all; the ones that do
+— a whey scoop is 120 kcal and 25 g of protein — matter, because a plan that
+ignores them is 25 g of protein wrong every day.
+
+**Each one is graded, and the grades are the point.** Creatine and vitamin K2 are
+not the same proposition, and a list that presents them identically launders the
+weak one. Grades follow the IOC consensus statement and the IJSNEM review beside
+it, both of which are deliberately unkind:
+
+| | grade | why |
+| --- | --- | --- |
+| Creatine monohydrate | **Strong** | Repeat-sprint work, training quality, a little lean mass |
+| Caffeine | **Strong** | 3–6 mg/kg, an hour before |
+| Whey protein | **Strong** | For reaching a protein target, not for anything the protein wouldn't do |
+| Beta-alanine | Moderate | Buffers the 1–4 minute window — a 100 or a 200, almost exactly |
+| Sodium bicarbonate | Moderate | Same window, outside the muscle. Gut upset is common |
+| Vitamin D3 | Moderate | Corrects a shortfall. Indoor athletes are the at-risk group |
+| Iron | Moderate | Only on a blood test. Genuinely harmful in excess |
+| Magnesium | Limited | Helps where intake is low; not shown to add anything on top |
+| Omega-3 | Limited | Two portions of oily fish a week does the same |
+| Vitamin K2 | **Not shown to help** | No performance evidence. It's on the list because people take it with D3 |
+
+The caveat gets the same weight as the claim, because for half this list the
+caveat *is* the finding.
+
+## Fuelling the work
+
+The check a percentage-based macro split can never make, and the one that matters
+most in a pool.
+
+**Carbohydrate requirement scales with the training a day holds, not with the size
+of its calorie budget.** Burke's bands, in grams per kg of bodyweight per day:
+
+| | g/kg | when |
+| --- | --- | --- |
+| Light | 3–5 | Little or no training |
+| Moderate | 5–7 | About an hour of real work |
+| High | 6–10 | One to three hours — a normal pool day |
+| Very high | 8–12 | Four hours plus, or two hard sessions |
+
+Days are placed by **MET-weighted** training minutes rather than clock minutes, so
+an hour of technique doesn't count like an hour of main set.
+
+Two things it is careful about:
+
+- **Under the band on a light day is the point**, not a fault — fuelling for the
+  work required means low days are meant to be low. Only a *training* day under
+  its band is called a problem.
+- **The bands assume energy balance.** In a deficit you can't clear them and
+  shouldn't try. The useful reading is whether the training days carry more than
+  the rest days, and the fix for a shortfall is usually to move carbohydrate
+  toward the session rather than to add any.
+
+On the plan that prompted this: swim days sit at 5.4 g/kg against a 6–10 band,
+three days a week. That is a training-quality finding a calorie-based view would
+never have surfaced.
+
 ## Where the numbers come from
 
-- Barakat et al. (2020), *Body Recomposition: Can Trained Individuals Build Muscle and
-  Lose Fat at the Same Time?*, Strength & Conditioning Journal — protein at
-  2.6–3.5 g/kg FFM, resistance training at least 3×/week, recomposition observed across
-  a range of energy balances.
-- Iraki, Fitschen, Espinar & Helms (2019), *Nutritional Recommendations for Physique
-  Athletes* — protein 1.8–2.7 g/kg, fat 10–25% of calories with a strong caution
-  against long periods below that, carbohydrate 2–5 g/kg, weight loss ≤0.5% of body
-  mass per week, four or five protein doses a day with one near training and one before
-  sleep.
-- Helms et al. (2014), *A Systematic Review of Dietary Protein During Caloric
-  Restriction in Resistance Trained Lean Athletes* — the case for higher protein
-  expressed per kg of fat-free mass while in a deficit.
-- Ainsworth et al., *Compendium of Physical Activities* — the MET values behind every
-  session cost.
-- Hodgdon & Beckett (1984), the US Navy circumference equations — the tape body fat
-  estimate, quoted at roughly ±3–4 percentage points against hydrostatic weighing.
-- Mifflin-St Jeor and Katch-McArdle for BMR; the trend line is the Hacker's Diet EWMA.
+Every constant that could have been guessed is pinned to a source instead, and
+`lib/evidence.ts` is the register of them — so the app can answer "why that
+number?" on screen, and so changing a constant means changing its citation too.
 
-They're population averages, not measurements of you. That's exactly why the
-calibration exists — once you have your own data, it wins.
+Position stands and consensus statements are preferred over single trials
+throughout: they are a field's considered summary rather than one result, and
+they are what a sports dietitian would actually work from.
+
+**Framework and energy**
+- Thomas DT, Erdman KA, Burke LM (2016). Position of the Academy of Nutrition and
+  Dietetics, Dietitians of Canada, and the ACSM: Nutrition and Athletic
+  Performance. *Med Sci Sports Exerc* 48(3):543–568.
+- Mifflin MD, St Jeor ST, Hill LA, et al. (1990). A new predictive equation for
+  resting energy expenditure in healthy individuals. *Am J Clin Nutr* 51(2):241–247.
+- Ainsworth BE, Haskell WL, Herrmann SD, et al. (2011). 2011 Compendium of
+  Physical Activities. *Med Sci Sports Exerc* 43(8):1575–1581.
+
+**Carbohydrate, and swimming**
+- Burke LM, Hawley JA, Wong SHS, Jeukendrup AE (2011). Carbohydrates for training
+  and competition. *J Sports Sci* 29(sup1):S17–S27.
+- Shaw G, Boyd KT, Burke LM, Koivisto A (2014). Nutrition for swimming.
+  *Int J Sport Nutr Exerc Metab* 24(4):360–372.
+- Impey SG, Hearris MA, Hammond KM, et al. (2018). Fuel for the Work Required.
+  *Sports Med* 48:1031–1048.
+
+**Protein**
+- Jäger R, Kerksick CM, Campbell BI, et al. (2017). ISSN Position Stand: protein
+  and exercise. *J Int Soc Sports Nutr* 14:20.
+- Morton RW, Murphy KT, McKellar SR, et al. (2018). A systematic review,
+  meta-analysis and meta-regression of the effect of protein supplementation on
+  resistance training-induced gains. *Br J Sports Med* 52:376–384.
+- Areta JL, Burke LM, Ross ML, et al. (2013). Timing and distribution of protein
+  ingestion during prolonged recovery from resistance exercise alters myofibrillar
+  protein synthesis. *J Physiol* 591(9):2319–2331.
+- Helms ER, Aragon AA, Fitschen PJ (2014). Evidence-based recommendations for
+  natural bodybuilding contest preparation. *J Int Soc Sports Nutr* 11:20.
+
+**Recomposition**
+- Barakat C, Pearson J, Escalante G, Campbell B, De Souza EO (2020). Body
+  Recomposition: Can Trained Individuals Build Muscle and Lose Fat at the Same
+  Time? *Strength Cond J* 42(5):7–21.
+- Iraki J, Fitschen P, Espinar S, Helms E (2019). Nutrition Recommendations for
+  Bodybuilders in the Off-Season. *Sports* 7(7):154.
+
+**Supplements**
+- Maughan RJ, Burke LM, Dvorak J, et al. (2018). IOC consensus statement: dietary
+  supplements and the high-performance athlete. *Br J Sports Med* 52:439–455.
+- Peeling P, Binnie MJ, Goods PSR, Sim M, Burke LM (2018). Evidence-Based
+  Supplements for the Enhancement of Athletic Performance.
+  *Int J Sport Nutr Exerc Metab* 28(2):178–187.
+- Kreider RB, Kalman DS, Antonio J, et al. (2017). ISSN position stand: safety and
+  efficacy of creatine supplementation. *J Int Soc Sports Nutr* 14:18.
+- Owens DJ, Allison R, Close GL (2018). Vitamin D and the Athlete: Current
+  Perspectives and New Challenges. *Sports Med* 48(Suppl 1):3–16.
+
+**Body composition**
+- Hodgdon JA, Beckett MB (1984). Prediction of percent body fat for U.S. Navy men
+  and women from body circumferences and height. *Naval Health Research Center*.
+- Jackson AS, Pollock ML (1978). Generalized equations for predicting body density
+  of men. *Br J Nutr* 40(3):497–504.
+- Siri WE (1961). Body composition from fluid spaces and density.
+  *Techniques for Measuring Body Composition*, National Academy of Sciences.
+
+Every one of these is fitted to a population, and you are one person. They are
+the right place to start and the wrong place to finish — which is exactly what
+the calibration on the Progress page is for, and why it wins once it has three
+weeks of your own data.
+
+**None of this is medical advice.** Two things in particular belong to a doctor
+rather than an app: iron, which is harmful in excess and should only ever follow
+a blood test, and vitamin D, where the whole effect is correcting a deficiency
+you would need a test to establish.
 
 ## Notes
 

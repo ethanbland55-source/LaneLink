@@ -47,6 +47,7 @@ import {
   type Macros,
   type WeekPlan,
 } from "./nutrition";
+import { fixedMacros, suppAppliesOn, repsOf as suppReps, type Supplement } from "./supplements";
 
 export type { PlanMeal };
 
@@ -124,7 +125,11 @@ export type WeekFit = {
  * it, and how heavily it counts — a day type used three times a week matters
  * three times as much as one used once.
  */
-export function buildWeekFit(meals: PlanMeal[], plan: WeekPlan): WeekFit {
+export function buildWeekFit(
+  meals: PlanMeal[],
+  plan: WeekPlan,
+  supplements: Supplement[] = []
+): WeekFit {
   // Recipe shares are applied before anything is collapsed, so the tray the
   // solver sees is the tray you asked for.
   const withFood = applyRecipeShares(meals.filter((m) => m.ingredients.length > 0));
@@ -149,6 +154,9 @@ export function buildWeekFit(meals: PlanMeal[], plan: WeekPlan): WeekFit {
       if (!meal) return 0;
       return appliesOn(meal, id, totalTypes) ? repsOf(meal) : 0;
     }),
+    // Supplements are a dose, not a portion: they count toward the day and the
+    // fit fills what's left, rather than being shrunk to help it hit a number.
+    fixed: fixedMacros(supplements, id, totalTypes),
   }));
 
   const groups = mealGroups(withFood, totalTypes);
@@ -342,9 +350,9 @@ export type WeekFitResult = SolveResult & {
 export function fitWeek(
   meals: PlanMeal[],
   plan: WeekPlan,
-  opts: { mode?: Mode; continuous?: boolean } = {}
+  opts: { mode?: Mode; continuous?: boolean; supplements?: Supplement[] } = {}
 ): WeekFitResult {
-  const fit = buildWeekFit(meals, plan);
+  const fit = buildWeekFit(meals, plan, opts.supplements);
   const res = solveRows(fit.items, fit.rows, {
     mode: opts.mode ?? "balanced",
     continuous: opts.continuous,
@@ -378,7 +386,11 @@ export type DayStanding = {
 };
 
 /** What each kind of day adds up to right now, before any fitting. */
-export function weekStanding(meals: PlanMeal[], plan: WeekPlan): DayStanding[] {
+export function weekStanding(
+  meals: PlanMeal[],
+  plan: WeekPlan,
+  supplements: Supplement[] = []
+): DayStanding[] {
   const totalTypes = plan.order.length;
   const daysUsing = new Map<number, number>();
   for (const d of WEEKDAYS) {
@@ -388,11 +400,18 @@ export function weekStanding(meals: PlanMeal[], plan: WeekPlan): DayStanding[] {
 
   return plan.order.map((id) => {
     const on = meals.filter((m) => appliesOn(m, id, totalTypes));
-    const planned = sumMacros(
+    const food = sumMacros(
       on.flatMap((m) =>
         Array.from({ length: repsOf(m) }, () => sumMacros(m.ingredients.map(itemMacros)))
       )
     );
+    const extra = fixedMacros(supplements, id, totalTypes);
+    const planned: Macros = {
+      kcal: food.kcal + extra.kcal,
+      protein: food.protein + extra.protein,
+      carbs: food.carbs + extra.carbs,
+      fat: food.fat + extra.fat,
+    };
     return {
       id,
       name: targetsFor(plan, id).name,
@@ -407,9 +426,10 @@ export function weekStanding(meals: PlanMeal[], plan: WeekPlan): DayStanding[] {
 /** The weekly average of what the plan actually delivers, and of the targets. */
 export function weeklyAverage(
   meals: PlanMeal[],
-  plan: WeekPlan
+  plan: WeekPlan,
+  supplements: Supplement[] = []
 ): { planned: Macros; target: Macros } {
-  const standing = weekStanding(meals, plan);
+  const standing = weekStanding(meals, plan, supplements);
   const planned: Macros = { kcal: 0, protein: 0, carbs: 0, fat: 0 };
   const target: Macros = { kcal: 0, protein: 0, carbs: 0, fat: 0 };
   let n = 0;
