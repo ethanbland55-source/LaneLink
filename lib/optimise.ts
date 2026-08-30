@@ -46,6 +46,11 @@ export type BoundedItem = Item & {
   max_grams?: number | null;
   locked?: boolean;
   /**
+   * Share of its meal's calories, 0-100, or null to let the fit decide.
+   * The same idea as a meal's share of its group, one level down.
+   */
+  share_pct?: number | null;
+  /**
    * Suppress whole-unit snapping. Set on a composite that stands in for a
    * cooked batch: a tray called "Bagel & eggs" is served by weight, and must
    * not inherit the bagel's "whole units only" rule.

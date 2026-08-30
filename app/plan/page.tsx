@@ -67,6 +67,7 @@ const BLANK: BoundedItem = {
   min_grams: null,
   max_grams: null,
   locked: false,
+  share_pct: null,
 };
 
 const BAR_KEYS: MacroKey[] = ["kcal", "protein", "carbs", "fat"];
@@ -594,6 +595,7 @@ export default function PlanPage() {
                   key={i}
                   it={it}
                   advanced={advanced}
+                  shareable={meal.ingredients.length > 1}
                   onPatch={(p) => patchItem(meal.id, i, p)}
                   onRemove={() =>
                     patchMeal(meal.id, {
@@ -1366,18 +1368,20 @@ function DayTypeCard({
 function IngredientRow({
   it,
   advanced,
+  shareable,
   onPatch,
   onRemove,
 }: {
   it: BoundedItem;
   advanced: boolean;
+  /** True when the meal has more than one ingredient to divide between. */
+  shareable: boolean;
   onPatch: (p: Partial<BoundedItem>) => void;
   onRemove: () => void;
 }) {
   const m = itemMacros(it);
   const check = macroConsistency(it);
   const food = profileFor(it.name, it);
-  const estimated = (it as any).fibre_estimated as boolean | undefined;
 
   return (
     <div className="sunk px-3 py-2.5">
@@ -1468,6 +1472,26 @@ function IngredientRow({
                   }
                 />
               </span>
+              {/* Share of this meal's calories. Only means anything where the
+                  meal has something to divide with. */}
+              {shareable && (
+                <span className="flex items-center gap-1 text-[#5b6270]">
+                  share
+                  <input
+                    type="number"
+                    min={0}
+                    max={100}
+                    className="field w-[3.4rem] px-1.5 py-0.5 text-right text-[0.68rem]"
+                    placeholder="auto"
+                    title="Share of this meal's calories. Leave empty to let the fit decide."
+                    value={it.share_pct ?? ""}
+                    onChange={(e) =>
+                      onPatch({ share_pct: e.target.value ? Number(e.target.value) : null })
+                    }
+                  />
+                  %
+                </span>
+              )}
               <button
                 className={it.locked ? "text-[var(--color-accent)]" : "text-[#5b6270]"}
                 onClick={() => onPatch({ locked: !it.locked })}

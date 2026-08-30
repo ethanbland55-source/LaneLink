@@ -72,6 +72,9 @@ async function createSchema() {
   await sql`alter table ingredients add column if not exists min_grams numeric`;
   await sql`alter table ingredients add column if not exists max_grams numeric`;
   await sql`alter table ingredients add column if not exists locked boolean not null default false`;
+  // Share of this ingredient's meal, by calories. Same idea as meals.share_pct
+  // one level down: half the yoghurt bowl's calories in the yoghurt.
+  await sql`alter table ingredients add column if not exists share_pct numeric`;
 
   // --- Food knowledge, shopping ------------------------------------------
   // fibre_100 / fibre_estimated are still created for databases that predate

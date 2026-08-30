@@ -27,6 +27,7 @@ export async function GET() {
           fat_100: Number(i.fat_100),
           min_grams: i.min_grams == null ? null : Number(i.min_grams),
           max_grams: i.max_grams == null ? null : Number(i.max_grams),
+          share_pct: i.share_pct == null ? null : Number(i.share_pct),
         })),
     }))
   );
@@ -99,13 +100,13 @@ export async function PUT(req: Request) {
       insert into ingredients
         (meal_id, name, grams, kcal_100, protein_100, carbs_100, fat_100,
          food_class, aisle, pack_grams,
-         min_grams, max_grams, locked, sort_order)
+         min_grams, max_grams, locked, share_pct, sort_order)
       values (${id}, ${i.name || "Ingredient"}, ${num(i.grams)}, ${num(i.kcal_100)},
               ${num(i.protein_100)}, ${num(i.carbs_100)}, ${num(i.fat_100)},
               ${cls.cls}, ${cls.aisle}, ${cls.packGrams},
               ${i.min_grams == null ? null : num(i.min_grams)},
               ${i.max_grams == null ? null : num(i.max_grams)},
-              ${!!i.locked}, ${n})`;
+              ${!!i.locked}, ${sharePct(i.share_pct)}, ${n})`;
   }
   return NextResponse.json({ ok: true });
 }
@@ -120,4 +121,11 @@ export async function DELETE(req: Request) {
 function num(v: unknown) {
   const n = Number(v);
   return Number.isFinite(n) ? n : 0;
+}
+
+/** A share is a percentage or nothing; anything else is a typo. */
+function sharePct(v: unknown): number | null {
+  if (v == null || v === "") return null;
+  const n = Number(v);
+  return Number.isFinite(n) ? Math.min(100, Math.max(0, n)) : null;
 }

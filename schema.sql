@@ -102,6 +102,9 @@ create table if not exists ingredients (
   min_grams       numeric,
   max_grams       numeric,
   locked          boolean not null default false,
+  -- Share of this ingredient's meal, by calories, 0-100. The same idea as
+  -- meals.share_pct one level down.
+  share_pct       numeric,
   sort_order      int  not null default 0
 );
 

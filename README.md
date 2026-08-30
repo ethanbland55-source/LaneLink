@@ -362,13 +362,32 @@ handful of dates ends up carrying 41% of a session's calories.
 So meals that appear on **exactly the same days** form a group, and each gets a
 per-cent box. Leave it empty and the fit decides; type 20 and it holds the split.
 
+**The same question exists one level down.** Nothing in the targets says how much
+of a yoghurt bowl should be yoghurt either — left alone the fit will happily make
+it half granola if the macros come out a shade closer, and that is not the bowl
+you wanted. So every ingredient of a multi-ingredient meal gets a per-cent box
+too: 50% yoghurt, 40% granola, 10% honey.
+
+Every figure is a share of the **calories**, at both levels, because that is the
+thing being divided. By weight a yoghurt bowl is 80% yoghurt and the number tells
+you nothing.
+
+On a **cooked-ahead** meal the ingredient shares are the *recipe* rather than a
+preference — you cannot serve more of the chicken in a tray, only more tray. So
+they are applied directly: the amounts are re-proportioned to match, the tray
+stays the same size, and the fit then sizes the serving.
+
 It is a soft term on purpose, swept against the real plan: below about 0.05 it barely
 moves the split, above about 1.0 it will buy the split with 100 kcal a day. At 0.3 the
 split moves as far as the portion limits allow *and* the mean daily miss improves,
 because pinning the degenerate direction leaves a better-posed problem behind.
 
-Where a limit still blocks it, the row says so and offers the fix: *"held at its
-smallest allowed size — tap to allow 64 g and reach 20%"*.
+Where a limit blocks it, the row says so and offers the fix: *"held at its
+smallest allowed size — tap to allow 64 g and reach 20%"*. Where nothing is in
+the way and the split still hasn't landed, that is the macros disagreeing, and it
+says that instead: *"nothing's in the way — the macros land closer at 46%"*. A
+typed number sitting next to a different achieved one with no explanation is the
+one thing this must never do.
 
 ### What it knows about food
 
