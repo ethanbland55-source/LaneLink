@@ -19,7 +19,8 @@ import {
 } from "@/lib/nutrition";
 import { activityLabel } from "@/lib/activities";
 import { appliesOn } from "@/lib/shopping";
-import { servingGrams, servingsByDayType } from "@/lib/batch";
+import { servingGrams } from "@/lib/batch";
+
 import { normaliseProfile } from "@/lib/profile";
 
 type Meal = {
@@ -131,16 +132,6 @@ export default function TodayPage() {
     [meals, dayTypeId, dayTypes.length]
   );
 
-  /**
-   * How much of each cooked batch belongs on the plate today. Worked out by
-   * the same function the cook list uses, so the number on the kitchen scale
-   * is the number the log is expecting.
-   */
-  const servings = useMemo(
-    () => (plan ? servingsByDayType(meals as any, plan) : new Map()),
-    [meals, plan]
-  );
-
   /** Step a day back or forward; stop auto-rollover unless we're on today. */
   function go(delta: number) {
     setDay((d) => {
@@ -150,15 +141,13 @@ export default function TodayPage() {
     });
   }
 
-  /** A batch meal is logged at today's serving, not the plan's base serving. */
+  /**
+   * A meal is logged at the portions in the plan — the same ones every day.
+   * What makes a training day bigger is the extra meals on it, not a bigger
+   * scoop of the same one.
+   */
   function itemsFor(meal: Meal): Item[] {
-    const base = meal.ingredients.map(stripItem);
-    if (!meal.batch) return base;
-    const planned = servingGrams({ ...meal, ingredients: meal.ingredients } as any);
-    const today = servings.get(meal.id)?.get(dayTypeId);
-    if (!planned || !today) return base;
-    const scale = today / planned;
-    return base.map((i) => ({ ...i, grams: Math.round(i.grams * scale * 10) / 10 }));
+    return meal.ingredients.map(stripItem);
   }
 
   async function addMeal(meal: Meal) {
@@ -356,9 +345,7 @@ export default function TodayPage() {
                     <span className="block text-xs tabular-nums text-[var(--color-mut)]">
                       {Math.round(t.kcal)} kcal
                       {planned > 1 && ` · ${planned}× a day`}
-                      {m.batch && servings.get(m.id)?.get(dayTypeId) != null && (
-                        <> · weigh {servings.get(m.id)!.get(dayTypeId)} g</>
-                      )}
+                      {m.batch && <> · weigh {Math.round(servingGrams(m as any))} g</>}
                     </span>
                   </span>
                   {used > 0 && (

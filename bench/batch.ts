@@ -14,7 +14,7 @@ import {
   type DayType,
   type Profile,
 } from "../lib/nutrition";
-import { collapse, cookPlan, expand, servingGrams, servingsByDayType } from "../lib/batch";
+import { collapse, cookPlan, expand, servingGrams } from "../lib/batch";
 import { optimisePortions } from "../lib/optimise";
 import { navyBodyFat } from "../lib/bodyfat";
 import { learnOffsets, trendLine, weightRate, type WeighIn } from "../lib/trend";
@@ -81,11 +81,9 @@ for (const m of fitted) {
 }
 console.log(`  day lands at ${Math.round(res.after.kcal)} kcal vs target ${target.kcal}`);
 
-console.log("\n=== 2. Same batch, different plate each day ===");
-const table = servingsByDayType(meals as any, plan);
+console.log("\n=== 2. One serving, every day ===");
 for (const m of meals.filter((x) => x.batch)) {
-  const row = plan.order.map((t) => `${targetsFor(plan, t).name} ${table.get(m.id)?.get(t)}g`);
-  console.log(`  ${m.name}: ${row.join(" · ")}`);
+  console.log(`  ${m.name}: ${Math.round(servingGrams(m as any))} g, whatever day it is`);
 }
 
 console.log("\n=== 3. The cook list for a 7-day shop ===");

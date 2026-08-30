@@ -22,6 +22,23 @@ body {
 
 body {
   font-family: ui-sans-serif, system-ui, -apple-system, "Segoe UI", sans-serif;
+  /* A stray pixel of width anywhere used to scroll the whole page sideways on
+     a phone, which reads as the layout being broken. Anything genuinely wide
+     scrolls inside its own box instead — see .scroll-x. */
+  overflow-x: hidden;
+}
+
+/* Wide content — a table of day types, a long row of numbers — scrolls inside
+   itself rather than dragging the page with it. */
+.scroll-x {
+  overflow-x: auto;
+  -webkit-overflow-scrolling: touch;
+}
+
+/* The home indicator on a modern iPhone sits over the bottom ~34px. Anything
+   anchored to the bottom of the screen has to clear it or it can't be tapped. */
+.safe-b {
+  padding-bottom: max(1.25rem, env(safe-area-inset-bottom));
 }
 
 /* Cards are separated by fill, not by outlines — the reference decks all read
@@ -71,6 +88,22 @@ body {
   color: #f2f4f7;
   outline: none;
   transition: border-color 0.15s;
+}
+
+/* iOS Safari zooms the whole page in when you focus an input smaller than
+   16px, and then leaves you scrolled sideways with the field off screen. It
+   is the single worst thing about using this on a phone. Every input is
+   16px on a touch screen, whatever Tailwind size class it also carries —
+   `text-xs` on a gram box is a look, not an instruction to break the page.
+   Raising the font is the fix; disabling zoom in the viewport tag would take
+   pinch-to-zoom away from everyone, which is not ours to take. */
+@media (pointer: coarse) {
+  .field,
+  input.field,
+  select.field,
+  textarea.field {
+    font-size: 16px;
+  }
 }
 .field:focus {
   border-color: var(--color-accent);

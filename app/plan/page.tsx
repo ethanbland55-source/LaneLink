@@ -5,9 +5,9 @@ import Link from "next/link";
 import { RecalculateDialog } from "../recalculate";
 import { Bar, MACRO_COLOR, MACRO_LABEL, Segmented, Stat, type MacroKey } from "../macro-ui";
 import { offTarget, type BoundedItem } from "@/lib/optimise";
+import { appliesOn, mealGroups, weekStanding, weeklyAverage, type PlanMeal } from "@/lib/weekfit";
 import { dayVolume, volumeHeadline } from "@/lib/prep";
 import { profileFor } from "@/lib/foods";
-import { appliesOn } from "@/lib/shopping";
 import { proteinDistribution } from "@/lib/protein";
 import {
   ACTIVITIES,
@@ -34,6 +34,7 @@ import {
   macroConsistency,
   normaliseDayType,
   sumMacros,
+  ZERO_MACROS,
   targetsFor,
   totalFor,
   type DayType,
@@ -51,6 +52,8 @@ type Meal = {
   day_type_ids: number[] | null;
   /** Cooked ahead in one go and served by weight. */
   batch: boolean;
+  /** Share of its group's calories, where meals appear on the same days. */
+  share_pct: number | null;
   ingredients: BoundedItem[];
 };
 
@@ -92,6 +95,7 @@ export default function PlanPage() {
           times_per_day: Number(x.times_per_day ?? 1),
           day_type_ids: x.day_type_ids ?? null,
           batch: !!x.batch,
+          share_pct: x.share_pct ?? null,
         }))
       );
       setDayTypes((dt as any[]).map((x, i) => normaliseDayType(x, i)));
@@ -135,6 +139,34 @@ export default function PlanPage() {
   );
 
   const drift = useMemo(() => (target ? offTarget(planTotal, target) : null), [planTotal, target]);
+
+  /**
+   * The whole week, not one day of it. Portions are shared across every kind of
+   * day, so a plan that lands a rest day perfectly and runs 300 kcal over on
+   * three swim days is not a plan that works — and looking at one day type at a
+   * time is exactly how that goes unnoticed.
+   */
+  const standing = useMemo(
+    () => (plan ? weekStanding(meals, plan) : []),
+    [meals, plan]
+  );
+  const weekAvg = useMemo(
+    () => (plan ? weeklyAverage(meals, plan) : { planned: ZERO_MACROS, target: ZERO_MACROS }),
+    [meals, plan]
+  );
+  const unusedTypes = standing.filter((d) => d.days === 0);
+
+  /** Meals that share their days with another meal — the only ones a share means anything for. */
+  const shareGroups = useMemo(() => {
+    const out = new Map<number, boolean>();
+    for (const g of mealGroups(meals, dayTypes.length)) {
+      if (g.meals.length < 2) continue;
+      for (const m of g.meals) out.set(m.id, true);
+    }
+    return out;
+  }, [meals, dayTypes.length]);
+  const weekDiff = Math.round(weekAvg.planned.kcal - weekAvg.target.kcal);
+  const weekOff = Math.abs(weekDiff) > Math.max(20, weekAvg.target.kcal * 0.01);
   const volume = useMemo(() => dayVolume(activeMeals), [activeMeals]);
   const protein = useMemo(
     () => (profile ? proteinDistribution(activeMeals, profile.weight_kg) : null),
@@ -259,7 +291,14 @@ export default function PlanPage() {
     const created = await res.json();
     setMeals((m) => [
       ...m,
-      { ...created, times_per_day: 1, day_type_ids: null, batch: false, ingredients: [] },
+      {
+        ...created,
+        times_per_day: 1,
+        day_type_ids: null,
+        batch: false,
+        share_pct: null,
+        ingredients: [],
+      },
     ]);
   }
 
@@ -276,15 +315,19 @@ export default function PlanPage() {
     flash("Saved");
   }
 
-  async function applyRecalc(next: { id: number; name: string; ingredients: BoundedItem[] }[]) {
+  /**
+   * The rebalance covers the whole week, so it comes back with every meal —
+   * portions and the splits you set while you were in there.
+   */
+  async function applyRecalc(next: PlanMeal[]) {
     const merged = meals.map((m) => {
       const n = next.find((x) => x.id === m.id);
-      return n ? { ...m, ingredients: n.ingredients } : m;
+      return n ? { ...m, ingredients: n.ingredients, share_pct: n.share_pct ?? null } : m;
     });
     for (const m of merged) await persist(m);
     setMeals(merged);
     setShowRecalc(false);
-    flash("Portions rebalanced");
+    flash("Week rebalanced");
   }
 
   async function deleteMeal(id: number) {
@@ -319,11 +362,6 @@ export default function PlanPage() {
     return <p className="py-24 text-center text-sm text-[var(--color-mut)]">Loading…</p>;
   }
 
-  const diff = Math.round(planTotal.kcal - target.kcal);
-  const dayLabel = profile.cycling
-    ? `${target.name} · ${target.kcal.toLocaleString()} kcal`
-    : `${target.kcal.toLocaleString()} kcal`;
-
   return (
     <div className="space-y-3">
       {saved && (
@@ -334,53 +372,90 @@ export default function PlanPage() {
 
       {showRecalc && (
         <RecalculateDialog
-          meals={activeMeals.map((m) => ({
-            id: m.id,
-            name: m.name,
-            batch: m.batch,
-            ingredients: m.ingredients,
-          }))}
-          target={target}
-          dayLabel={dayLabel}
+          meals={meals}
+          plan={plan}
           defaultMode={profile.calorie_override != null ? "calories_exact" : "balanced"}
           onClose={() => setShowRecalc(false)}
           onApply={applyRecalc}
         />
       )}
 
-      {/* Target vs plan */}
+      {/* The week — what each kind of day should be, and what it is */}
       <section className="card px-5 py-6">
-        {profile.cycling && plan.dayTypes.length > 0 && (
-          <div className="mb-5">
-            <p className="label mb-2">Planning for a</p>
-            <Segmented
-              size="sm"
-              value={planFor}
-              onChange={setPlanFor}
-              options={plan.dayTypes.map((d) => ({ value: d.id, label: d.name }))}
-            />
-          </div>
-        )}
+        <p className="label">Your week, on average</p>
+        <div className="mt-2 flex flex-wrap items-baseline gap-x-3 gap-y-1">
+          <p className="num-hero text-[3.25rem] sm:text-[4rem]">
+            {Math.round(weekAvg.planned.kcal).toLocaleString()}
+          </p>
+          <p
+            className="text-lg font-bold tabular-nums"
+            style={{ color: weekOff ? "var(--color-carbs)" : "var(--color-accent)" }}
+          >
+            {weekOff
+              ? `${weekDiff >= 0 ? "+" : ""}${weekDiff} a day`
+              : "on target"}
+          </p>
+        </div>
+        <p className="mt-1 text-sm text-[var(--color-mut)]">
+          against a {Math.round(weekAvg.target.kcal).toLocaleString()} kcal average
+        </p>
 
-        <div className="flex items-start">
-          <div className="mr-auto">
-            <p className="label">Daily target</p>
-            <p className="num mt-2 text-[3.5rem] sm:text-[4rem]">{target.kcal.toLocaleString()}</p>
-          </div>
-          <div className="pt-1 text-right">
-            <p className="label">Your plan</p>
-            <p className="num mt-2 text-2xl">{Math.round(planTotal.kcal).toLocaleString()}</p>
-            <p
-              className="mt-1 text-sm font-bold tabular-nums"
-              style={{ color: drift ? "var(--color-carbs)" : "var(--color-accent)" }}
-            >
-              {diff >= 0 ? "+" : ""}
-              {diff}
-            </p>
-          </div>
+        {/* Every kind of day, so it is obvious which one is off */}
+        <div className="mt-5 space-y-1.5">
+          {standing
+            .filter((d) => d.days > 0)
+            .map((d) => {
+              const off = Math.round(d.planned.kcal - d.target.kcal);
+              const ok = Math.abs(off) <= Math.max(2, d.target.kcal * 0.02);
+              return (
+                <div key={d.id} className="flex items-baseline gap-2 text-sm">
+                  <span className="min-w-0 flex-1 truncate">{d.name}</span>
+                  <span className="shrink-0 text-xs text-[var(--color-mut)]">
+                    {d.days === 1 ? "1 day" : `${d.days} days`}
+                  </span>
+                  <span className="num w-14 shrink-0 text-right text-sm text-[var(--color-mut)]">
+                    {Math.round(d.target.kcal).toLocaleString()}
+                  </span>
+                  <span className="shrink-0 text-[#454b57]">→</span>
+                  <span
+                    className="num w-14 shrink-0 text-right text-sm"
+                    style={{ color: ok ? "var(--color-accent)" : "var(--color-carbs)" }}
+                  >
+                    {Math.round(d.planned.kcal).toLocaleString()}
+                  </span>
+                </div>
+              );
+            })}
         </div>
 
-        <div className="mt-6 space-y-3">
+        {unusedTypes.length > 0 && (
+          <p className="mt-3 text-xs leading-relaxed text-[var(--color-mut)]">
+            {unusedTypes.map((d) => d.name).join(", ")}{" "}
+            {unusedTypes.length === 1 ? "isn't" : "aren't"} used by any weekday, so{" "}
+            {unusedTypes.length === 1 ? "it isn't" : "they aren't"} balanced against.
+          </p>
+        )}
+
+        <button
+          className={`${weekOff ? "btn btn-accent" : "btn"} mt-5 w-full`}
+          onClick={() => setShowRecalc(true)}
+          disabled={meals.every((m) => m.ingredients.length === 0)}
+        >
+          Rebalance the week
+        </button>
+      </section>
+
+      {/* One kind of day in detail */}
+      <section className="card px-5 py-5">
+        <p className="label mb-2">Looking at a</p>
+        <Segmented
+          size="sm"
+          value={planFor}
+          onChange={setPlanFor}
+          options={plan.dayTypes.map((d) => ({ value: d.id, label: d.name }))}
+        />
+
+        <div className="mt-5 space-y-3">
           {BAR_KEYS.map((k) => (
             <div key={k} className="flex items-center gap-3">
               <span className="w-14 shrink-0 text-xs text-[var(--color-mut)]">
@@ -388,7 +463,8 @@ export default function PlanPage() {
               </span>
               <Bar value={planTotal[k]} target={target[k]} color={MACRO_COLOR[k]} height={5} />
               <span className="w-24 shrink-0 text-right text-xs tabular-nums text-[var(--color-mut)]">
-                <b className="text-[#f2f4f7]">{Math.round(planTotal[k])}</b> / {Math.round(target[k])}
+                <b className="text-[#f2f4f7]">{Math.round(planTotal[k])}</b> /{" "}
+                {Math.round(target[k])}
               </span>
             </div>
           ))}
@@ -397,14 +473,6 @@ export default function PlanPage() {
         <p className="mt-4 text-xs leading-relaxed text-[var(--color-mut)]">
           {volumeHeadline(volume)}
         </p>
-
-        <button
-          className={`${drift ? "btn btn-accent" : "btn"} mt-5 w-full`}
-          onClick={() => setShowRecalc(true)}
-          disabled={activeMeals.length === 0}
-        >
-          Recalculate portions
-        </button>
       </section>
 
       {/* Meals */}
@@ -483,6 +551,29 @@ export default function PlanPage() {
                     );
                   })}
                 </span>
+              )}
+
+              {/* Only meaningful where meals share a set of days: on their own
+                  they always take 100% of it, and the box would be a lie. */}
+              {shareGroups.get(meal.id) && (
+                <label className="flex items-center gap-2">
+                  <span className="text-[var(--color-mut)]">Share of those days</span>
+                  <input
+                    type="number"
+                    min={0}
+                    max={100}
+                    placeholder="auto"
+                    className="field w-16 px-2 py-1 text-right text-xs"
+                    title="How much of what this group of meals adds up to should be this one. Leave empty to let the fit decide."
+                    value={meal.share_pct ?? ""}
+                    onChange={(e) =>
+                      patchMeal(meal.id, {
+                        share_pct: e.target.value === "" ? null : Number(e.target.value),
+                      })
+                    }
+                  />
+                  <span className="text-[var(--color-mut)]">%</span>
+                </label>
               )}
             </div>
 

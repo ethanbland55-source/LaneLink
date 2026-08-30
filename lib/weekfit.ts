@@ -48,6 +48,8 @@ import {
   type WeekPlan,
 } from "./nutrition";
 
+export type { PlanMeal };
+
 /** A meal is on the menu unless it has been limited to particular day types. */
 export function appliesOn(meal: PlanMeal, dayTypeId: number, totalTypes: number): boolean {
   const ids = meal.day_type_ids;
