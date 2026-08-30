@@ -69,10 +69,6 @@ function row(r: any) {
   return out;
 }
 
-const COLUMNS = `to_char(day, 'YYYY-MM-DD') as day, weight_kg, waist_cm, tag, at_time,
-                 neck_cm, hip_cm, sf_chest, sf_abdomen, sf_thigh, sf_tricep,
-                 sf_suprailiac, bf_pct, bf_method, note`;
-
 export async function GET(req: Request) {
   await ensureSchema();
   const days = Math.min(365, Math.max(7, Number(new URL(req.url).searchParams.get("days")) || 120));

@@ -151,19 +151,6 @@ function tagOf(e: WeighIn): Tag {
   return e.tag === "evening" || e.tag === "other" ? e.tag : "morning";
 }
 
-/** EWMA with the per-reading influence cap, over pre-sorted values. */
-function smooth(values: { day: string; v: number }[]): Map<string, number> {
-  const out = new Map<string, number>();
-  if (!values.length) return out;
-  let trend = values[0].v;
-  for (const p of values) {
-    const pull = Math.max(-MAX_PULL, Math.min(MAX_PULL, p.v - trend));
-    trend = trend + ALPHA * pull;
-    out.set(p.day, trend);
-  }
-  return out;
-}
-
 /**
  * How fast the day makes *you* heavier — measured rather than assumed.
  *

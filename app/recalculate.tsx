@@ -8,7 +8,6 @@ import {
   MODES,
   type BoundedItem,
   type DayResult,
-  type MacroKey,
   type Mode,
   type ShareOutcome,
   type Suggestion,
@@ -18,8 +17,7 @@ import { dayVolume, fillerSuggestions, volumeHeadline } from "@/lib/prep";
 import { servingGrams, type PlanMeal } from "@/lib/batch";
 import { fitWeek, mealGroups, repsOf } from "@/lib/weekfit";
 import type { WeekPlan } from "@/lib/nutrition";
-
-const KEYS: MacroKey[] = ["kcal", "protein", "carbs", "fat"];
+import type { Supplement } from "@/lib/supplements";
 
 /**
  * Rebalance the week.
@@ -37,12 +35,20 @@ const KEYS: MacroKey[] = ["kcal", "protein", "carbs", "fat"];
 export function RecalculateDialog({
   meals,
   plan,
+  supplements = [],
   defaultMode = "balanced",
   onClose,
   onApply,
 }: {
   meals: PlanMeal[];
   plan: WeekPlan;
+  /**
+   * Counted toward every day and never resized. Passing them in matters even
+   * when they're all zero-macro: the Plan page's headline already includes
+   * them, and a dialog that didn't would quietly disagree with the page that
+   * opened it the moment anything with calories in it went on the list.
+   */
+  supplements?: Supplement[];
   defaultMode?: Mode;
   onClose: () => void;
   onApply: (meals: PlanMeal[]) => Promise<void>;
@@ -63,7 +69,10 @@ export function RecalculateDialog({
     () => meals.find((m) => m.ingredients.some((it) => it.share_pct != null))?.id ?? null
   );
 
-  const result = useMemo(() => fitWeek(draft, plan, { mode }), [draft, plan, mode]);
+  const result = useMemo(
+    () => fitWeek(draft, plan, { mode, supplements }),
+    [draft, plan, mode, supplements]
+  );
 
   const live = result.days.filter((d) => d.weight > 0);
   const unused = result.days.filter((d) => d.weight === 0);

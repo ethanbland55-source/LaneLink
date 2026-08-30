@@ -4,7 +4,7 @@ import { useEffect, useMemo, useState } from "react";
 import Link from "next/link";
 import { RecalculateDialog } from "../recalculate";
 import { Bar, MACRO_COLOR, MACRO_LABEL, Segmented, Stat, type MacroKey } from "../macro-ui";
-import { offTarget, type BoundedItem } from "@/lib/optimise";
+import { type BoundedItem } from "@/lib/optimise";
 import { appliesOn, mealGroups, weekStanding, weeklyAverage, type PlanMeal } from "@/lib/weekfit";
 import { dayVolume, volumeHeadline } from "@/lib/prep";
 import { profileFor } from "@/lib/foods";
@@ -31,7 +31,6 @@ import {
   dayKey,
   estimatedBodyFat,
   goalDef,
-  leanMass,
   proteinIsAssumed,
   proteinTarget,
   itemMacros,
@@ -145,8 +144,6 @@ export default function PlanPage() {
       ),
     [activeMeals]
   );
-
-  const drift = useMemo(() => (target ? offTarget(planTotal, target) : null), [planTotal, target]);
 
   /**
    * The whole week, not one day of it. Portions are shared across every kind of
@@ -448,6 +445,7 @@ export default function PlanPage() {
         <RecalculateDialog
           meals={meals}
           plan={plan}
+          supplements={supplements}
           defaultMode={profile.calorie_override != null ? "calories_exact" : "balanced"}
           onClose={() => setShowRecalc(false)}
           onApply={applyRecalc}

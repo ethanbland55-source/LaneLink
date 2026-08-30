@@ -47,7 +47,7 @@ import {
   type Macros,
   type WeekPlan,
 } from "./nutrition";
-import { fixedMacros, suppAppliesOn, repsOf as suppReps, type Supplement } from "./supplements";
+import { fixedMacros, type Supplement } from "./supplements";
 
 export type { PlanMeal };
 

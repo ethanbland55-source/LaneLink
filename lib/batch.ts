@@ -20,14 +20,13 @@
  * fresh: the breakfast, the shake, the fruit. Which is exactly right.
  */
 
-import { optimisePortions, type BoundedItem } from "./optimise";
+import { type BoundedItem } from "./optimise";
 import {
   itemMacros,
   sumMacros,
   targetsFor,
   type Item,
   type Macros,
-  type Profile,
   type WeekPlan,
 } from "./nutrition";
 import { profileFor } from "./foods";

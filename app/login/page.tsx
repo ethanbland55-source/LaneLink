@@ -1,7 +1,7 @@
 "use client";
 
 import { Suspense, useState } from "react";
-import { useRouter, useSearchParams } from "next/navigation";
+import { useSearchParams } from "next/navigation";
 
 /**
  * The front door.
@@ -20,7 +20,6 @@ export default function LoginPage() {
 }
 
 function SignIn() {
-  const router = useRouter();
   const params = useSearchParams();
   const next = params.get("next") || "/";
 
