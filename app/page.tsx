@@ -302,7 +302,9 @@ export default function TodayPage() {
       </section>
 
       {/* Macros */}
-      <section className="grid grid-cols-2 gap-3 sm:grid-cols-4">
+      {/* Three tiles, so three columns — a 2-wide grid left fat stranded on a
+          row of its own with a hole beside it. */}
+      <section className="grid grid-cols-3 gap-2 sm:gap-3">
         <MacroTile k="protein" eaten={eaten.protein} target={target.protein} />
         <MacroTile k="carbs" eaten={eaten.carbs} target={target.carbs} />
         <MacroTile k="fat" eaten={eaten.fat} target={target.fat} />

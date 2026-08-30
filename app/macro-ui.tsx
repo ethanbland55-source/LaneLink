@@ -62,10 +62,10 @@ export function MacroTile({
 }) {
   const over = eaten > target * 1.02;
   return (
-    <div className="card px-4 py-3.5">
-      <p className="label">{MACRO_LABEL[k]}</p>
+    <div className="card px-3 py-3 sm:px-4 sm:py-3.5">
+      <p className="label truncate">{MACRO_LABEL[k]}</p>
       <p
-        className="num mt-2 text-[1.9rem]"
+        className="num mt-2 text-[1.5rem] sm:text-[1.9rem]"
         style={{ color: over ? "var(--color-fat)" : MACRO_COLOR[k] }}
       >
         {Math.round(eaten)}
