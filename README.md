@@ -1,13 +1,14 @@
 # Meal Hub
 
-Three screens:
+Four screens:
 
 - **`/` — Today.** Daily target header, a live macro counter, one tap per meal to log
   it pre-filled from your plan, editable gram amounts, then Confirm. Arrows step back
   through previous days.
-- **`/plan` — Plan & Settings.** Your body stats and goal (which calculate the targets),
-  your week and the day types that make it up, and your meal plan: meals → ingredients
-  → per-100g macros.
+- **`/plan` — Plan & Settings.** Leads with the whole week — what each kind of day
+  should be, and what your plan actually comes to on it — because one set of portions
+  has to work on all of them. Then your body stats and goal, the day types that make up
+  the week, and your meals: meals → ingredients → per-100g macros.
 - **`/shop` — Shopping list.** The plan played forward over however many days you buy
   for, totalled up, rounded to real pack sizes and grouped by aisle.
 - **`/progress` — Weight, waist and calibration.** The trend rather than the number,
@@ -55,7 +56,6 @@ Local dev: copy `.env.example` to `.env.local`, fill in `DATABASE_URL`, then
 - **Carbs** — every calorie left over, at 4 kcal/g, with a floor you set in g/kg.
   If a low day would push carbs through that floor, fat gives way instead, down to a
   hard 0.45 g/kg.
-- **Fibre** — 14 g per 1000 kcal by default, minimum 25 g.
 
 ### Your week
 
@@ -150,9 +150,11 @@ right reading of "this much chicken, no more".
 
 The **cook list** on the Shop page then turns the week into a session at the hob: what
 to cook, in raw weights, with the cooked weight beside it so you know what has to fit in
-your containers — and what to weigh onto the plate on each kind of day, since a double
-day gets a bigger serving of the same tray rather than a different recipe. Today's meal
-button shows that same figure, so the kitchen scale and the log agree.
+your containers, and the serving to weigh onto the plate. One serving, whatever day it
+is — this used to hand back a different weight per day type, which is a tidy idea and
+not what happens in a kitchen: you portion the tray on Sunday and take one out on
+Thursday. Today's meal button shows that same figure, so the kitchen scale and the log
+agree.
 
 There's a ceiling, and the app says so rather than quietly landing short: past about
 1.5× a normal plate, serving more tray stops being the answer. If your cooked meals
@@ -229,17 +231,75 @@ So the Plan page shows each meal's protein against that threshold, counts how ma
 doses actually clear it, and tells you which meal is closest to clearing and by how
 much. A meal eaten twice a day counts as two doses.
 
-## Recalculate portions
+## Rebalance the week
 
-When the plan drifts far enough off target to actually change your results —
-100 kcal, 10 g protein, 25 g carbs or 12 g fat — the **Recalculate portions**
-button lights up. It re-solves every gram amount in the plan at once so the macros
-land on target.
+**Portions are fixed, the menu is what changes.** That is the whole idea, and getting
+it wrong was the bug this replaced.
 
-**What it knows about food.** Every ingredient is classified — by name against a
-dictionary of the things people actually eat, and by macro density for anything the
-dictionary hasn't heard of. The class decides how far a portion may move, and that is a
-much better guess than one blanket percentage:
+You cook on a Sunday and eat out of the same containers all week, so breakfast cannot
+be re-weighed depending on whether there is a swim that evening. What actually makes a
+training day bigger is the *extra meals on it* — dates before the pool, yoghurt after,
+a bagel after the gym — not a bigger scoop of the same porridge.
+
+The old dialog asked which kind of day you wanted, fitted that one, and wrote the
+answer over the portions every other day also uses. Running it five times did not fix
+that; it just picked a different day to be right about. On the plan that prompted the
+rewrite, with the rest day fitted last:
+
+| | days/week | target | plan actually ate | |
+| --- | --- | --- | --- | --- |
+| Rest | 1 | 2,239 | 2,262 | +23 |
+| Swim only | 3 | 3,122 | 3,410 | **+288** |
+| Swim + gym | 3 | 3,365 | 3,725 | **+360** |
+| **week average** | | **3,100** | **3,381** | **+281 a day** |
+
+281 kcal a day, every day, with the app showing a tick — because it was only ever
+looking at one day at a time.
+
+**Now there is one fit over every kind of day at once.** The portions are the unknowns,
+one per ingredient because there is one of each in the fridge; each day type
+contributes a row saying which of them are on the menu that day, weighted by how many
+weekdays use it. Rest days set what breakfast, lunch and dinner have to be; the gap up
+to a swim day is what the swim meals have to be; the gap up to a swim-and-gym day is
+what the gym meal has to be. One solve, because it is genuinely one problem.
+
+Same plan, one press:
+
+| | target | after | |
+| --- | --- | --- | --- |
+| Rest | 2,239 | 2,228 | −11 |
+| Swim only | 3,122 | 3,084 | −38 |
+| Swim + gym | 3,365 | 3,399 | +34 |
+| **week average** | **3,100** | **3,093** | **−7 a day** |
+
+Day types that no weekday uses are named and left out of the fit rather than dragging
+every shared portion toward a meal that never happens.
+
+### Splits
+
+Some of this is genuinely underdetermined. If dates before a swim and yoghurt after it
+are the only two meals on swim days, the fit knows what the pair must add up to, but
+nothing in the targets says how to divide them — 90/10 costs exactly the same as 20/80.
+Left alone it picks whichever is nearest the plan already written, which is how a
+handful of dates ends up carrying 41% of a session's calories.
+
+So meals that appear on **exactly the same days** form a group, and each gets a
+per-cent box. Leave it empty and the fit decides; type 20 and it holds the split.
+
+It is a soft term on purpose, swept against the real plan: below about 0.05 it barely
+moves the split, above about 1.0 it will buy the split with 100 kcal a day. At 0.3 the
+split moves as far as the portion limits allow *and* the mean daily miss improves,
+because pinning the degenerate direction leaves a better-posed problem behind.
+
+Where a limit still blocks it, the row says so and offers the fix: *"held at its
+smallest allowed size — tap to allow 64 g and reach 20%"*.
+
+### What it knows about food
+
+Every ingredient is classified — by name against a dictionary of the things people
+actually eat, and by macro density for anything the dictionary hasn't heard of. The
+class decides how far a portion may move, and that is a much better guess than one
+blanket percentage:
 
 | | may move | why |
 | --- | --- | --- |
@@ -253,47 +313,62 @@ Energy density tightens the band further, so a 600 kcal/100g nut butter gets les
 freedom than the class default. You can still override any limit by hand, and **lock**
 anything that shouldn't move at all — your numbers always win over the app's.
 
-**How it solves.** A bounded least-squares fit with asymmetric penalties (missing
-protein low is worse than overshooting it; going over calories is worse than going
-under), solved by **exact coordinate descent from several starting points** — for a
-fixed set of other portions the cost is a one-dimensional convex function of each
-portion, so each one can be solved to its true optimum rather than nudged toward it.
-Then a discrete pass snaps everything to weighable amounts and wins back what that
-cost, using **pairwise moves** — one portion up, another down — because that's the
-plateau single-portion tweaks get stuck on.
+### How it solves
 
-Two quieter terms sit far below the macro weights and act only as tie-breakers: an
-**anchor** so that among equally accurate answers it picks the one that looks most like
-the plan you wrote, and a **fibre floor**.
+A bounded least-squares fit with asymmetric penalties (missing protein low is worse
+than overshooting it; going over calories is worse than going under), summed over every
+kind of day and weighted by how often each comes round. Solved by **exact coordinate
+descent from several starting points** — for a fixed set of other portions the cost is
+a one-dimensional convex function of each portion, so each can be solved to its true
+optimum rather than nudged toward it. Then a discrete pass snaps everything to
+weighable amounts and wins back what that cost, using **pairwise moves** — one portion
+up, another down — because that's the plateau single-portion tweaks get stuck on.
+
+An **anchor** term sits far below the macro weights and acts only as a tie-breaker, so
+among equally accurate answers it picks the one that looks most like the plan you
+wrote.
 
 **Four priorities**, because "closest" depends on what you're doing: *Balanced*,
 *Protein first*, *Calories exact* (chosen automatically when you've set a manual kcal
 figure) and *Most food*, which breaks ties toward the more filling plan.
 
 **When it can't get there** it says so and shows the way out: which limit is in the
-way, and a one-tap button to widen exactly that one to exactly the figure that would
-close the gap. No quietly serving you an unrealistic plate.
+way, on which kind of day, and a one-tap button to widen exactly that one to exactly
+the figure that would close the gap.
 
 ### Is it actually better?
 
-`bench/compare.ts` runs both solvers over 400 randomised but realistic plans, against
-targets constructed to be genuinely reachable within each plan's own limits — so any
-error is the solver's, not the plan's.
+`bench/compare.ts` runs the old single-target solver against the new one over 400
+randomised but realistic plans, with targets constructed to be genuinely reachable
+within each plan's own limits — so any error is the solver's, not the plan's.
 
 ```
                             old      new
-mean macro error           0.85%    0.42%
-worst macro error         18.38%    3.96%
-mean calorie miss         9.4 kcal 4.6 kcal
-mean protein shortfall     0.43 g   0.13 g
+mean macro error           0.85%    0.47%
+worst macro error         18.38%    6.95%
+mean calorie miss         9.4 kcal 5.3 kcal
+mean protein shortfall     0.43 g   0.17 g
+
+new error, median / p90 / p99      0.24% / 1.09% / 3.72%
 ```
 
-Run it yourself with `npx tsx bench/compare.ts`. A solve takes about 6 ms for a
-16-ingredient day, which is why the preview re-fits live as you drag a limit.
+Read the median and the p90. The score weights all four macros equally and the solver
+deliberately does not — protein carries nearly three times the weight of carbohydrate —
+so the handful of plans at the top of `--worst` are mostly ones where the two genuinely
+conflict and the solver protected protein, which is the behaviour asked for being
+scored as an error. `bench/compare.ts --snapped --worst` prints them with their
+denominators.
 
-(`bench/compare.ts --snapped` is the table above. Without the flag it aims at targets
-that fall between whole eggs and whole scoops, where the new solver scores *worse* on
-paper — it refuses to answer "1.4 eggs". That's the trade, and it's the right one.)
+A solve takes about 6 ms for a 16-ingredient day, which is why the dialog re-fits live
+as you type.
+
+(`--snapped` is the table above. Without the flag it aims at targets that fall between
+whole eggs and whole scoops, where the new solver scores *worse* on paper — it refuses
+to answer "1.4 eggs". That's the trade, and it's the right one.)
+
+`bench/weekfit-check.ts` runs the whole-week fit against the real plan and prints both
+tables above; `bench/share-explain.ts` checks that a share it can't reach names the
+limit that's in the way.
 
 ## Meal prep guide
 
@@ -361,9 +436,9 @@ calibration exists — once you have your own data, it wins.
   stored that way, which is what lets the Today page rescale correctly when you change
   a gram amount. A row whose 4/4/9 arithmetic doesn't reconstruct its own calorie
   figure gets flagged, because every number downstream inherits that typo.
-- Fibre values on ingredients entered before the app tracked fibre are seeded from the
-  type of food and marked as estimates (dashed box) — worth correcting from the packet
-  when you next touch that row.
+- The app tracks **four** numbers: calories, protein, carbs and fat. It briefly
+  tracked fibre as a fifth and no longer does — the columns are still created so no
+  existing database loses anything, but nothing reads them.
 - Only **confirmed** meals count toward the counter — added-but-unconfirmed meals are
   drafts you can still adjust.
 - Weigh food raw where you can, and be consistent about it. Per-100g values off the

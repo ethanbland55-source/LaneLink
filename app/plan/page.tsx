@@ -167,6 +167,17 @@ export default function PlanPage() {
   }, [meals, dayTypes.length]);
   const weekDiff = Math.round(weekAvg.planned.kcal - weekAvg.target.kcal);
   const weekOff = Math.abs(weekDiff) > Math.max(20, weekAvg.target.kcal * 0.01);
+
+  /**
+   * The goal says protein should be scaled by lean mass and the profile says
+   * bodyweight. That is not a preference, it is a profile written before the
+   * goal knew the difference — and it inflates the target by about 15% while
+   * looking completely normal in the box.
+   */
+  const basisMismatch =
+    !!profile &&
+    goalDef(profile.goal).protein.basis === "lean" &&
+    profile.protein_basis === "bodyweight";
   const volume = useMemo(() => dayVolume(activeMeals), [activeMeals]);
   const protein = useMemo(
     () => (profile ? proteinDistribution(activeMeals, profile.weight_kg) : null),
@@ -1111,6 +1122,39 @@ export default function PlanPage() {
                 converted rather than applied to bodyweight, which would silently add about 15%.
                 Set body fat above to make it exact.
               </p>
+            )}
+
+            {/* A figure meant for lean mass, applied to bodyweight, is a 15%
+                bigger protein target than the goal intended — and it looks
+                identical in the box. Worth saying out loud. */}
+            {basisMismatch && (
+              <div className="mt-2 rounded-xl bg-[#2a2416] px-3 py-2.5 text-xs leading-relaxed text-[#ffd08a]">
+                <p>
+                  {goalDef(profile.goal).label} means {goalDef(profile.goal).protein.perKg} g per kg
+                  of <b>lean mass</b>, but this is set to per kg of bodyweight — so it&rsquo;s
+                  asking for {Math.round(proteinTarget(profile))} g rather than about{" "}
+                  {Math.round(
+                    proteinTarget({ ...profile, protein_basis: "lean" })
+                  )}{" "}
+                  g.
+                </p>
+                <button
+                  className="btn btn-sm mt-2"
+                  onClick={() =>
+                    setProfile((p) =>
+                      p
+                        ? {
+                            ...p,
+                            protein_basis: goalDef(p.goal).protein.basis,
+                            protein_per_kg: goalDef(p.goal).protein.perKg,
+                          }
+                        : p
+                    )
+                  }
+                >
+                  Use lean mass, as the goal intends
+                </button>
+              </div>
             )}
           </Field>
 
