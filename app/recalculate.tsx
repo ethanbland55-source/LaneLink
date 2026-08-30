@@ -61,6 +61,31 @@ export function RecalculateDialog({
     [draft, plan.order.length]
   );
 
+  /**
+   * What each group's split actually came out as.
+   *
+   * Read off the fitted plan rather than the solver's share report, because
+   * the report only covers groups you have set a share on — and a box with no
+   * number beside it tells you nothing about what you are changing.
+   */
+  const splitOf = useMemo(() => {
+    const out = new Map<number, number>();
+    const kcalOf = (id: number) => {
+      const m = result.meals.find((x) => x.id === id);
+      if (!m) return 0;
+      return m.ingredients.reduce(
+        (a, i) => a + ((Number(i.grams) || 0) * (Number(i.kcal_100) || 0)) / 100,
+        0
+      ) * repsOf(m);
+    };
+    for (const g of groups) {
+      const ks = g.meals.map((m) => kcalOf(m.id));
+      const total = ks.reduce((a, b) => a + b, 0);
+      g.meals.forEach((m, i) => out.set(m.id, total > 0 ? ks[i] / total : 0));
+    }
+    return out;
+  }, [groups, result.meals]);
+
   const volume = useMemo(() => dayVolume(result.meals), [result.meals]);
   const fillers = useMemo(
     () => fillerSuggestions(result.weekly.after, result.weekly.target),
@@ -229,7 +254,7 @@ export function RecalculateDialog({
         </div>
 
         {/* Tabs */}
-        <div className="scroll-x mt-4 flex gap-1 px-5 pb-1">
+        <div className="mt-4 flex flex-wrap gap-1 px-5 pb-1">
           {(
             [
               ["days", "Every day"],
@@ -309,14 +334,12 @@ export function RecalculateDialog({
               </p>
               {groups.map((g) => (
                 <div key={g.key} className="sunk px-4 py-3.5">
-                  <p className="label">
+                  {/* Sentence case, not the uppercase label style — a list of
+                      three day-type names in caps is a wall, not a heading. */}
+                  <p className="text-xs font-semibold text-[var(--color-mut)]">
                     {g.dayTypeIds
-                      ? `On ${g.dayTypeIds
-                          .map((id) => result.days.find((d) => d.id === id)?.name ?? "")
-                          .filter(Boolean)
-                          .join(", ")
-                          .toLowerCase()} days`
-                      : "Every day"}
+                      ? `Only on ${dayList(g.dayTypeIds, result.days)} days`
+                      : "Eaten every day"}
                   </p>
                   <div className="mt-3 space-y-2.5">
                     {g.meals.map((m) => {
@@ -345,11 +368,16 @@ export function RecalculateDialog({
                               }
                             />
                             <span className="text-xs text-[var(--color-mut)]">%</span>
-                            {out && (
-                              <span className="num w-14 text-right text-sm">
-                                {Math.round(out.got * 100)}%
-                              </span>
-                            )}
+                            <span className="shrink-0 text-[#454b57]">→</span>
+                            <span
+                              className="num w-12 shrink-0 text-right text-sm"
+                              title="What it actually came out as"
+                              style={{
+                                color: out?.blocked ? "var(--color-carbs)" : "var(--color-accent)",
+                              }}
+                            >
+                              {Math.round((splitOf.get(m.id) ?? 0) * 100)}%
+                            </span>
                           </div>
                           {out?.blocked && (
                             <button
@@ -375,8 +403,11 @@ export function RecalculateDialog({
 
           {tab === "portions" && (
             <div className="pb-2">
-              <div className="mb-3 flex justify-end">
-                <button className="btn btn-sm btn-quiet" onClick={resetBounds}>
+              <div className="mb-3 flex items-center gap-2">
+                <p className="mr-auto text-xs leading-relaxed text-[var(--color-mut)]">
+                  Each portion is the same every day. Lock one to pin it.
+                </p>
+                <button className="btn btn-sm btn-quiet shrink-0" onClick={resetBounds}>
                   Reset limits
                 </button>
               </div>
@@ -477,15 +508,34 @@ export function RecalculateDialog({
 
 /* -------------------------------------------------------------------- */
 
-/** How far off, in the colour that says whether to care. */
+/** "swim only and swim + gym" — a list a person would say out loud. */
+function dayList(ids: number[], days: { id: number; name: string }[]): string {
+  const names = ids
+    .map((id) => days.find((d) => d.id === id)?.name.toLowerCase() ?? "")
+    .filter(Boolean);
+  if (names.length <= 1) return names[0] ?? "these";
+  return `${names.slice(0, -1).join(", ")} and ${names[names.length - 1]}`;
+}
+
+/**
+ * How far off, and whether to care.
+ *
+ * The figure is always shown. Replacing it with the word "on target" inside
+ * the tolerance looked tidier and threw away the thing you came to read —
+ * being 8 kcal out and being 60 kcal out are both fine, and they are not the
+ * same. The colour carries the verdict; the number carries the fact.
+ */
 function Delta({ value, tol }: { value: number; tol: number }) {
   const ok = Math.abs(value) <= tol;
+  const v = Math.round(value);
   return (
     <span
-      className="w-16 text-right text-sm font-bold tabular-nums"
+      className="w-16 shrink-0 text-right text-sm font-bold tabular-nums"
       style={{ color: ok ? "var(--color-accent)" : "var(--color-carbs)" }}
+      title={ok ? "Within a fifty-per-cent-of-nothing tolerance — this is fine" : "Off target"}
     >
-      {ok ? "on target" : `${value >= 0 ? "+" : ""}${Math.round(value)}`}
+      {v >= 0 ? "+" : ""}
+      {v}
     </span>
   );
 }
@@ -560,12 +610,14 @@ function BatchRow({
 
   return (
     <div className="sunk px-3 py-2.5">
-      <div className="flex flex-wrap items-center gap-2">
+      <div className="flex items-center gap-2">
         <LockButton locked={locked} onClick={() => onLock(!locked)} />
-        <span className="min-w-0 flex-1 basis-[7rem] truncate text-sm font-medium">
-          Serving from the batch
-        </span>
+        <span className="min-w-0 flex-1 truncate text-sm font-medium">Serving from the batch</span>
         <Change from={from} to={to} />
+      </div>
+
+      <div className="mt-2 flex items-center gap-2 pl-8">
+        <span className="text-[0.68rem] text-[#5b6270]">between</span>
         <Limits
           min={Math.round(b.min)}
           max={Math.round(b.max)}
@@ -573,6 +625,7 @@ function BatchRow({
           onMin={(v) => onScaleBand(from > 0 ? Math.max(0.1, v / from) : 0.75, from > 0 ? b.max / from : 1.35)}
           onMax={(v) => onScaleBand(from > 0 ? b.min / from : 0.75, from > 0 ? Math.max(0.1, v / from) : 1.35)}
         />
+        <span className="text-[0.68rem] text-[#5b6270]">g</span>
       </div>
 
       <div className="mt-1.5 flex flex-wrap items-center gap-x-3 gap-y-1 pl-8 text-[0.68rem] text-[#5b6270]">
@@ -610,15 +663,23 @@ function PortionRow({
 
   return (
     <div className="sunk px-3 py-2">
-      <div className="flex flex-wrap items-center gap-2">
+      {/* What it is, and what it becomes */}
+      <div className="flex items-center gap-2">
         <LockButton locked={!!it.locked} onClick={() => onPatch({ locked: !it.locked })} />
         <span
-          className="min-w-0 flex-1 basis-[8rem] truncate text-sm font-medium"
+          className="min-w-0 flex-1 truncate text-sm font-medium"
           style={it.locked ? { color: "var(--color-mut)" } : undefined}
         >
           {it.name}
         </span>
         <Change from={from} to={to} />
+      </div>
+
+      {/* The band it may move in. Its own line: the boxes are 16px on a phone
+          because anything smaller makes iOS zoom the page, and three controls
+          at that size do not share a line with a name and two figures. */}
+      <div className="mt-2 flex items-center gap-2 pl-8">
+        <span className="text-[0.68rem] text-[#5b6270]">between</span>
         <Limits
           min={it.min_grams ?? Math.round(b.min)}
           max={it.max_grams ?? Math.round(b.max)}
@@ -626,8 +687,9 @@ function PortionRow({
           onMin={(v) => onPatch({ min_grams: v })}
           onMax={(v) => onPatch({ max_grams: v })}
         />
+        <span className="text-[0.68rem] text-[#5b6270]">g</span>
         <button
-          className="px-1 text-[#4a505c] transition hover:text-[var(--color-fat)]"
+          className="ml-auto px-1 text-[#4a505c] transition hover:text-[var(--color-fat)]"
           title="Take this out of the plan"
           aria-label={`Remove ${it.name}`}
           onClick={onRemove}
@@ -705,7 +767,7 @@ function Limits({
         inputMode="numeric"
         aria-label="Smallest portion you would accept"
         title="Smallest portion you'd accept"
-        className="field w-[4.4rem] px-1.5 py-1 text-right text-xs"
+        className="field w-[4.2rem] px-2 py-1 text-right text-xs"
         value={min}
         disabled={disabled}
         onChange={(e) => onMin(Number(e.target.value))}
@@ -716,7 +778,7 @@ function Limits({
         inputMode="numeric"
         aria-label="Largest portion you would accept"
         title="Largest portion you'd accept"
-        className="field w-[4.4rem] px-1.5 py-1 text-right text-xs"
+        className="field w-[4.2rem] px-2 py-1 text-right text-xs"
         value={max}
         disabled={disabled}
         onChange={(e) => onMax(Number(e.target.value))}
