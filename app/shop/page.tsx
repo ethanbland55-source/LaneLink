@@ -189,16 +189,25 @@ export default function ShopPage() {
               {n}
             </button>
           ))}
+        </div>
+
+        {/* A bare number box next to the presets read as an eighth preset,
+            especially once inputs went up to 16px on a phone. Labelling it is
+            the whole fix. */}
+        <label className="no-print mt-2 flex items-center gap-2">
+          <span className="text-xs text-[var(--color-mut)]">or</span>
           <input
             type="number"
+            inputMode="numeric"
             min={1}
             max={21}
             className="field w-20 px-2 py-1 text-center text-sm"
             value={days ?? ""}
-            aria-label="Days"
+            aria-label="Number of days to buy for"
             onChange={(e) => saveDays(Math.min(21, Math.max(1, Number(e.target.value) || 1)))}
           />
-        </div>
+          <span className="text-xs text-[var(--color-mut)]">days</span>
+        </label>
 
         <label className="no-print mt-3 block">
           <span className="label mb-1.5 block">Shop day</span>

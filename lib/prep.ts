@@ -5,7 +5,7 @@
  * one. The number that does is **energy density**: calories per 100 g of the
  * food as it reaches the plate. Barbara Rolls' volumetrics work put the
  * boundary for "this fills you up" at roughly 125 kcal/100 g, and every
- * satiety-index study since has broadly agreed — water and fibre take up room,
+ * satiety-index study since has broadly agreed — water and bulk take up room,
  * fat doesn't.
  *
  * So this module converts a plan from raw grams into what you'll be looking
@@ -20,7 +20,7 @@ import { itemMacros, sumMacros, ZERO_MACROS } from "./nutrition";
 export type Verdict = "very filling" | "filling" | "moderate" | "dense" | "very dense";
 
 export const VERDICTS: { verdict: Verdict; upTo: number; blurb: string }[] = [
-  { verdict: "very filling", upTo: 90, blurb: "mostly water and fibre" },
+  { verdict: "very filling", upTo: 90, blurb: "mostly water and vegetables" },
   { verdict: "filling", upTo: 150, blurb: "plenty of food for the calories" },
   { verdict: "moderate", upTo: 250, blurb: "a normal plate" },
   { verdict: "dense", upTo: 400, blurb: "small for the calories" },
@@ -162,7 +162,6 @@ export function fillerSuggestions(current: Macros, target: Macros, max = 3): Fil
   if (headroom < 60) return [];
 
   const shortProtein = target.protein - current.protein;
-  const shortFibre = target.fibre - current.fibre;
 
   const scored = VOLUME_FOODS.map((f) => {
     const budget = headroom * 0.5;
@@ -173,12 +172,11 @@ export function fillerSuggestions(current: Macros, target: Macros, max = 3): Fil
       protein: f.protein_100 * k,
       carbs: f.carbs_100 * k,
       fat: f.fat_100 * k,
-      fibre: f.fibre_100 * k,
     };
-    let score = macros.fibre * 1.0;
+    // Bulk per calorie is the whole point of a filler; protein only counts
+    // when the day is actually short of it.
+    let score = (grams - macros.kcal / 2) / 100;
     if (shortProtein > 5) score += macros.protein * 1.5;
-    if (shortFibre > 5) score += macros.fibre * 1.5;
-    score += (grams - macros.kcal / 2) / 100; // reward bulk per calorie
 
     const reason =
       shortProtein > 5 && macros.protein > 8

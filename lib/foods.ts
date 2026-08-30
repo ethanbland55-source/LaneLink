@@ -597,49 +597,20 @@ export function ceilTo(v: number, step: number): number {
 }
 
 /**
- * Typical fibre per 100 g by class, used only to seed a value for
- * ingredients entered before the app tracked fibre. Anything seeded this way
- * is marked as an estimate in the UI so you know to check the packet — these
- * are ballpark figures, not label values.
- */
-export const TYPICAL_FIBRE_100: Record<FoodClass, number> = {
-  lean_protein: 0,
-  fatty_protein: 0,
-  oily_fish: 0,
-  egg: 0,
-  dairy_high_protein: 0,
-  dairy_fatty: 0,
-  milk: 0,
-  grain: 3.5,
-  bread: 4.5,
-  starchy_veg: 2.4,
-  veg: 2.2,
-  fruit: 2.2,
-  legume: 6.0,
-  nut_seed: 6.5,
-  fat_oil: 0,
-  sauce: 0.8,
-  supplement: 1.0,
-  sweet: 1.5,
-  drink: 0.2,
-  other: 0.5,
-};
-
-/**
  * Filler foods — high volume, low calorie, cheap. Offered when the plan has
  * calories left but not much actual food in it.
  */
-export const VOLUME_FOODS: Array<Density & { name: string; fibre_100: number }> = [
-  { name: "Broccoli", kcal_100: 34, protein_100: 2.8, carbs_100: 4.0, fat_100: 0.4, fibre_100: 2.6 },
-  { name: "Courgette", kcal_100: 17, protein_100: 1.2, carbs_100: 2.0, fat_100: 0.3, fibre_100: 1.0 },
-  { name: "Cucumber", kcal_100: 15, protein_100: 0.7, carbs_100: 3.0, fat_100: 0.1, fibre_100: 0.5 },
-  { name: "Spinach", kcal_100: 23, protein_100: 2.9, carbs_100: 1.4, fat_100: 0.4, fibre_100: 2.2 },
-  { name: "Green beans", kcal_100: 31, protein_100: 1.8, carbs_100: 4.5, fat_100: 0.1, fibre_100: 2.7 },
-  { name: "Mushrooms", kcal_100: 22, protein_100: 3.1, carbs_100: 1.0, fat_100: 0.3, fibre_100: 1.0 },
-  { name: "Cauliflower", kcal_100: 25, protein_100: 1.9, carbs_100: 3.0, fat_100: 0.3, fibre_100: 2.0 },
-  { name: "Cherry tomatoes", kcal_100: 18, protein_100: 0.9, carbs_100: 3.0, fat_100: 0.2, fibre_100: 1.2 },
-  { name: "Carrot", kcal_100: 41, protein_100: 0.9, carbs_100: 8.0, fat_100: 0.2, fibre_100: 2.8 },
-  { name: "Strawberries", kcal_100: 32, protein_100: 0.7, carbs_100: 6.0, fat_100: 0.3, fibre_100: 2.0 },
-  { name: "0% Greek yoghurt", kcal_100: 57, protein_100: 10, carbs_100: 4.0, fat_100: 0.2, fibre_100: 0 },
-  { name: "Egg whites", kcal_100: 52, protein_100: 11, carbs_100: 0.7, fat_100: 0.2, fibre_100: 0 },
+export const VOLUME_FOODS: Array<Density & { name: string }> = [
+  { name: "Broccoli", kcal_100: 34, protein_100: 2.8, carbs_100: 4.0, fat_100: 0.4 },
+  { name: "Courgette", kcal_100: 17, protein_100: 1.2, carbs_100: 2.0, fat_100: 0.3 },
+  { name: "Cucumber", kcal_100: 15, protein_100: 0.7, carbs_100: 3.0, fat_100: 0.1 },
+  { name: "Spinach", kcal_100: 23, protein_100: 2.9, carbs_100: 1.4, fat_100: 0.4 },
+  { name: "Green beans", kcal_100: 31, protein_100: 1.8, carbs_100: 4.5, fat_100: 0.1 },
+  { name: "Mushrooms", kcal_100: 22, protein_100: 3.1, carbs_100: 1.0, fat_100: 0.3 },
+  { name: "Cauliflower", kcal_100: 25, protein_100: 1.9, carbs_100: 3.0, fat_100: 0.3 },
+  { name: "Cherry tomatoes", kcal_100: 18, protein_100: 0.9, carbs_100: 3.0, fat_100: 0.2 },
+  { name: "Carrot", kcal_100: 41, protein_100: 0.9, carbs_100: 8.0, fat_100: 0.2 },
+  { name: "Strawberries", kcal_100: 32, protein_100: 0.7, carbs_100: 6.0, fat_100: 0.3 },
+  { name: "0% Greek yoghurt", kcal_100: 57, protein_100: 10, carbs_100: 4.0, fat_100: 0.2 },
+  { name: "Egg whites", kcal_100: 52, protein_100: 11, carbs_100: 0.7, fat_100: 0.2 },
 ];

@@ -1,5 +1,5 @@
 import { neon } from "@neondatabase/serverless";
-import { profileFor, TYPICAL_FIBRE_100 } from "./foods";
+import { profileFor } from "./foods";
 import { LEGACY_DAY_TYPE_MAP, SEED_DAY_TYPES, WEEKDAYS } from "./nutrition";
 
 const url = process.env.DATABASE_URL;
@@ -73,7 +73,9 @@ async function createSchema() {
   await sql`alter table ingredients add column if not exists max_grams numeric`;
   await sql`alter table ingredients add column if not exists locked boolean not null default false`;
 
-  // --- Fibre, food knowledge, shopping -----------------------------------
+  // --- Food knowledge, shopping ------------------------------------------
+  // fibre_100 / fibre_estimated are still created for databases that predate
+  // this version, but nothing reads them: the app tracks four macros.
   await sql`alter table ingredients add column if not exists fibre_100 numeric not null default 0`;
   await sql`alter table ingredients add column if not exists fibre_estimated boolean not null default false`;
   await sql`alter table ingredients add column if not exists food_class text`;
@@ -85,6 +87,8 @@ async function createSchema() {
   await sql`alter table meals add column if not exists day_type_ids int[]`;
   // Cooked ahead in one go and served by weight, rather than plated fresh.
   await sql`alter table meals add column if not exists batch boolean not null default false`;
+  // Share of its group's calories, where several meals appear on the same days.
+  await sql`alter table meals add column if not exists share_pct numeric`;
 
   await sql`alter table profile add column if not exists body_fat_pct numeric`;
   await sql`alter table profile add column if not exists fibre_per_1000 numeric not null default 14`;
@@ -168,10 +172,8 @@ async function createSchema() {
 /**
  * Bring rows written by an older version up to the current model.
  *
- * Every ingredient gets classified once — which aisle it's in, what size the
- * packet is, and a ballpark fibre figure if it has none. The fibre figure is
- * flagged as an estimate so the plan page can show it differently and you can
- * correct it from the packet.
+ * Every ingredient gets classified once — which aisle it's in and what size
+ * the packet is — so the shopping list never has to guess.
  *
  * It only ever touches rows that haven't been classified yet, so it costs one
  * query on a warm instance and never overwrites anything you've typed.
@@ -245,7 +247,7 @@ async function backfill() {
   }
   try {
     const rows = await sql`
-      select id, name, kcal_100, protein_100, carbs_100, fat_100, fibre_100
+      select id, name, kcal_100, protein_100, carbs_100, fat_100
       from ingredients
       where food_class is null`;
     if (!rows.length) return;
@@ -257,16 +259,11 @@ async function backfill() {
         carbs_100: Number(r.carbs_100) || 0,
         fat_100: Number(r.fat_100) || 0,
       });
-      const hasFibre = Number(r.fibre_100) > 0;
-      const seeded = hasFibre ? Number(r.fibre_100) : TYPICAL_FIBRE_100[p.cls] ?? 0;
-
       await sql`
         update ingredients set
           food_class = ${p.cls},
           aisle = ${p.aisle},
-          pack_grams = ${p.packGrams},
-          fibre_100 = ${seeded},
-          fibre_estimated = ${!hasFibre && seeded > 0}
+          pack_grams = ${p.packGrams}
         where id = ${r.id}`;
     }
   } catch (e) {

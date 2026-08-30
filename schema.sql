@@ -21,7 +21,7 @@ create table if not exists profile (
   protein_per_kg    numeric not null default 2.0,
   fat_per_kg        numeric not null default 0.7,
   carb_floor_per_kg numeric not null default 1.0,    -- carbs never fall below this
-  fibre_per_1000    numeric not null default 14,     -- g fibre per 1000 kcal
+  fibre_per_1000    numeric not null default 14,     -- legacy, unused
   calorie_override  int,                             -- manual kcal target (weekly average)
   -- A block: a start, a length, and a target that drifts across it.
   phase_name        text,
@@ -64,6 +64,10 @@ create table if not exists meals (
   -- Cooked ahead in one go and served by weight. The optimiser may resize the
   -- serving but never the ratio inside it, because you can't once it's cooked.
   batch         boolean not null default false,
+  -- Share of this meal's group of the day's calories, 0-100. Only meaningful
+  -- where two or more meals appear on exactly the same day types: they move
+  -- together, so nothing in the targets can decide how to split them.
+  share_pct     numeric,
   sort_order    int     not null default 0,
   created_at    timestamptz not null default now()
 );
@@ -78,8 +82,10 @@ create table if not exists ingredients (
   protein_100     numeric not null default 0,
   carbs_100       numeric not null default 0,
   fat_100         numeric not null default 0,
+  -- Legacy: created for older databases, but nothing reads them. The app
+  -- tracks four macros.
   fibre_100       numeric not null default 0,
-  fibre_estimated boolean not null default false,    -- seeded from food class, not a label
+  fibre_estimated boolean not null default false,
   -- Filled in by lib/foods.ts on write, so the shopping list never guesses.
   food_class      text,
   aisle           text,

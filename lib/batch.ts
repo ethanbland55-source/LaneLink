@@ -39,6 +39,15 @@ export type PlanMeal = {
   day_type_ids?: number[] | null;
   /** Cooked ahead in one go, served by weight. */
   batch?: boolean;
+  /**
+   * Share of its group's calories, 0–100, or null to let the fit decide.
+   *
+   * Only meaningful where two or more meals appear on exactly the same days:
+   * they rise and fall together, so nothing in the targets can say how to
+   * divide them. This is where you say — 20% of the swim calories in the dates
+   * beforehand, 80% in the yoghurt after.
+   */
+  share_pct?: number | null;
   ingredients: BoundedItem[];
 };
 
@@ -98,7 +107,6 @@ function compositeFor(meal: PlanMeal): { item: BoundedItem; slot: Slot } | null 
       protein_100: per100(totals.protein),
       carbs_100: per100(totals.carbs),
       fat_100: per100(totals.fat),
-      fibre_100: per100(totals.fibre),
       min_grams: Math.round(baseTotal * lo),
       max_grams: Math.round(baseTotal * hi),
       locked: anyLocked,
@@ -168,10 +176,8 @@ export function servingGrams(meal: PlanMeal): number {
 }
 
 /* ------------------------------------------------------------------ */
-/* Serving size per kind of day                                        */
+/* Serving size                                                        */
 /* ------------------------------------------------------------------ */
-
-export type ServingTable = Map<number, Map<number, number>>;
 
 function appliesOn(meal: PlanMeal, dayTypeId: number, total: number): boolean {
   const ids = meal.day_type_ids;
@@ -180,38 +186,18 @@ function appliesOn(meal: PlanMeal, dayTypeId: number, total: number): boolean {
 }
 
 /**
- * How much of each tray to put on the plate, for each kind of day.
+ * A serving is a serving, whatever day it is.
  *
- * Solved once per day type against that day's own target, with the batch
- * meals collapsed — so the only lever the fit has on a cooked meal is the
- * serving weight, which is the only lever you have too.
+ * This used to re-solve per day type and hand back a different weight for each
+ * — 380 g of tray on a rest day, 520 g on a double swim. It is a tidy idea and
+ * it is not what happens in a kitchen: you portion the tray into containers on
+ * Sunday, and on Thursday you take one out. Weighing a different amount off a
+ * cooked tray every morning is not a plan, it is a chore nobody does.
  *
- * One function, used by both the cook list and the Today page, so the number
- * on the scale in the kitchen is the number the log expects.
+ * So the serving is fixed and the *menu* carries the difference between days,
+ * which is what `lib/weekfit.ts` fits. The number on the kitchen scale, the
+ * number on the cook list and the number the log expects are all this one.
  */
-export function servingsByDayType(meals: PlanMeal[], plan: WeekPlan): ServingTable {
-  const out: ServingTable = new Map();
-  const batchMeals = meals.filter((m) => m.batch && m.ingredients.length > 0);
-  if (batchMeals.length === 0) return out;
-
-  for (const id of plan.order) {
-    const applicable = meals.filter((m) => appliesOn(m, id, plan.order.length));
-    const { items, slots } = collapse(applicable);
-    if (!items.length) continue;
-
-    const res = optimisePortions(items, targetsFor(plan, id), { mode: "balanced" });
-
-    slots.forEach((slot, i) => {
-      if (slot.kind !== "batch") return;
-      const perMeal = out.get(slot.mealId) ?? new Map<number, number>();
-      // Round to something you'd actually weigh out of a tray.
-      perMeal.set(id, Math.round((res.grams[i] ?? slot.baseTotal) / 5) * 5);
-      out.set(slot.mealId, perMeal);
-    });
-  }
-
-  return out;
-}
 
 /* ------------------------------------------------------------------ */
 /* The cook list                                                       */
@@ -262,11 +248,10 @@ export function cookPlan(
     return { days: opts.days, meals: [], notes };
   }
 
-  const servings = servingsByDayType(meals, plan);
   const typeCount = plan.order.length;
 
   const out: BatchCook[] = batchMeals.map((meal) => {
-    const table = servings.get(meal.id) ?? new Map<number, number>();
+    const serving = servingGrams(meal);
     const counts = new Map<number, number>();
     const reps = Math.max(1, Math.round(Number(meal.times_per_day ?? 1)));
 
@@ -282,7 +267,7 @@ export function cookPlan(
         id,
         name: targetsFor(plan, id).name,
         count: counts.get(id) ?? 0,
-        grams: table.get(id) ?? servingGrams(meal),
+        grams: serving,
       }));
 
     const totalGrams = byDayType.reduce((a, d) => a + d.count * d.grams, 0);
@@ -324,7 +309,7 @@ export function cookPlan(
       if (!appliesOn(meal, dayTypeId, typeCount)) continue;
       const reps = Math.max(1, Math.round(Number(meal.times_per_day ?? 1)));
       const base = servingGrams(meal) || 1;
-      const grams = meal.batch ? (servings.get(meal.id)?.get(dayTypeId) ?? base) : base;
+      const grams = base;
       const kcal = meal.ingredients.reduce((a, i) => a + itemMacros(i).kcal, 0);
       planned += reps * kcal * (grams / base);
     }
@@ -339,16 +324,6 @@ export function cookPlan(
         : short.join(", ");
     notes.push(
       `The cooked meals top out before they reach ${scope}. Serving more tray stops being the answer past a point — add a meal that only appears on those days, like a shake or a bagel, and the numbers close.`
-    );
-  }
-
-  const spread = out.filter((m) => {
-    const g = m.byDayType.map((d) => d.grams);
-    return g.length > 1 && Math.max(...g) - Math.min(...g) >= 25;
-  });
-  if (spread.length) {
-    notes.push(
-      "Cook one batch and weigh a different amount onto the plate on different days — the serving sizes below already account for how big each day is."
     );
   }
 
@@ -372,7 +347,6 @@ export function servingMacros(meal: PlanMeal, grams: number): Macros {
     protein: totals.protein * scale,
     carbs: totals.carbs * scale,
     fat: totals.fat * scale,
-    fibre: totals.fibre * scale,
   };
 }
 

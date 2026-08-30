@@ -7,7 +7,6 @@ export const MACRO_COLOR = {
   protein: "var(--color-protein)",
   carbs: "var(--color-carbs)",
   fat: "var(--color-fat)",
-  fibre: "var(--color-fibre)",
 } as const;
 
 export type MacroKey = keyof typeof MACRO_COLOR;
@@ -17,7 +16,6 @@ export const MACRO_LABEL: Record<MacroKey, string> = {
   protein: "Protein",
   carbs: "Carbs",
   fat: "Fat",
-  fibre: "Fibre",
 };
 
 /** A flat progress track. No glow, no gradient — just the fill. */
@@ -57,20 +55,17 @@ export function MacroTile({
   k,
   eaten,
   target,
-  /** Fibre has no upside to overshooting, so it never turns red. */
-  overIsFine = false,
 }: {
   k: MacroKey;
   eaten: number;
   target: number;
-  overIsFine?: boolean;
 }) {
-  const over = !overIsFine && eaten > target * 1.02;
+  const over = eaten > target * 1.02;
   return (
-    <div className="card px-4 py-3.5">
-      <p className="label">{MACRO_LABEL[k]}</p>
+    <div className="card px-3 py-3 sm:px-4 sm:py-3.5">
+      <p className="label truncate">{MACRO_LABEL[k]}</p>
       <p
-        className="num mt-2 text-[1.9rem]"
+        className="num mt-2 text-[1.5rem] sm:text-[1.9rem]"
         style={{ color: over ? "var(--color-fat)" : MACRO_COLOR[k] }}
       >
         {Math.round(eaten)}
@@ -85,16 +80,13 @@ export function MacroTile({
 }
 
 /** Compact macro summary for a meal row. */
-export function MacroChips({ m, fibre = false }: { m: Macros; fibre?: boolean }) {
+export function MacroChips({ m }: { m: Macros }) {
   return (
     <div className="flex flex-wrap items-center gap-x-3 gap-y-1 text-xs font-semibold tabular-nums">
       <span style={{ color: MACRO_COLOR.kcal }}>{Math.round(m.kcal)} kcal</span>
       <span style={{ color: MACRO_COLOR.protein }}>{m.protein.toFixed(0)}P</span>
       <span style={{ color: MACRO_COLOR.carbs }}>{m.carbs.toFixed(0)}C</span>
       <span style={{ color: MACRO_COLOR.fat }}>{m.fat.toFixed(0)}F</span>
-      {fibre && m.fibre > 0 && (
-        <span style={{ color: MACRO_COLOR.fibre }}>{m.fibre.toFixed(0)} fibre</span>
-      )}
     </div>
   );
 }

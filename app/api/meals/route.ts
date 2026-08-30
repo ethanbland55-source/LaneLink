@@ -15,6 +15,7 @@ export async function GET() {
       times_per_day: Number(m.times_per_day ?? 1),
       day_type_ids: (m.day_type_ids ?? null) as number[] | null,
       batch: !!m.batch,
+      share_pct: m.share_pct == null ? null : Number(m.share_pct),
       ingredients: ings
         .filter((i: any) => i.meal_id === m.id)
         .map((i: any) => ({
@@ -24,7 +25,6 @@ export async function GET() {
           protein_100: Number(i.protein_100),
           carbs_100: Number(i.carbs_100),
           fat_100: Number(i.fat_100),
-          fibre_100: Number(i.fibre_100 ?? 0),
           min_grams: i.min_grams == null ? null : Number(i.min_grams),
           max_grams: i.max_grams == null ? null : Number(i.max_grams),
         })),
@@ -44,6 +44,7 @@ export async function POST(req: Request) {
     times_per_day: 1,
     day_type_ids: null,
     batch: false,
+    share_pct: null,
     ingredients: [],
   });
 }
@@ -51,9 +52,18 @@ export async function POST(req: Request) {
 /** Replaces a meal's name and its whole ingredient list in one go. */
 export async function PUT(req: Request) {
   await ensureSchema();
-  const { id, name, ingredients, times_per_day, day_type_ids, batch } = await req.json();
+  const { id, name, ingredients, times_per_day, day_type_ids, batch, share_pct } =
+    await req.json();
 
   const reps = Number(times_per_day);
+
+  // A share is a percentage or nothing at all; anything else is a typo, and a
+  // typo here would quietly reshape the whole week.
+  const shareRaw = Number(share_pct);
+  const share =
+    share_pct == null || share_pct === "" || !Number.isFinite(shareRaw)
+      ? null
+      : Math.min(100, Math.max(0, shareRaw));
 
   // null means "every day type". Anything pointing at a day type that no
   // longer exists is dropped here rather than left to rot in the array.
@@ -72,7 +82,8 @@ export async function PUT(req: Request) {
       name = ${name},
       times_per_day = ${Number.isFinite(reps) && reps > 0 ? reps : 1},
       day_type_ids = ${types}::int[],
-      batch = ${!!batch}
+      batch = ${!!batch},
+      share_pct = ${share == null ? null : share}
     where id = ${id}`;
 
   await sql`delete from ingredients where meal_id = ${id}`;
@@ -86,12 +97,12 @@ export async function PUT(req: Request) {
     });
     await sql`
       insert into ingredients
-        (meal_id, name, grams, kcal_100, protein_100, carbs_100, fat_100, fibre_100,
-         fibre_estimated, food_class, aisle, pack_grams,
+        (meal_id, name, grams, kcal_100, protein_100, carbs_100, fat_100,
+         food_class, aisle, pack_grams,
          min_grams, max_grams, locked, sort_order)
       values (${id}, ${i.name || "Ingredient"}, ${num(i.grams)}, ${num(i.kcal_100)},
-              ${num(i.protein_100)}, ${num(i.carbs_100)}, ${num(i.fat_100)}, ${num(i.fibre_100)},
-              ${!!i.fibre_estimated}, ${cls.cls}, ${cls.aisle}, ${cls.packGrams},
+              ${num(i.protein_100)}, ${num(i.carbs_100)}, ${num(i.fat_100)},
+              ${cls.cls}, ${cls.aisle}, ${cls.packGrams},
               ${i.min_grams == null ? null : num(i.min_grams)},
               ${i.max_grams == null ? null : num(i.max_grams)},
               ${!!i.locked}, ${n})`;

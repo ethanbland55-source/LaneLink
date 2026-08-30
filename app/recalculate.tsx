@@ -4,82 +4,101 @@ import { useMemo, useState } from "react";
 import { MACRO_COLOR, MACRO_LABEL, Segmented } from "./macro-ui";
 import {
   boundsFor,
-  optimisePortions,
   unitOf,
   MODES,
   type BoundedItem,
+  type DayResult,
   type MacroKey,
   type Mode,
+  type ShareOutcome,
   type Suggestion,
 } from "@/lib/optimise";
 import { smartBounds, VOLUME_FOODS } from "@/lib/foods";
 import { dayVolume, fillerSuggestions, volumeHeadline } from "@/lib/prep";
-import { collapse, expand, servingGrams } from "@/lib/batch";
-import type { Macros } from "@/lib/nutrition";
-
-type Meal = {
-  id: number;
-  name: string;
-  /** Cooked ahead and served by weight — the fit may only resize the serving. */
-  batch?: boolean;
-  ingredients: BoundedItem[];
-};
+import { servingGrams, type PlanMeal } from "@/lib/batch";
+import { fitWeek, mealGroups, repsOf } from "@/lib/weekfit";
+import type { WeekPlan } from "@/lib/nutrition";
 
 const KEYS: MacroKey[] = ["kcal", "protein", "carbs", "fat"];
 
 /**
- * Preview-and-apply for the portion optimiser.
+ * Rebalance the week.
  *
- * Everything here re-solves live: change a limit, lock a portion, switch the
- * priority, add a filler — the fit updates immediately and nothing is written
- * until Apply.
+ * One press, one answer. The portions are the same every day because they come
+ * out of the same containers; what changes is which meals are on the menu. So
+ * there is nothing to choose a day for and nothing to run five times — the fit
+ * lands every kind of day at once, and the table at the top says whether it
+ * did.
+ *
+ * Everything here re-solves live: change a limit, lock a portion, set a split,
+ * switch what matters most — the answer updates as you type and nothing is
+ * written until Apply.
  */
 export function RecalculateDialog({
   meals,
-  target,
-  dayLabel,
+  plan,
   defaultMode = "balanced",
   onClose,
   onApply,
 }: {
-  meals: Meal[];
-  target: Macros;
-  dayLabel?: string;
+  meals: PlanMeal[];
+  plan: WeekPlan;
   defaultMode?: Mode;
   onClose: () => void;
-  onApply: (meals: Meal[]) => Promise<void>;
+  onApply: (meals: PlanMeal[]) => Promise<void>;
 }) {
-  const [draft, setDraft] = useState<Meal[]>(() => structuredClone(meals));
+  const [draft, setDraft] = useState<PlanMeal[]>(() => structuredClone(meals));
   const [mode, setMode] = useState<Mode>(defaultMode);
   const [saving, setSaving] = useState(false);
-  const [tab, setTab] = useState<"portions" | "prep">("portions");
+  const [tab, setTab] = useState<"days" | "splits" | "portions" | "prep">("days");
+
+  const result = useMemo(() => fitWeek(draft, plan, { mode }), [draft, plan, mode]);
+
+  const live = result.days.filter((d) => d.weight > 0);
+  const unused = result.days.filter((d) => d.weight === 0);
+  const groups = useMemo(
+    () => mealGroups(draft, plan.order.length).filter((g) => g.meals.length > 1),
+    [draft, plan.order.length]
+  );
 
   /**
-   * The fit is a whole-day fit. Meals you plate fresh contribute one variable
-   * per ingredient; a meal you cooked ahead contributes exactly one — how much
-   * of it goes on the plate — because that's the only thing you can actually
-   * change once it's in a tray in the fridge.
+   * What each group's split actually came out as.
+   *
+   * Read off the fitted plan rather than the solver's share report, because
+   * the report only covers groups you have set a share on — and a box with no
+   * number beside it tells you nothing about what you are changing.
    */
-  const { items: flatItems, slots } = useMemo(() => collapse(draft), [draft]);
+  const splitOf = useMemo(() => {
+    const out = new Map<number, number>();
+    const kcalOf = (id: number) => {
+      const m = result.meals.find((x) => x.id === id);
+      if (!m) return 0;
+      return m.ingredients.reduce(
+        (a, i) => a + ((Number(i.grams) || 0) * (Number(i.kcal_100) || 0)) / 100,
+        0
+      ) * repsOf(m);
+    };
+    for (const g of groups) {
+      const ks = g.meals.map((m) => kcalOf(m.id));
+      const total = ks.reduce((a, b) => a + b, 0);
+      g.meals.forEach((m, i) => out.set(m.id, total > 0 ? ks[i] / total : 0));
+    }
+    return out;
+  }, [groups, result.meals]);
 
-  const result = useMemo(
-    () => optimisePortions(flatItems, target, { mode }),
-    [flatItems, target, mode]
-  );
-
-  /** The plan as it would be after applying — used by the prep guide. */
-  const fitted = useMemo(
-    () => expand(draft, slots, result.grams) as Meal[],
-    [draft, slots, result]
-  );
-
-  const volume = useMemo(() => dayVolume(fitted), [fitted]);
+  const volume = useMemo(() => dayVolume(result.meals), [result.meals]);
   const fillers = useMemo(
-    () => fillerSuggestions(result.after, target),
-    [result.after, target]
+    () => fillerSuggestions(result.weekly.after, result.weekly.target),
+    [result.weekly]
   );
 
-  function patch(mealId: number, index: number, p: Partial<BoundedItem>) {
+  const slotOf = (gi: number) => result.fit.slots[gi];
+
+  function patchMeal(mealId: number, p: Partial<PlanMeal>) {
+    setDraft((ms) => ms.map((m) => (m.id === mealId ? { ...m, ...p } : m)));
+  }
+
+  function patchItem(mealId: number, index: number, p: Partial<BoundedItem>) {
     setDraft((ms) =>
       ms.map((m) =>
         m.id !== mealId
@@ -89,7 +108,24 @@ export function RecalculateDialog({
     );
   }
 
-  /** Forget every hand-set limit and go back to what the food suggests. */
+  /** Scale every portion in a meal's band together — the honest move for a tray. */
+  function scaleBand(mealId: number, lo: number, hi: number) {
+    setDraft((ms) =>
+      ms.map((m) =>
+        m.id !== mealId
+          ? m
+          : {
+              ...m,
+              ingredients: m.ingredients.map((it) => ({
+                ...it,
+                min_grams: Math.round((Number(it.grams) || 0) * lo),
+                max_grams: Math.round((Number(it.grams) || 0) * hi),
+              })),
+            }
+      )
+    );
+  }
+
   function resetBounds() {
     setDraft((ms) =>
       ms.map((m) => ({
@@ -99,18 +135,11 @@ export function RecalculateDialog({
     );
   }
 
-  /**
-   * Take the optimiser up on one of its own suggestions.
-   *
-   * On a cooked batch the suggestion is about the serving, so it's applied to
-   * every component in proportion — widening "the tray" rather than one
-   * ingredient inside it, which you couldn't do anyway.
-   */
   function applySuggestion(s: Suggestion) {
-    const slot = slots[s.index];
+    const slot = slotOf(s.index);
     if (!slot) return;
     if (slot.kind === "item") {
-      patch(slot.mealId, slot.index, s.direction === "up" ? { max_grams: s.to } : { min_grams: s.to });
+      patchItem(slot.mealId, slot.index, s.direction === "up" ? { max_grams: s.to } : { min_grams: s.to });
       return;
     }
     const scale = slot.baseTotal > 0 ? s.to / slot.baseTotal : 1;
@@ -126,6 +155,29 @@ export function RecalculateDialog({
                   ? { max_grams: Math.round((Number(it.grams) || 0) * scale) }
                   : { min_grams: Math.round((Number(it.grams) || 0) * scale) }),
               })),
+            }
+      )
+    );
+  }
+
+  /** Widen a meal's band so the split you asked for becomes reachable. */
+  function unblockShare(s: ShareOutcome) {
+    const meal = draft.find((m) => m.id === s.mealId);
+    if (!meal || !s.suggestGrams) return;
+    const base = servingGrams(meal) || 1;
+    const k = s.suggestGrams / base;
+    setDraft((ms) =>
+      ms.map((m) =>
+        m.id !== s.mealId
+          ? m
+          : {
+              ...m,
+              ingredients: m.ingredients.map((it) => {
+                const g = Number(it.grams) || 0;
+                return s.blocked === "min"
+                  ? { ...it, min_grams: Math.max(0, Math.floor(g * k)) }
+                  : { ...it, max_grams: Math.ceil(g * k) };
+              }),
             }
       )
     );
@@ -149,7 +201,6 @@ export function RecalculateDialog({
                   protein_100: food.protein_100,
                   carbs_100: food.carbs_100,
                   fat_100: food.fat_100,
-                  fibre_100: food.fibre_100,
                   min_grams: null,
                   max_grams: null,
                   locked: false,
@@ -162,225 +213,287 @@ export function RecalculateDialog({
 
   async function apply() {
     setSaving(true);
-    await onApply(fitted);
+    // The shares you set here are part of the answer, so they are saved with it.
+    await onApply(
+      result.meals.map((m) => ({
+        ...m,
+        share_pct: draft.find((d) => d.id === m.id)?.share_pct ?? null,
+      }))
+    );
     setSaving(false);
   }
 
-  const missed = KEYS.filter((k) => !result.hit[k]);
+  const offDays = live.filter((d) => !d.hit.kcal);
 
   return (
     <div className="fixed inset-0 z-50 flex items-end justify-center bg-black/75 backdrop-blur-sm sm:items-center sm:p-6">
-      <div className="card flex max-h-[94vh] w-full max-w-2xl flex-col rounded-b-none sm:rounded-b-[1.25rem]">
+      <div className="card flex max-h-[92dvh] w-full max-w-2xl flex-col rounded-b-none sm:max-h-[88dvh] sm:rounded-b-[1.25rem]">
         {/* Header */}
-        <div className="flex items-center gap-3 px-5 pb-3 pt-5">
+        <div className="flex items-start gap-3 px-5 pb-3 pt-5">
           <div className="mr-auto min-w-0">
-            <h2 className="truncate text-lg font-bold tracking-tight">Rebalance portions</h2>
-            {dayLabel && <p className="mt-0.5 text-xs text-[var(--color-mut)]">{dayLabel}</p>}
+            <h2 className="truncate text-lg font-bold tracking-tight">Rebalance the week</h2>
+            <p className="mt-0.5 text-xs text-[var(--color-mut)]">
+              One set of portions, fitted to every kind of day at once
+            </p>
           </div>
           <button className="btn btn-sm btn-quiet px-2.5" onClick={onClose} aria-label="Close">
             ✕
           </button>
         </div>
 
-        {/* What matters most */}
-        <div className="px-5">
-          <Segmented
-            size="sm"
-            value={mode}
-            onChange={(v) => setMode(v)}
-            options={MODES.map((m) => ({ value: m.value, label: m.label, hint: m.blurb }))}
+        {/* Headline: does the week work? */}
+        <div className="mx-5 mt-1 flex items-baseline gap-3 rounded-xl bg-[#0e1013] px-4 py-3">
+          <span className="label mr-auto">Week average</span>
+          <span className="num text-2xl" style={{ color: MACRO_COLOR.kcal }}>
+            {Math.round(result.weekly.after.kcal).toLocaleString()}
+          </span>
+          <Delta
+            value={result.weekly.after.kcal - result.weekly.target.kcal}
+            tol={Math.max(20, result.weekly.target.kcal * 0.01)}
           />
-          <p className="mt-2 text-xs text-[var(--color-mut)]">
-            {MODES.find((m) => m.value === mode)?.blurb}
-          </p>
         </div>
-
-        {/* Result */}
-        <div className="mt-4 grid grid-cols-2 gap-2 px-5 sm:grid-cols-4">
-          {KEYS.map((k) => {
-            const after = result.after[k];
-            const t = target[k];
-            const hit = result.hit[k];
-            const delta = Math.round(after - t);
-            return (
-              <div key={k} className="sunk px-3 py-3">
-                <p className="label">{MACRO_LABEL[k]}</p>
-                <p className="num mt-1.5 text-2xl" style={{ color: MACRO_COLOR[k] }}>
-                  {Math.round(after)}
-                </p>
-                <p className="mt-1 text-xs tabular-nums text-[var(--color-mut)]">
-                  was {Math.round(result.before[k])}
-                  {!hit && (
-                    <span style={{ color: "var(--color-carbs)" }}>
-                      {" · "}
-                      {delta >= 0 ? "+" : ""}
-                      {delta}
-                    </span>
-                  )}
-                  {hit && <span style={{ color: "var(--color-accent)" }}> · on target</span>}
-                </p>
-              </div>
-            );
-          })}
-        </div>
-
-        {target.fibre > 0 && (
-          <p className="mx-5 mt-2 text-xs text-[var(--color-mut)]">
-            Fibre{" "}
-            <b style={{ color: MACRO_COLOR.fibre }}>{Math.round(result.after.fibre)} g</b> of{" "}
-            {Math.round(target.fibre)} g
-          </p>
-        )}
-
-        {/* Why it couldn't close, and what to do about it */}
-        {missed.length > 0 && (
-          <div className="mx-5 mt-3 rounded-xl bg-[#2a2416] px-3.5 py-3 text-xs text-[#ffd08a]">
-            <p>
-              {missed.map((k) => MACRO_LABEL[k].toLowerCase()).join(", ")}{" "}
-              {missed.length === 1 ? "is" : "are"} still off.
-              {result.unreachable.length > 0
-                ? " Your limits can't reach it at all — even at every maximum."
-                : " The limits are holding it back."}
-            </p>
-            {result.suggestions.length > 0 && (
-              <div className="mt-2.5 flex flex-wrap gap-1.5">
-                {result.suggestions.map((s, i) => (
-                  <button
-                    key={i}
-                    className="btn btn-sm"
-                    onClick={() => applySuggestion(s)}
-                    title={`Would close ${Math.round(s.closes)} ${s.key === "kcal" ? "kcal" : "g"}`}
-                  >
-                    {s.direction === "up" ? "Allow up to" : "Allow down to"} {s.to} g of{" "}
-                    {s.name.toLowerCase()}
-                  </button>
-                ))}
-              </div>
-            )}
-          </div>
-        )}
 
         {/* Tabs */}
-        <div className="mt-4 flex gap-1 px-5">
+        <div className="mt-4 flex flex-wrap gap-1 px-5 pb-1">
           {(
             [
+              ["days", "Every day"],
+              ["splits", groups.length ? "Splits" : ""],
               ["portions", "Portions"],
               ["prep", "Meal prep"],
             ] as const
-          ).map(([id, label]) => (
-            <button
-              key={id}
-              onClick={() => setTab(id)}
-              className={tab === id ? "btn btn-sm btn-accent" : "btn btn-sm btn-quiet"}
-            >
-              {label}
-            </button>
-          ))}
-          {tab === "portions" && (
-            <button className="btn btn-sm btn-quiet ml-auto" onClick={resetBounds}>
-              Reset limits
-            </button>
-          )}
+          )
+            .filter(([, label]) => label)
+            .map(([id, label]) => (
+              <button
+                key={id}
+                onClick={() => setTab(id)}
+                className={tab === id ? "btn btn-sm btn-accent" : "btn btn-sm btn-quiet"}
+              >
+                {label}
+              </button>
+            ))}
         </div>
 
         {/* Body */}
         <div className="mt-3 min-h-0 flex-1 overflow-y-auto px-5 pb-1">
-          {tab === "portions" ? (
-            draft.map((meal) => {
-              const rows = slots
-                .map((slot, gi) => ({ slot, gi }))
-                .filter(({ slot }) => slot.mealId === meal.id);
-              if (!rows.length) return null;
+          {tab === "days" && (
+            <div className="space-y-2 pb-2">
+              {live.map((d) => (
+                <DayCard key={d.id} day={d} />
+              ))}
 
-              return (
-                <div key={meal.id} className="mb-5 last:mb-0">
-                  <p className="label mb-2">
-                    {meal.name}
-                    {meal.batch && (
-                      <span className="ml-2 normal-case tracking-normal text-[#5b6270]">
-                        cooked ahead · served by weight
-                      </span>
-                    )}
+              {unused.length > 0 && (
+                <p className="pt-1 text-xs leading-relaxed text-[var(--color-mut)]">
+                  {unused.map((d) => d.name).join(", ")}{" "}
+                  {unused.length === 1 ? "isn't" : "aren't"} on any weekday, so{" "}
+                  {unused.length === 1 ? "it wasn't" : "they weren't"} fitted. Put{" "}
+                  {unused.length === 1 ? "it" : "one"} in your week on the Plan page if you want the
+                  portions to allow for {unused.length === 1 ? "it" : "them"}.
+                </p>
+              )}
+
+              {offDays.length > 0 && result.suggestions.length > 0 && (
+                <div className="mt-3 rounded-xl bg-[#2a2416] px-3.5 py-3 text-xs text-[#ffd08a]">
+                  <p className="leading-relaxed">
+                    The portion limits are what&rsquo;s holding{" "}
+                    {offDays.map((d) => d.name.toLowerCase()).join(" and ")} back. Any of these
+                    would help:
                   </p>
-                  <div className="space-y-1.5">
-                    {rows.map(({ slot, gi }) =>
-                      slot.kind === "batch" ? (
-                        <BatchRow
-                          key="batch"
-                          meal={meal}
-                          item={flatItems[gi]}
-                          to={result.grams[gi]}
-                          binding={result.binding.includes(gi)}
-                          onScaleBand={(lo, hi) =>
-                            setDraft((ms) =>
-                              ms.map((m) =>
-                                m.id !== meal.id
-                                  ? m
-                                  : {
-                                      ...m,
-                                      ingredients: m.ingredients.map((it) => ({
-                                        ...it,
-                                        min_grams: Math.round((Number(it.grams) || 0) * lo),
-                                        max_grams: Math.round((Number(it.grams) || 0) * hi),
-                                      })),
-                                    }
-                              )
-                            )
-                          }
-                          onLock={(locked) =>
-                            setDraft((ms) =>
-                              ms.map((m) =>
-                                m.id !== meal.id
-                                  ? m
-                                  : {
-                                      ...m,
-                                      ingredients: m.ingredients.map((it) => ({ ...it, locked })),
-                                    }
-                              )
-                            )
-                          }
-                        />
-                      ) : (
-                        <PortionRow
-                          key={slot.index}
-                          it={meal.ingredients[slot.index]}
-                          from={Number(meal.ingredients[slot.index]?.grams ?? 0)}
-                          to={result.grams[gi]}
-                          binding={result.binding.includes(gi)}
-                          onPatch={(p) => patch(meal.id, slot.index, p)}
-                          onRemove={() =>
-                            setDraft((ms) =>
-                              ms.map((m) =>
-                                m.id !== meal.id
-                                  ? m
-                                  : {
-                                      ...m,
-                                      ingredients: m.ingredients.filter(
-                                        (_, j) => j !== slot.index
-                                      ),
-                                    }
-                              )
-                            )
-                          }
-                        />
-                      )
-                    )}
+                  <div className="mt-2.5 flex flex-wrap gap-1.5">
+                    {result.suggestions.map((s, i) => (
+                      <button key={i} className="btn btn-sm" onClick={() => applySuggestion(s)}>
+                        {s.direction === "up" ? "Allow up to" : "Allow down to"} {s.to} g of{" "}
+                        {s.name.toLowerCase()}
+                      </button>
+                    ))}
                   </div>
                 </div>
-              );
-            })
-          ) : (
-            <PrepGuide
-              volume={volume}
-              fillers={fillers}
-              meals={draft}
-              onAdd={addFiller}
-            />
+              )}
+
+              <div className="pt-2">
+                <p className="label mb-2">What matters most</p>
+                <Segmented
+                  size="sm"
+                  value={mode}
+                  onChange={(v) => setMode(v)}
+                  options={MODES.map((m) => ({ value: m.value, label: m.label, hint: m.blurb }))}
+                />
+                <p className="mt-2 text-xs text-[var(--color-mut)]">
+                  {MODES.find((m) => m.value === mode)?.blurb}
+                </p>
+              </div>
+            </div>
+          )}
+
+          {tab === "splits" && (
+            <div className="space-y-4 pb-2">
+              <p className="text-xs leading-relaxed text-[var(--color-mut)]">
+                These meals come and go together, so the fit knows what they add up to but not how
+                to divide them. Say what you want and it will hold that split.
+              </p>
+              {groups.map((g) => (
+                <div key={g.key} className="sunk px-4 py-3.5">
+                  {/* Sentence case, not the uppercase label style — a list of
+                      three day-type names in caps is a wall, not a heading. */}
+                  <p className="text-xs font-semibold text-[var(--color-mut)]">
+                    {g.dayTypeIds
+                      ? `Only on ${dayList(g.dayTypeIds, result.days)} days`
+                      : "Eaten every day"}
+                  </p>
+                  <div className="mt-3 space-y-2.5">
+                    {g.meals.map((m) => {
+                      const out = result.shares.find((s) => s.mealId === m.id);
+                      const draftMeal = draft.find((d) => d.id === m.id);
+                      return (
+                        <div key={m.id}>
+                          <div className="flex flex-wrap items-center gap-2">
+                            <span className="mr-auto min-w-0 basis-24 truncate text-sm font-medium">
+                              {m.name}
+                            </span>
+                            <input
+                              type="number"
+                              inputMode="numeric"
+                              min={0}
+                              max={100}
+                              placeholder="auto"
+                              aria-label={`${m.name} share of the group, per cent`}
+                              className="field w-[4.6rem] px-2 py-1.5 text-right text-sm"
+                              value={draftMeal?.share_pct ?? ""}
+                              onChange={(e) =>
+                                patchMeal(m.id, {
+                                  share_pct:
+                                    e.target.value === "" ? null : Number(e.target.value),
+                                })
+                              }
+                            />
+                            <span className="text-xs text-[var(--color-mut)]">%</span>
+                            <span className="shrink-0 text-[#454b57]">→</span>
+                            <span
+                              className="num w-12 shrink-0 text-right text-sm"
+                              title="What it actually came out as"
+                              style={{
+                                color: out?.blocked ? "var(--color-carbs)" : "var(--color-accent)",
+                              }}
+                            >
+                              {Math.round((splitOf.get(m.id) ?? 0) * 100)}%
+                            </span>
+                          </div>
+                          {out?.blocked && (
+                            <button
+                              className="mt-1.5 text-left text-[0.7rem] leading-relaxed text-[#ffd08a] underline decoration-dotted"
+                              onClick={() => unblockShare(out)}
+                            >
+                              Held at its {out.blocked === "min" ? "smallest" : "largest"} allowed
+                              size — tap to allow {out.suggestGrams} g and reach{" "}
+                              {Math.round(out.want * 100)}%
+                            </button>
+                          )}
+                        </div>
+                      );
+                    })}
+                  </div>
+                  <p className="mt-2.5 text-[0.7rem] text-[var(--color-mut)]">
+                    Leave a box empty to let the fit decide that one.
+                  </p>
+                </div>
+              ))}
+            </div>
+          )}
+
+          {tab === "portions" && (
+            <div className="pb-2">
+              <div className="mb-3 flex items-center gap-2">
+                <p className="mr-auto text-xs leading-relaxed text-[var(--color-mut)]">
+                  Each portion is the same every day. Lock one to pin it.
+                </p>
+                <button className="btn btn-sm btn-quiet shrink-0" onClick={resetBounds}>
+                  Reset limits
+                </button>
+              </div>
+              {draft.map((meal) => {
+                const rows = result.fit.slots
+                  .map((slot, gi) => ({ slot, gi }))
+                  .filter(({ slot }) => slot.mealId === meal.id);
+                if (!rows.length) return null;
+                const on = meal.day_type_ids?.length
+                  ? meal.day_type_ids
+                      .map((id) => result.days.find((d) => d.id === id)?.name ?? "")
+                      .filter(Boolean)
+                  : null;
+
+                return (
+                  <div key={meal.id} className="mb-5 last:mb-0">
+                    <p className="label mb-2">
+                      {meal.name}
+                      <span className="ml-2 normal-case tracking-normal text-[#5b6270]">
+                        {on ? on.join(", ").toLowerCase() : "every day"}
+                        {repsOf(meal) > 1 ? ` · ${repsOf(meal)}× a day` : ""}
+                        {meal.batch ? " · cooked ahead" : ""}
+                      </span>
+                    </p>
+                    <div className="space-y-1.5">
+                      {rows.map(({ slot, gi }) =>
+                        slot.kind === "batch" ? (
+                          <BatchRow
+                            key="batch"
+                            meal={meal}
+                            item={result.fit.items[gi]}
+                            to={result.grams[gi]}
+                            binding={result.binding.includes(gi)}
+                            onScaleBand={(lo, hi) => scaleBand(meal.id, lo, hi)}
+                            onLock={(locked) =>
+                              setDraft((ms) =>
+                                ms.map((m) =>
+                                  m.id !== meal.id
+                                    ? m
+                                    : {
+                                        ...m,
+                                        ingredients: m.ingredients.map((it) => ({ ...it, locked })),
+                                      }
+                                )
+                              )
+                            }
+                          />
+                        ) : (
+                          <PortionRow
+                            key={slot.index}
+                            it={meal.ingredients[slot.index]}
+                            from={Number(meal.ingredients[slot.index]?.grams ?? 0)}
+                            to={result.grams[gi]}
+                            binding={result.binding.includes(gi)}
+                            onPatch={(p) => patchItem(meal.id, slot.index, p)}
+                            onRemove={() =>
+                              setDraft((ms) =>
+                                ms.map((m) =>
+                                  m.id !== meal.id
+                                    ? m
+                                    : {
+                                        ...m,
+                                        ingredients: m.ingredients.filter(
+                                          (_, j) => j !== slot.index
+                                        ),
+                                      }
+                                )
+                              )
+                            }
+                          />
+                        )
+                      )}
+                    </div>
+                  </div>
+                );
+              })}
+            </div>
+          )}
+
+          {tab === "prep" && (
+            <PrepGuide volume={volume} fillers={fillers} meals={draft} onAdd={addFiller} />
           )}
         </div>
 
         {/* Footer */}
-        <div className="flex gap-2 border-t border-[#1c1f25] px-5 pb-5 pt-4">
+        <div className="safe-b flex gap-2 border-t border-[#1c1f25] px-5 pt-4">
           <button className="btn flex-1" onClick={onClose}>
             Cancel
           </button>
@@ -394,6 +507,78 @@ export function RecalculateDialog({
 }
 
 /* -------------------------------------------------------------------- */
+
+/** "swim only and swim + gym" — a list a person would say out loud. */
+function dayList(ids: number[], days: { id: number; name: string }[]): string {
+  const names = ids
+    .map((id) => days.find((d) => d.id === id)?.name.toLowerCase() ?? "")
+    .filter(Boolean);
+  if (names.length <= 1) return names[0] ?? "these";
+  return `${names.slice(0, -1).join(", ")} and ${names[names.length - 1]}`;
+}
+
+/**
+ * How far off, and whether to care.
+ *
+ * The figure is always shown. Replacing it with the word "on target" inside
+ * the tolerance looked tidier and threw away the thing you came to read —
+ * being 8 kcal out and being 60 kcal out are both fine, and they are not the
+ * same. The colour carries the verdict; the number carries the fact.
+ */
+function Delta({ value, tol }: { value: number; tol: number }) {
+  const ok = Math.abs(value) <= tol;
+  const v = Math.round(value);
+  return (
+    <span
+      className="w-16 shrink-0 text-right text-sm font-bold tabular-nums"
+      style={{ color: ok ? "var(--color-accent)" : "var(--color-carbs)" }}
+      title={ok ? "Within a fifty-per-cent-of-nothing tolerance — this is fine" : "Off target"}
+    >
+      {v >= 0 ? "+" : ""}
+      {v}
+    </span>
+  );
+}
+
+/**
+ * One kind of day: what it should be, what it will be, and by how much it
+ * misses. The calorie line leads because that is the one that decides the
+ * outcome; the macros sit underneath for when you want them.
+ */
+function DayCard({ day }: { day: DayResult }) {
+  return (
+    <div className="sunk px-4 py-3">
+      <div className="flex items-baseline gap-2">
+        <span className="mr-auto text-sm font-semibold">{day.name}</span>
+        <span className="text-[0.7rem] text-[var(--color-mut)]">
+          {day.weight} {day.weight === 1 ? "day" : "days"} a week
+        </span>
+      </div>
+
+      <div className="mt-1.5 flex items-baseline gap-2">
+        <span className="num text-xl" style={{ color: MACRO_COLOR.kcal }}>
+          {Math.round(day.after.kcal).toLocaleString()}
+        </span>
+        <span className="text-xs text-[var(--color-mut)]">
+          of {Math.round(day.target.kcal).toLocaleString()} kcal
+        </span>
+        <span className="ml-auto">
+          <Delta value={day.residual.kcal} tol={Math.max(2, day.target.kcal * 0.02)} />
+        </span>
+      </div>
+
+      <div className="scroll-x mt-2 flex gap-x-4 text-[0.7rem] tabular-nums">
+        {(["protein", "carbs", "fat"] as const).map((k) => (
+          <span key={k} className="whitespace-nowrap">
+            <span style={{ color: MACRO_COLOR[k] }}>{MACRO_LABEL[k]}</span>{" "}
+            <b>{Math.round(day.after[k])}</b>
+            <span className="text-[var(--color-mut)]">/{Math.round(day.target[k])}</span>
+          </span>
+        ))}
+      </div>
+    </div>
+  );
+}
 
 /**
  * A cooked batch, as one row.
@@ -411,7 +596,7 @@ function BatchRow({
   onScaleBand,
   onLock,
 }: {
-  meal: Meal;
+  meal: PlanMeal;
   item: BoundedItem;
   to: number;
   binding: boolean;
@@ -420,71 +605,27 @@ function BatchRow({
 }) {
   const from = servingGrams(meal);
   const scale = from > 0 ? to / from : 1;
-  const delta = to - from;
   const b = boundsFor(item);
   const locked = meal.ingredients.every((i) => i.locked);
 
   return (
     <div className="sunk px-3 py-2.5">
-      <div className="flex flex-wrap items-center gap-2">
-        <button
-          title={locked ? "Locked — this serving won't move" : "Lock this serving"}
-          onClick={() => onLock(!locked)}
-          className="shrink-0 rounded-lg p-1 transition hover:bg-white/5"
-          style={{ color: locked ? "var(--color-accent)" : "#454b57" }}
-        >
-          <LockIcon open={!locked} />
-        </button>
+      <div className="flex items-center gap-2">
+        <LockButton locked={locked} onClick={() => onLock(!locked)} />
+        <span className="min-w-0 flex-1 truncate text-sm font-medium">Serving from the batch</span>
+        <Change from={from} to={to} />
+      </div>
 
-        <span className="min-w-0 flex-1 basis-[7rem] truncate text-sm font-medium">
-          Serving from the batch
-        </span>
-
-        <span className="num ml-auto text-sm text-[#545b68]">{Math.round(from)}</span>
-        <span className="text-[#454b57]">→</span>
-        <span
-          className="num w-16 text-right text-sm"
-          style={{
-            color:
-              Math.abs(delta) < 0.5
-                ? "var(--color-mut)"
-                : delta > 0
-                  ? "var(--color-accent)"
-                  : "var(--color-fat)",
-          }}
-        >
-          {Math.round(to)}g
-        </span>
-
-        <span className="flex shrink-0 items-center gap-1">
-          <input
-            type="number"
-            title="Smallest serving you'd accept"
-            className="field w-[4.4rem] px-1.5 py-1 text-right text-xs"
-            value={Math.round(b.min)}
-            disabled={locked}
-            onChange={(e) =>
-              onScaleBand(
-                from > 0 ? Math.max(0.1, Number(e.target.value) / from) : 0.75,
-                from > 0 ? b.max / from : 1.35
-              )
-            }
-          />
-          <span className="text-xs text-[#454b57]">–</span>
-          <input
-            type="number"
-            title="Largest serving you'd accept"
-            className="field w-[4.4rem] px-1.5 py-1 text-right text-xs"
-            value={Math.round(b.max)}
-            disabled={locked}
-            onChange={(e) =>
-              onScaleBand(
-                from > 0 ? b.min / from : 0.75,
-                from > 0 ? Math.max(0.1, Number(e.target.value) / from) : 1.35
-              )
-            }
-          />
-        </span>
+      <div className="mt-2 flex items-center gap-2 pl-8">
+        <span className="text-[0.68rem] text-[#5b6270]">between</span>
+        <Limits
+          min={Math.round(b.min)}
+          max={Math.round(b.max)}
+          disabled={locked}
+          onMin={(v) => onScaleBand(from > 0 ? Math.max(0.1, v / from) : 0.75, from > 0 ? b.max / from : 1.35)}
+          onMax={(v) => onScaleBand(from > 0 ? b.min / from : 0.75, from > 0 ? Math.max(0.1, v / from) : 1.35)}
+        />
+        <span className="text-[0.68rem] text-[#5b6270]">g</span>
       </div>
 
       <div className="mt-1.5 flex flex-wrap items-center gap-x-3 gap-y-1 pl-8 text-[0.68rem] text-[#5b6270]">
@@ -519,66 +660,38 @@ function PortionRow({
   const unit = unitOf(it);
   const smart = smartBounds(it.name, from, it);
   const custom = it.min_grams != null || it.max_grams != null;
-  const delta = to - from;
 
   return (
     <div className="sunk px-3 py-2">
-      <div className="flex flex-wrap items-center gap-2">
-        <button
-          title={it.locked ? "Locked — this portion won't move" : "Lock this portion"}
-          onClick={() => onPatch({ locked: !it.locked })}
-          className="shrink-0 rounded-lg p-1 transition hover:bg-white/5"
-          style={{ color: it.locked ? "var(--color-accent)" : "#454b57" }}
-        >
-          <LockIcon open={!it.locked} />
-        </button>
-
+      {/* What it is, and what it becomes */}
+      <div className="flex items-center gap-2">
+        <LockButton locked={!!it.locked} onClick={() => onPatch({ locked: !it.locked })} />
         <span
-          className="min-w-0 flex-1 basis-[8rem] truncate text-sm font-medium"
+          className="min-w-0 flex-1 truncate text-sm font-medium"
           style={it.locked ? { color: "var(--color-mut)" } : undefined}
         >
           {it.name}
         </span>
+        <Change from={from} to={to} />
+      </div>
 
-        <span className="num ml-auto text-sm text-[#545b68]">{Math.round(from)}</span>
-        <span className="text-[#454b57]">→</span>
-        <span
-          className="num w-14 text-right text-sm"
-          style={{
-            color:
-              Math.abs(delta) < 0.5
-                ? "var(--color-mut)"
-                : delta > 0
-                  ? "var(--color-accent)"
-                  : "var(--color-fat)",
-          }}
-        >
-          {Math.round(to)}g
-        </span>
-
-        <span className="flex shrink-0 items-center gap-1">
-          <input
-            type="number"
-            title="Smallest portion you'd accept"
-            className="field w-[3.9rem] px-1.5 py-1 text-right text-xs"
-            value={it.min_grams ?? Math.round(b.min)}
-            disabled={it.locked}
-            onChange={(e) => onPatch({ min_grams: Number(e.target.value) })}
-          />
-          <span className="text-xs text-[#454b57]">–</span>
-          <input
-            type="number"
-            title="Largest portion you'd accept"
-            className="field w-[3.9rem] px-1.5 py-1 text-right text-xs"
-            value={it.max_grams ?? Math.round(b.max)}
-            disabled={it.locked}
-            onChange={(e) => onPatch({ max_grams: Number(e.target.value) })}
-          />
-        </span>
-
+      {/* The band it may move in. Its own line: the boxes are 16px on a phone
+          because anything smaller makes iOS zoom the page, and three controls
+          at that size do not share a line with a name and two figures. */}
+      <div className="mt-2 flex items-center gap-2 pl-8">
+        <span className="text-[0.68rem] text-[#5b6270]">between</span>
+        <Limits
+          min={it.min_grams ?? Math.round(b.min)}
+          max={it.max_grams ?? Math.round(b.max)}
+          disabled={!!it.locked}
+          onMin={(v) => onPatch({ min_grams: v })}
+          onMax={(v) => onPatch({ max_grams: v })}
+        />
+        <span className="text-[0.68rem] text-[#5b6270]">g</span>
         <button
-          className="px-1 text-[#4a505c] transition hover:text-[var(--color-fat)]"
+          className="ml-auto px-1 text-[#4a505c] transition hover:text-[var(--color-fat)]"
           title="Take this out of the plan"
+          aria-label={`Remove ${it.name}`}
           onClick={onRemove}
         >
           ✕
@@ -594,14 +707,8 @@ function PortionRow({
             {to / unit.grams === 1 ? "" : "s"} · whole units only
           </span>
         )}
-        {smart.profile.rawToCooked !== 1 && (
-          <span>
-            ≈ {Math.round(to * smart.profile.rawToCooked)} g cooked
-          </span>
-        )}
-        {binding && !it.locked && (
-          <span style={{ color: "var(--color-carbs)" }}>at its limit</span>
-        )}
+        {smart.profile.rawToCooked !== 1 && <span>≈ {Math.round(to * smart.profile.rawToCooked)} g cooked</span>}
+        {binding && !it.locked && <span style={{ color: "var(--color-carbs)" }}>at its limit</span>}
         {custom && !it.locked && (
           <button
             className="underline decoration-dotted"
@@ -615,6 +722,86 @@ function PortionRow({
   );
 }
 
+/** Old amount, arrow, new amount — coloured by which way it went. */
+function Change({ from, to }: { from: number; to: number }) {
+  const delta = to - from;
+  return (
+    <span className="ml-auto flex items-center gap-1.5">
+      <span className="num text-sm text-[#545b68]">{Math.round(from)}</span>
+      <span className="text-[#454b57]">→</span>
+      <span
+        className="num w-14 text-right text-sm"
+        style={{
+          color:
+            Math.abs(delta) < 0.5
+              ? "var(--color-mut)"
+              : delta > 0
+                ? "var(--color-accent)"
+                : "var(--color-fat)",
+        }}
+      >
+        {Math.round(to)}g
+      </span>
+    </span>
+  );
+}
+
+/** The band a portion may move in. Two boxes, wide enough for four digits. */
+function Limits({
+  min,
+  max,
+  disabled,
+  onMin,
+  onMax,
+}: {
+  min: number;
+  max: number;
+  disabled: boolean;
+  onMin: (v: number) => void;
+  onMax: (v: number) => void;
+}) {
+  return (
+    <span className="flex shrink-0 items-center gap-1">
+      <input
+        type="number"
+        inputMode="numeric"
+        aria-label="Smallest portion you would accept"
+        title="Smallest portion you'd accept"
+        className="field w-[4.2rem] px-2 py-1 text-right text-xs"
+        value={min}
+        disabled={disabled}
+        onChange={(e) => onMin(Number(e.target.value))}
+      />
+      <span className="text-xs text-[#454b57]">–</span>
+      <input
+        type="number"
+        inputMode="numeric"
+        aria-label="Largest portion you would accept"
+        title="Largest portion you'd accept"
+        className="field w-[4.2rem] px-2 py-1 text-right text-xs"
+        value={max}
+        disabled={disabled}
+        onChange={(e) => onMax(Number(e.target.value))}
+      />
+    </span>
+  );
+}
+
+function LockButton({ locked, onClick }: { locked: boolean; onClick: () => void }) {
+  return (
+    <button
+      title={locked ? "Locked — this portion won't move" : "Lock this portion"}
+      aria-label={locked ? "Unlock this portion" : "Lock this portion"}
+      aria-pressed={locked}
+      onClick={onClick}
+      className="shrink-0 rounded-lg p-1.5 transition hover:bg-white/5"
+      style={{ color: locked ? "var(--color-accent)" : "#454b57" }}
+    >
+      <LockIcon open={!locked} />
+    </button>
+  );
+}
+
 function PrepGuide({
   volume,
   fillers,
@@ -623,7 +810,7 @@ function PrepGuide({
 }: {
   volume: ReturnType<typeof dayVolume>;
   fillers: ReturnType<typeof fillerSuggestions>;
-  meals: Meal[];
+  meals: PlanMeal[];
   onAdd: (name: string, grams: number, mealId: number) => void;
 }) {
   const [mealId, setMealId] = useState<number>(meals[0]?.id ?? 0);
@@ -635,14 +822,14 @@ function PrepGuide({
         <p className="mt-2 text-sm leading-relaxed">{volumeHeadline(volume)}</p>
         <p className="mt-2 text-xs leading-relaxed text-[var(--color-mut)]">
           Energy density is the number that decides whether a day fills you up. Under about
-          150 kcal per 100 g you'll finish the day full; over 250 and you'll be hungry on the
-          same calories.
+          150 kcal per 100 g you&rsquo;ll finish the day full; over 250 and you&rsquo;ll be hungry
+          on the same calories.
         </p>
       </div>
 
       {volume.meals.map((m) => (
         <div key={m.name} className="sunk px-4 py-3">
-          <div className="flex items-baseline gap-2">
+          <div className="flex flex-wrap items-baseline gap-2">
             <p className="mr-auto text-sm font-semibold">{m.name}</p>
             <span className="num text-sm" style={{ color: "var(--color-accent)" }}>
               {Math.round(m.cookedGrams)} g
@@ -668,12 +855,13 @@ function PrepGuide({
         <div className="sunk px-4 py-3.5">
           <p className="label">Calories spare</p>
           <p className="mt-2 text-xs leading-relaxed text-[var(--color-mut)]">
-            There's room left in the day. These add the most food for the fewest calories — pick a
-            meal and add one, and the fit will re-run around it.
+            There&rsquo;s room left in the average day. These add the most food for the fewest
+            calories — pick a meal and add one, and the fit will re-run around it.
           </p>
           <div className="mt-3">
             <select
               className="field w-full text-sm"
+              aria-label="Which meal to add it to"
               value={mealId}
               onChange={(e) => setMealId(Number(e.target.value))}
             >
@@ -686,7 +874,7 @@ function PrepGuide({
           </div>
           <div className="mt-2 space-y-1.5">
             {fillers.map((f) => (
-              <div key={f.name} className="flex items-center gap-2">
+              <div key={f.name} className="flex flex-wrap items-center gap-2">
                 <span className="mr-auto text-sm">
                   {f.grams} g {f.name.toLowerCase()}
                 </span>

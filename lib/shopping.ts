@@ -7,10 +7,10 @@
  *
  * Three things make the difference between a sum and a usable list:
  *
- *  - **Day types matter.** If the week is cycled, a double day needs more food
- *    than a rest day, so the window is walked day by day and each day is
- *    scaled by that day's own calorie multiplier rather than assuming seven
- *    identical days.
+ *  - **Day types matter.** Not because the portions change — they don't, the
+ *    same containers come out of the same fridge — but because the *menu*
+ *    does. A meal limited to swim days is bought for the swim days in the
+ *    window and no others, so five bagels across a week rather than seven.
  *  - **You buy packets, not grams.** 1,340 g of chicken is three 500 g packs.
  *    The list rounds up to real pack sizes and tells you the leftover, and
  *    counts unit foods (eggs, wraps, bagels) in units.
@@ -109,7 +109,7 @@ export function appliesOn(meal: PlanMeal, dayTypeId: number, total: number): boo
 
 /**
  * Walk the window one day at a time and total up every gram of every
- * ingredient, scaled by that day's calorie multiplier.
+ * ingredient that is on that day's menu.
  */
 export function buildShoppingList(
   meals: PlanMeal[],
@@ -163,7 +163,6 @@ export function buildShoppingList(
     const date = addDays(startDay, d);
     const id = dayTypeIdFor(plan, date);
     dayTypeCounts[id] = (dayTypeCounts[id] ?? 0) + 1;
-    const k = 1;
 
     for (const meal of meals) {
       if (!appliesOn(meal, id, typeCount)) continue;
@@ -171,7 +170,7 @@ export function buildShoppingList(
       if (reps === 0) continue;
 
       for (const it of meal.ingredients) {
-        const grams = (Number(it.grams) || 0) * reps * k;
+        const grams = (Number(it.grams) || 0) * reps;
         if (grams <= 0) continue;
         const key = shoppingKey(it.name);
         const cur = acc.get(key);
@@ -277,7 +276,7 @@ export function buildShoppingList(
       `This list buys the plan exactly as written, and the plan is off target on ${scope} — ` +
         `worst is ${worst.name.toLowerCase()}, ${Math.abs(gap).toLocaleString()} kcal ` +
         `${gap > 0 ? "over" : "under"} (${worst.planned.toLocaleString()} vs ${worst.target.toLocaleString()}). ` +
-        `Balance the portions on the Plan page first, or add a meal that only appears on those days.`
+        `Rebalance the week on the Plan page first, or add a meal that only appears on those days.`
     );
   }
   const fresh = lines.filter((l) => l.trips > 1);

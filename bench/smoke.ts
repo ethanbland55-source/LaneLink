@@ -54,7 +54,7 @@ for (const id of plan.order) {
   const t = targetsFor(plan, id);
   console.log(
     `${t.name.padEnd(13)} cost ${String(t.cost).padStart(4)}  training ${String(t.sessionKcal).padStart(4)}  ` +
-      `-> ${String(t.kcal).padStart(4)} kcal  P${t.protein} C${t.carbs} F${t.fat} fibre ${t.fibre}`
+      `-> ${String(t.kcal).padStart(4)} kcal  P${t.protein} C${t.carbs} F${t.fat}`
   );
 }
 

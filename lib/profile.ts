@@ -90,7 +90,6 @@ export function normaliseProfile(p: any): Profile {
     calibrated_tdee: optionalNum(p?.calibrated_tdee),
     use_calibration: p?.use_calibration === undefined ? false : !!p.use_calibration,
     calorie_override: optionalNum(p?.calorie_override),
-    fibre_per_1000: num(p?.fibre_per_1000, 14),
     carb_floor_per_kg: num(p?.carb_floor_per_kg, 1),
     cycling: p?.cycling === undefined ? true : !!p.cycling,
     week: normaliseWeek(p?.week_ids ?? p?.week),
