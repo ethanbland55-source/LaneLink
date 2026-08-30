@@ -38,6 +38,14 @@ create table if not exists profile (
   week_ids          jsonb,                           -- {"mon": 3, "tue": 4, ...} -> day_types.id
   shop_days         int     not null default 7,      -- days of food per shop
   shop_start_dow    int     not null default 6,      -- 0 = Sunday … 6 = Saturday
+  -- The figures this week's targets are built on, snapshotted on shopping day.
+  -- Deliberately separate from weight_kg: the plan must not move under you
+  -- every time you stand on the scale, only once a week, so that what you buy
+  -- and what you eat agree all week. See lib/weekly.ts.
+  plan_weight_kg    numeric,
+  plan_bf_pct       numeric,
+  plan_updated_on   date,
+  auto_roll         boolean not null default true,
   updated_at        timestamptz not null default now(),
   constraint profile_singleton check (id = 1)
 );
@@ -105,6 +113,7 @@ create table if not exists log_entries (
   meal_name  text not null,
   day_type     text,                                 -- legacy
   day_type_id  int,
+  at_time      text,                                 -- 'HH:MM' it was eaten
   confirmed  boolean not null default false,
   kcal       numeric not null default 0,
   protein    numeric not null default 0,
@@ -131,7 +140,19 @@ create table if not exists weigh_ins (
   weight_kg  numeric,
   waist_cm   numeric,
   tag        text not null default 'morning',   -- morning | other | evening
+  at_time    text,                              -- 'HH:MM'; beats the tag when set
   note       text,
+  -- Measurements taken alongside, so body fat can trend rather than being a
+  -- figure typed in once months ago. Tape in cm, skinfolds in mm.
+  neck_cm       numeric,
+  hip_cm        numeric,
+  sf_chest      numeric,
+  sf_abdomen    numeric,
+  sf_thigh      numeric,
+  sf_tricep     numeric,
+  sf_suprailiac numeric,
+  bf_pct        numeric,                        -- worked out on write
+  bf_method     text,                           -- tape | skinfold | manual
   created_at timestamptz not null default now()
 );
 

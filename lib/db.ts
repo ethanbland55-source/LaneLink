@@ -118,9 +118,20 @@ async function createSchema() {
   await sql`alter table profile add column if not exists use_calibration boolean not null default false`;
   await sql`alter table profile add column if not exists shop_days int not null default 7`;
   await sql`alter table profile add column if not exists shop_start_dow int not null default 6`;
+  // The figures this week's targets are built on, and when they were last
+  // rolled forward. Deliberately separate from weight_kg: the plan must not
+  // move under you every time you stand on the scale, only once a week on
+  // shopping day, so what you buy and what you eat agree all week.
+  await sql`alter table profile add column if not exists plan_weight_kg numeric`;
+  await sql`alter table profile add column if not exists plan_bf_pct numeric`;
+  await sql`alter table profile add column if not exists plan_updated_on date`;
+  await sql`alter table profile add column if not exists auto_roll boolean not null default true`;
 
   await sql`alter table log_entries add column if not exists day_type text`; // legacy
   await sql`alter table log_entries add column if not exists day_type_id int`;
+  // Clock time the meal was actually eaten, 'HH:MM'. Null on anything logged
+  // before the app asked, which is why nothing may assume it is there.
+  await sql`alter table log_entries add column if not exists at_time text`;
 
   // A day type is a name and a list of sessions. Everything else — which meals
   // appear, what the day costs, which weekdays use it — hangs off these rows.
@@ -154,6 +165,21 @@ async function createSchema() {
     created_at timestamptz not null default now()
   )`;
   await sql`alter table weigh_ins add column if not exists tag text not null default 'morning'`;
+  // The clock time you actually stood on the scale. Strictly better than the
+  // three-bucket tag it replaces — the correction can be a curve rather than
+  // a step — but the tag stays for readings taken before this existed.
+  await sql`alter table weigh_ins add column if not exists at_time text`;
+  // Measurements taken alongside the weigh-in, so body fat can trend rather
+  // than being a single figure typed in months ago.
+  await sql`alter table weigh_ins add column if not exists neck_cm numeric`;
+  await sql`alter table weigh_ins add column if not exists hip_cm numeric`;
+  await sql`alter table weigh_ins add column if not exists sf_chest numeric`;
+  await sql`alter table weigh_ins add column if not exists sf_abdomen numeric`;
+  await sql`alter table weigh_ins add column if not exists sf_thigh numeric`;
+  await sql`alter table weigh_ins add column if not exists sf_tricep numeric`;
+  await sql`alter table weigh_ins add column if not exists sf_suprailiac numeric`;
+  await sql`alter table weigh_ins add column if not exists bf_pct numeric`;
+  await sql`alter table weigh_ins add column if not exists bf_method text`;
 
   await sql`create table if not exists shop_checks (
     key text primary key,

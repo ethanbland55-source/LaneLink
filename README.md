@@ -11,9 +11,9 @@ Four screens:
   the week, and your meals: meals → ingredients → per-100g macros.
 - **`/shop` — Shopping list.** The plan played forward over however many days you buy
   for, totalled up, rounded to real pack sizes and grouped by aisle.
-- **`/progress` — Weight, waist and calibration.** The trend rather than the number,
-  what the two measurements say together, and what your own data says your
-  maintenance actually is.
+- **`/progress` — Weight, measurements and calibration.** Weigh in with the time you
+  did it, take a tape or caliper measurement and get a body fat figure out of it, see
+  the trend rather than the number, and roll the whole plan forward on shopping day.
 
 The logging day rolls over at **03:00 local time**, so a late-night meal still counts
 toward the day you'd call it.
@@ -162,62 +162,138 @@ can't reach a big day, the cook list tells you which day and by how much, and th
 the mechanism already there — a meal restricted to those day types, like a shake or a
 bagel, plated fresh.
 
-## Weight, waist and calibration
+## Weight, waist and body fat
 
-**Nothing here looks at today's weight.** A morning reading is mostly water, glycogen
-and last night's dinner; it moves ±1 kg for reasons that have nothing to do with fat.
-Everything works off an exponentially weighted trend line and its slope, which is the
-only part of the signal that means anything over a week.
+### Say what time you weighed
 
-**You don't have to weigh at the same time every day.** Time of day is *bias*, not
-noise — an evening reading is about a kilo heavier, every time, so averaging morning and
-evening readings together doesn't cancel out, it drags the line around according to when
-you happened to stand on the scale. Tag each reading and it's corrected to
-morning-equivalent before anything else touches it, using an offset the app measures
-from your own data once there are a few of each (it starts from a population default and
-switches over). In testing, a flat 78 kg with two evening weigh-ins a week reads as
-78.35 kg drifting up 0.04 kg/week if the tags are ignored, and 78.01 kg drifting
-0.00 kg/week once they're used.
+You are lightest first thing and gain roughly a kilo through the day as food
+and fluid arrive faster than they leave. None of it is fat, and all of it lands
+in the trend if nothing corrects for it.
 
-A single reading also can't drag the trend more than 1.5 kg, so a mistyped 87 for 78
-moves it by 0.09 kg rather than 9.
+So a weigh-in carries a **clock time**. That is strictly better than the three
+buckets it replaces, because 09:00 and 11:30 are both "morning" and are not the
+same reading. The correction is a rate per hour awake, flattening off once the
+day's food is in.
 
-**The waist is a weekly job, not a daily one.** Three points spread over ten days is
-enough for a slope, and the tape gets the same time-of-day correction as the scale.
+**The rate is measured on you.** Two readings a few days apart are the same
+real weight, so almost all of the difference between them is the difference in
+what time they were taken — divide one by the other and you have the rate, with
+the trend cancelled out rather than estimated. The median across every such
+pair is the robust version.
 
-**Waist matters more than weight in a recomp.** Weight is supposed to sit still — that
-*is* the objective — so the scale gives you no feedback for months while the tape does.
-The verdict on the Progress page reads them together: flat weight with the waist coming
-in is "working, don't let the scale talk you out of it"; losing more than 0.7% of
-bodyweight a week is flagged, because past there you're giving lean mass back and in a
-training block you'll feel it in the pool before you see it anywhere else.
+That estimator took two goes. Measuring later readings against a trend built
+from morning ones biases *low*, because a "morning" reading is already an hour
+into the rise. Choosing the rate that makes corrected readings sit tightest
+around their own trend is circular — the trend chases the correction — and
+biases *high*. Pairs avoid both.
 
-**Body fat, without knowing your body fat.** Lean-mass protein targets want a
-percentage and most people don't have one, so the app will estimate it from a tape using
-the US Navy circumference method — height, neck and waist. Neck is a one-off; the waist
-you're measuring anyway, so the estimate keeps itself current. It's worth ±3–4 points
-against a DEXA scan, but most of that error is a fixed offset for a given build, which
-makes the absolute number approximate and the *direction it moves* the part worth
-trusting. Don't read a rising lean-mass figure as muscle gained — a shrinking waist at
-the same weight will produce one whether or not any muscle appeared.
+On a synthetic subject genuinely flat at 78.00 kg, weighing at seven different
+times of day, true rise 100 g/hr (`bench/weekly.ts`):
 
-**Waist matters more than weight in a recomp.** Weight is supposed to sit still — that
-*is* the objective — so the scale gives you no feedback for months while the tape does.
-The verdict on the Progress page reads them together: flat weight with the waist coming
-in is "working, don't let the scale talk you out of it"; losing more than 0.7% of
-bodyweight a week is flagged, because past there you're giving lean mass back and in a
-training block you'll feel it in the pool before you see it anywhere else.
+```
+                      reads as        drifting
+with clock times      78.00 kg        0.000 kg/wk     learned 97 g/hr
+with tags only        78.18 kg        0.006 kg/wk
+ignoring the time     78.54 kg        0.025 kg/wk
+```
 
-**Then it calibrates.** What you ate, minus what your weight did, is what you burned.
-Given about two weeks of daily weigh-ins and confirmed food logs in the same window,
-the app backs out your real expenditure — `mean intake − trend slope × 7,700 kcal/kg` —
-and offers it in place of the formula. On synthetic data with realistic daily noise it
-recovers a known 3,050 kcal expenditure to within about 10 kcal (`bench/recomp.ts`).
+Half a kilo of phantom weight and a fake upward drift, removed by knowing what
+time it was.
+
+### Body fat, three ways
+
+Pick whichever suits what you own. All of it lives with the weigh-in, so the
+figure trends instead of being something you typed in once months ago.
+
+| | needs | accuracy |
+| --- | --- | --- |
+| **Tape measure** | neck, waist (hips for women) | ±3–4 points |
+| **Calipers** | three pinches | ±3 points, better on lean people |
+| **Type it in** | a DEXA or InBody scan | whatever the scan was |
+
+The tape is the US Navy circumference method; the calipers are Jackson–Pollock
+3-site converted with Siri. Each site says where to put the tape or the
+calipers and nothing more — consistency matters more than being exactly on the
+anatomical landmark, because a repeatable 2 mm error cancels out of every
+difference and a wandering one does not.
+
+Both are **attribution-blind**: they see a smaller waist or a thinner pinch and
+call all of it fat. Over a few weeks that is usually right. Over a few days it
+is mostly water. And most of the error against a scan is a fixed offset for
+your build, which is why the direction it moves is worth more than the number.
+
+## The weekly roll
+
+Your weight moves every day. **Your plan must not.**
+
+If targets tracked the scale, Tuesday's porridge would be a different size from
+Monday's for reasons that are mostly water, the shopping list would disagree
+with the plan it was built from by Wednesday, and the containers in the fridge
+would be wrong for the day they were opened.
+
+So the plan is built on a **snapshot**, taken once a week **on your shopping
+day**. Between rolls the numbers hold perfectly still: what you bought is what
+you cook is what you eat. On shopping day the trend weight and the latest body
+fat figure are read once, every target is rebuilt around them, and that is the
+week you then shop for.
+
+It reads the **trend**, not the scale — a single reading is noise, and the EWMA
+of the last fortnight is the number that means something. It won't run at all
+on fewer than three weigh-ins, because rebuilding a week's targets on one
+reading would be worse than leaving last week's alone.
+
+```
+  Sat  measure ──► corrected for the time ──► trend
+                                               │
+                                               ▼
+                                        roll the snapshot
+                                               │
+                          ┌────────────────────┼────────────────────┐
+                          ▼                    ▼                    ▼
+                    day-type targets    rebalance the week    shopping list
+  Sun–Fri  ............ all of it holds still ............
+```
+
+Happens by itself when you open the app on or after shopping day; there's a
+switch on Progress to do it by hand instead, and a line saying what the plan is
+built on and when it changes next.
+
+## Meal times
+
+Tapping a meal logs it now, which is what you want nine times in ten. The clock
+beside it is for the tenth, when you're catching up in the evening — and every
+logged meal shows its time inline, editable, because getting it wrong by an
+hour is common and re-logging the meal to fix it is not a reasonable thing to
+ask.
+
+What the times are actually *for*: the daily protein total is doing the work,
+and the spacing decides how much of that work lands. Muscle protein synthesis
+rises for about three hours after a dose that clears the threshold and then
+settles back whether or not more protein arrives — so four doses three to five
+hours apart raise it four times, and the same protein in two sittings raises it
+twice. Today tells you where the day's longest gap was, and whether the last
+real dose was close enough to sleep to shorten the overnight fast.
+
+It says nothing at all until you start logging times, which is the honest limit
+of it.
+
+## Calibration — what your maintenance actually is
+
+**What you ate, minus what your weight did, is what you burned.** Given about two
+weeks of daily weigh-ins and confirmed food logs in the same window, the app backs out
+your real expenditure — `mean intake − trend slope × 7,700 kcal/kg` — and offers it in
+place of the formula. On synthetic data with realistic daily noise it recovers a known
+3,050 kcal expenditure to within about 10 kcal (`bench/recomp.ts`).
 
 Accepting it scales every day type by one factor, so the shape of your week is
 untouched; it's opt-in, it tells you its confidence, and it never rewrites your targets
 on its own. This is the single biggest accuracy gain available — every prediction
 equation in this README is fitted to a population, and you are one person.
+
+It rests on the same corrected trend the weekly roll does, which is the other reason
+the weigh-in time is worth typing: a slope contaminated by what time you stood on the
+scale produces a maintenance figure that is wrong by whatever that contamination came
+to, times 7,700.
 
 ## Protein distribution
 
