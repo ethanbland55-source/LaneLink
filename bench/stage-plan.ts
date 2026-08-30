@@ -38,7 +38,7 @@ type Var = {
 /** Portion bands that are all things a person would put on a plate. */
 const BANDS: Record<string, [number, number, number]> = {
   // name: [min, max, step]  — step 7 on rice cakes because a cake is 7 g
-  "Rice Cakes": [28, 70, 7],      // 4-10 cakes; three is not a breakfast
+  "Rice Cakes": [42, 70, 7],      // 6-10 cakes; four is not a breakfast
   Banana: [105, 210, 105],
   Honey: [0, 45, 5],              // ~3 tbsp is a drizzle; 90 g is a jar
   Pasta: [150, 350, 5],
@@ -48,8 +48,11 @@ const BANDS: Record<string, [number, number, number]> = {
   "Chicken Breast": [180, 380, 5],
   "White Rice": [50, 140, 5],
   Dates: [30, 260, 5],            // the main pure-carb lever
-  "Greek Yohurt": [400, 550, 10],
-  "Protein Grenola": [50, 110, 5],
+  // The bowl is the one meal built to a preference rather than to the maths:
+  // yoghurt high, granola high, honey a drizzle. Everything else moves around it.
+  "4:Greek Yohurt": [400, 400, 10],
+  "4:Protein Grenola": [100, 100, 5],
+  "4:Honey": [20, 20, 5],
   Bagel: [85, 170, 85],
   "Peanut Butter": [10, 35, 1],
 };
@@ -59,7 +62,11 @@ function vars(mealIds: number[]): Var[] {
   for (const m of REAL_MEALS) {
     if (!mealIds.includes(m.id)) continue;
     m.ingredients.forEach((i: any, index) => {
-      const b = BANDS[i.name] ?? [Math.round(i.grams * 0.6), Math.round(i.grams * 1.6), 1];
+      // `meal:name` wins over a bare name, so the honey in the bowl can be a
+      // drizzle while the honey on breakfast stays a lever.
+      const b =
+        BANDS[`${m.id}:${i.name}`] ??
+        BANDS[i.name] ?? [Math.round(i.grams * 0.6), Math.round(i.grams * 1.6), 1];
       out.push({
         meal: m.id,
         index,

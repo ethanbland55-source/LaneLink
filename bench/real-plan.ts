@@ -1,5 +1,6 @@
 /**
- * Ethan's actual plan, pulled from the live database on 30 Aug 2026.
+ * Ethan's actual plan, pulled from the live database on 30 Aug 2026,
+ * kept in step with it since.
  *
  * Kept as a fixture so changes to the solver can be judged against the plan
  * they are actually for, rather than only against randomised ones. The shape
@@ -66,7 +67,7 @@ export const REAL_PROFILE: Profile = {
   base_activity: 1.25,
   energy_model: "sessions",
   goal: "recomp",
-  protein_basis: "bodyweight",
+  protein_basis: "lean",
   protein_per_kg: 2.8,
   fat_per_kg: 0.8,
   phase_name: "Toned maintenance",
@@ -109,9 +110,9 @@ export const REAL_MEALS: PlanMeal[] = [
     day_type_ids: null,
     batch: false,
     ingredients: [
-      ing("Rice Cakes", 40, 394, 8.5, 82.3, 2.8, 37),
-      ing("Banana", 105, 89, 1.1, 22.8, 0.3, 78),
-      ing("Honey", 16, 325, 0, 81.2, 0),
+      ing("Rice Cakes", 70, 394, 8.5, 82.3, 2.8, 42, 70),
+      ing("Banana", 210, 89, 1.1, 22.8, 0.3, 105, 210),
+      ing("Honey", 40, 325, 0, 81.2, 0, 0, 45),
       ing("Milk", 275, 50, 3.6, 4.8, 1.8, null, null, true),
       ing("Protein Powder", 33, 394, 72, 11.5, 6.1, null, null, true),
     ],
@@ -123,10 +124,10 @@ export const REAL_MEALS: PlanMeal[] = [
     day_type_ids: null,
     batch: false,
     ingredients: [
-      ing("Pasta", 225, 157, 5.8, 32, 0.5, null, 293),
-      ing("Tuna", 336, 109, 24.9, 0, 1, null, 356),
-      ing("Mayonnaise", 56, 696, 1.1, 1.7, 76, null, 57),
-      ing("Sweetcorn", 110, 77, 2.6, 11.5, 1.7),
+      ing("Pasta", 190, 157, 5.8, 32, 0.5, 150, 350),
+      ing("Tuna", 112, 109, 24.9, 0, 1, 112, 336),
+      ing("Mayonnaise", 36, 696, 1.1, 1.7, 76, 10, 60),
+      ing("Sweetcorn", 120, 77, 2.6, 11.5, 1.7, 60, 220),
     ],
   },
   {
@@ -135,7 +136,7 @@ export const REAL_MEALS: PlanMeal[] = [
     times_per_day: 1,
     day_type_ids: [3, 4, 5],
     batch: false,
-    ingredients: [ing("Dates", 150, 265, 2.4, 58.7, 0.6, 100, 150)],
+    ingredients: [ing("Dates", 45, 265, 2.4, 58.7, 0.6, 30, 260)],
   },
   {
     id: 4,
@@ -144,9 +145,9 @@ export const REAL_MEALS: PlanMeal[] = [
     day_type_ids: [3, 4, 5],
     batch: false,
     ingredients: [
-      ing("Greek Yohurt", 450, 60, 6.1, 7.7, 0.4, 350, 450),
-      ing("Protein Grenola", 90, 461, 17.9, 55, 17.3, 65, 150),
-      ing("Honey", 20, 325, 0, 81.2, 0, 10, 20),
+      ing("Greek Yohurt", 400, 60, 6.1, 7.7, 0.4, 400, 430),
+      ing("Protein Grenola", 100, 461, 17.9, 55, 17.3, 100, 110),
+      ing("Honey", 20, 325, 0, 81.2, 0, 15, 25),
     ],
   },
   {
@@ -156,8 +157,8 @@ export const REAL_MEALS: PlanMeal[] = [
     day_type_ids: [2, 4],
     batch: false,
     ingredients: [
-      ing("Bagel", 90, 263, 9.2, 50.9, 1.8, 90, 90),
-      ing("Peanut Butter", 12, 652, 25.4, 17.3, 52.1, 12, 20),
+      ing("Bagel", 85, 263, 9.2, 50.9, 1.8, 85, 170),
+      ing("Peanut Butter", 10, 652, 25.4, 17.3, 52.1, 10, 35),
     ],
   },
   {
@@ -167,9 +168,9 @@ export const REAL_MEALS: PlanMeal[] = [
     day_type_ids: null,
     batch: false,
     ingredients: [
-      ing("Chicken Breast", 313, 106, 24, 0, 1.1, null, 313),
-      ing("White Rice", 22, 369, 8.1, 83.7, 0.5, 21),
-      ing("Sweetcorn", 110, 77, 2.6, 11.5, 1.7),
+      ing("Chicken Breast", 190, 106, 24, 0, 1.1, 180, 380),
+      ing("White Rice", 95, 369, 8.1, 83.7, 0.5, 50, 140),
+      ing("Sweetcorn", 80, 77, 2.6, 11.5, 1.7, 60, 220),
     ],
   },
 ];

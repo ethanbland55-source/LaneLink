@@ -48,6 +48,7 @@ import {
   type Weekday,
 } from "@/lib/nutrition";
 import { DOW_LABELS, SHOP_DAY_OPTIONS, normaliseProfile } from "@/lib/profile";
+import { lastShopDay } from "@/lib/weekly";
 
 type Meal = {
   id: number;
@@ -195,6 +196,12 @@ export default function PlanPage() {
   }, [meals, dayTypes.length]);
   const weekDiff = Math.round(weekAvg.planned.kcal - weekAvg.target.kcal);
   const weekOff = Math.abs(weekDiff) > Math.max(20, weekAvg.target.kcal * 0.01);
+
+  // The weekly roll moves the targets on shopping day; it does not touch the
+  // portions, so say which of the two moved rather than leaving a bare number.
+  const rolledThisWeek =
+    !!profile?.plan_updated_on &&
+    profile.plan_updated_on >= lastShopDay(profile.shop_start_dow);
 
   /**
    * The goal says protein should be scaled by lean mass and the profile says
@@ -506,6 +513,16 @@ export default function PlanPage() {
             {unusedTypes.map((d) => d.name).join(", ")}{" "}
             {unusedTypes.length === 1 ? "isn't" : "aren't"} used by any weekday, so{" "}
             {unusedTypes.length === 1 ? "it isn't" : "they aren't"} balanced against.
+          </p>
+        )}
+
+        {rolledThisWeek && weekOff && (
+          <p className="mt-3 text-xs leading-relaxed text-[var(--color-mut)]">
+            Your weigh-ins moved these targets on{" "}
+            {new Date(profile.plan_updated_on + "T12:00:00").toLocaleDateString(undefined, {
+              weekday: "long",
+            })}
+            . The portions are still last week's — rebalance to catch them up.
           </p>
         )}
 

@@ -584,19 +584,27 @@ export function buildWeekPlan(
     balance = maintenance > 0 ? goalKcal / maintenance : 1;
   }
 
-  // Protein and fat lean toward the days that earn them, averaging out across
-  // the week so the figures you set still mean what they say.
-  const muls = loadMultipliers(types, week);
-
   const floor = bmr(p) * 1.05;
-  const byId: Record<number, Targets> = {};
+
+  // Calories first, because fat is a share of them.
+  const kcalById = new Map<number, number>();
   for (const t of types) {
     const raw = cost.get(t.id) ?? baseline(p);
     let kcal: number;
     if (!p.cycling) kcal = goalKcal;
     else if (t.fixed_kcal != null && t.fixed_kcal > 0) kcal = t.fixed_kcal;
     else kcal = raw * balance;
-    kcal = Math.max(floor, kcal);
+    kcalById.set(t.id, Math.max(floor, kcal));
+  }
+
+  // Protein and fat lean toward the days that earn them, averaging out across
+  // the week so the figures you set still mean what they say.
+  const muls = loadMultipliers(types, week, { kcalById });
+
+  const byId: Record<number, Targets> = {};
+  for (const t of types) {
+    const raw = cost.get(t.id) ?? baseline(p);
+    const kcal = kcalById.get(t.id) ?? floor;
 
     const m = macrosFor(p, kcal, p.periodise ? muls.get(t.id) ?? undefined : undefined);
     byId[t.id] = {
@@ -868,25 +876,38 @@ export function carbCheck(p: Profile, plan: WeekPlan): CarbCheck[] {
  *    deficit, protein protects lean mass on every day, trained or not
  *    (Mettler et al. 2010). Anyone who drops protein hard on rest days is
  *    doing something the evidence does not support.
- *  - **But a range is a range.** The recommendations are bands, not points —
- *    2.3–3.1 g/kg of fat-free mass through a deficit (Helms et al. 2014).
- *    Sitting near the bottom of that band on a day with no training and near
- *    the top on a hard double is periodisation *within* the evidence rather
+ *  - **But a range is a range, and this is maintenance.** The recommendations
+ *    are bands, not points. The tight one — 2.3–3.1 g/kg of fat-free mass
+ *    (Helms et al. 2014) — is for lean athletes in a *deficit*, where protein
+ *    is the thing standing between you and lost muscle. At maintenance the
+ *    binding evidence is looser and lower: benefit plateaus around 1.6 g/kg
+ *    bodyweight with the confidence interval reaching 2.2 (Morton et al.
+ *    2018), and the ISSN position stand puts 1.4–2.0 g/kg bodyweight as enough
+ *    to build and hold muscle (Jäger et al. 2017). So a rest day near 1.8 g/kg
+ *    and a hard double near 2.5 is periodisation *within* the evidence rather
  *    than outside it, and it is what a periodised framework actually does
- *    (Stellingwerff et al. 2019).
- *  - **Fat as grams per kilo was the wrong shape.** Fat guidance is written as
- *    a share of energy — roughly 20–35% for athletes (Thomas et al. 2016),
- *    lower for physique work (Iraki et al. 2019) — over a floor for hormonal
- *    health. A flat gram figure inverts that: 63 g is 25% of a 2,239 kcal rest
- *    day and 17% of a 3,365 kcal training day, so the current model quietly
- *    makes rest days the *fattiest* ones. Leaning fat toward the bigger day
- *    brings both closer to the middle of the band.
+ *    (Stellingwerff et al. 2019). The spread is wide enough to matter and
+ *    bounded at both ends by numbers someone has actually studied.
+ *  - **Fat is a share of energy, not a gram figure.** Fat guidance is written
+ *    as a percentage — roughly 20–35% for athletes (Thomas et al. 2016), lower
+ *    for physique work (Iraki et al. 2019) — over a floor for hormonal health.
+ *    A flat gram figure inverts that: 63 g is 25% of a 2,239 kcal rest day and
+ *    17% of a 3,365 kcal training day, which quietly makes rest days the
+ *    *fattiest* ones. So fat is set as a constant percentage of the day: every
+ *    day lands on the same share, and the big days get proportionally more of
+ *    it in grams. That is also the shape the food has — the meals that only
+ *    appear on a training day carry fat with them whether you ask them to or
+ *    not, and a target that scales with the day is a target they can hit.
  *
- * The spread is deliberately small, and the week still averages exactly the
- * figure you set — this moves protein and fat *between* days, it does not add
- * any. Turn it off and every day gets the same, as before.
+ * Protein's spread is deliberately small, fat's is whatever the calorie curve
+ * says, and the week still averages exactly the figures you set — this moves
+ * protein and fat *between* days, it does not add any. Turn it off and every
+ * day gets the same, as before.
  */
-export const LOAD_SPREAD = { protein: 0.1, fat: 0.14 };
+export const LOAD_SPREAD = { protein: 0.16 };
+
+/** Only used when the caller has no per-day calories to work from. */
+const FAT_FALLBACK = 0.14;
 
 /**
  * Where each day type sits between the lightest day of the week and the
@@ -912,6 +933,19 @@ export function loadPositions(types: DayType[], week: WeekMap): Map<number, numb
   return out;
 }
 
+/** The mean of a value across the seven days as they are actually mapped. */
+function weekMean(week: WeekMap, of: (id: number) => number | undefined): number {
+  let n = 0;
+  let sum = 0;
+  for (const d of WEEKDAYS) {
+    const v = of(week[d]);
+    if (v == null || !Number.isFinite(v)) continue;
+    n++;
+    sum += v;
+  }
+  return n ? sum / n : 1;
+}
+
 /**
  * Multipliers on protein and fat, one per day type, averaging exactly 1 across
  * the week you actually eat.
@@ -919,35 +953,37 @@ export function loadPositions(types: DayType[], week: WeekMap): Map<number, numb
  * The normalisation is the point. Without it, leaning protein toward training
  * days would quietly raise or lower the weekly total depending on how the week
  * happens to be shaped, and the figure you set would stop meaning anything.
+ *
+ * Pass `kcalById` and fat is set the way the literature writes it — as a share
+ * of the day's energy — rather than as a spread around a gram figure. Without
+ * it fat falls back to the same shape as protein, which is only there so a
+ * caller with no per-day calories still gets something sensible.
  */
 export function loadMultipliers(
   types: DayType[],
   week: WeekMap,
-  spread: { protein: number; fat: number } = LOAD_SPREAD
+  opts: { spread?: { protein: number }; kcalById?: Map<number, number> } = {}
 ): Map<number, { protein: number; fat: number }> {
+  const spread = opts.spread ?? LOAD_SPREAD;
   const pos = loadPositions(types, week);
+
+  const kcalById = opts.kcalById;
+  const meanKcal = kcalById ? weekMean(week, (id) => kcalById.get(id)) : 0;
+  const byEnergy = !!kcalById && meanKcal > 0;
+
   const raw = new Map<number, { protein: number; fat: number }>();
   for (const t of types) {
     const x = (pos.get(t.id) ?? 0.5) - 0.5; // -0.5 .. +0.5
     raw.set(t.id, {
       protein: 1 + 2 * x * spread.protein,
-      fat: 1 + 2 * x * spread.fat,
+      // A constant share of energy: a bigger day gets proportionally more fat,
+      // and every day lands on the same percentage.
+      fat: byEnergy ? (kcalById.get(t.id) ?? meanKcal) / meanKcal : 1 + 2 * x * FAT_FALLBACK,
     });
   }
 
-  // Weighted mean over the seven days as mapped, then divide it out.
-  let n = 0;
-  let sumP = 0;
-  let sumF = 0;
-  for (const d of WEEKDAYS) {
-    const m = raw.get(week[d]);
-    if (!m) continue;
-    n++;
-    sumP += m.protein;
-    sumF += m.fat;
-  }
-  const meanP = n ? sumP / n : 1;
-  const meanF = n ? sumF / n : 1;
+  const meanP = weekMean(week, (id) => raw.get(id)?.protein);
+  const meanF = weekMean(week, (id) => raw.get(id)?.fat);
 
   const out = new Map<number, { protein: number; fat: number }>();
   for (const [id, m] of raw) {
