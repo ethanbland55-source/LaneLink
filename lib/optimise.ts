@@ -45,6 +45,12 @@ export type BoundedItem = Item & {
   min_grams?: number | null;
   max_grams?: number | null;
   locked?: boolean;
+  /**
+   * Suppress whole-unit snapping. Set on a composite that stands in for a
+   * cooked batch: a tray called "Bagel & eggs" is served by weight, and must
+   * not inherit the bagel's "whole units only" rule.
+   */
+  no_unit?: boolean;
 };
 
 export type Mode = "balanced" | "protein_first" | "calories_exact" | "volume";
@@ -163,18 +169,20 @@ export function stepFor(it: Item, classStep: number): number {
 export function boundsFor(it: BoundedItem): Bounds {
   const g = Math.max(0, Number(it.grams) || 0);
   const smart = smartBounds(it.name, g, it);
-  const step = smart.unit ?? stepFor(it, smart.profile.spec.step);
+  const unit = it.no_unit ? null : smart.unit;
+  const step = unit ?? stepFor(it, smart.profile.spec.step);
 
-  if (it.locked) return { min: g, max: g, step, unit: smart.unit };
+  if (it.locked) return { min: g, max: g, step, unit };
 
   const min = it.min_grams != null ? Math.max(0, Number(it.min_grams)) : smart.min;
   const max = it.max_grams != null ? Math.max(0, Number(it.max_grams)) : smart.max;
 
-  return { min: Math.min(min, max), max: Math.max(min, max), step, unit: smart.unit };
+  return { min: Math.min(min, max), max: Math.max(min, max), step, unit };
 }
 
 /** True when the food only makes sense in whole units (eggs, wraps, scoops). */
 export function unitOf(it: BoundedItem): { grams: number; name: string } | null {
+  if (it.no_unit) return null;
   const p = profileFor(it.name, it);
   return p.unitGrams ? { grams: p.unitGrams, name: p.unitName ?? "unit" } : null;
 }

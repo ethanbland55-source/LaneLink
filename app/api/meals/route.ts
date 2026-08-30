@@ -14,6 +14,7 @@ export async function GET() {
       ...m,
       times_per_day: Number(m.times_per_day ?? 1),
       day_type_ids: (m.day_type_ids ?? null) as number[] | null,
+      batch: !!m.batch,
       ingredients: ings
         .filter((i: any) => i.meal_id === m.id)
         .map((i: any) => ({
@@ -38,13 +39,19 @@ export async function POST(req: Request) {
     insert into meals (name, sort_order)
     values (${name || "New meal"}, coalesce((select max(sort_order) + 1 from meals), 0))
     returning *`;
-  return NextResponse.json({ ...rows[0], times_per_day: 1, day_type_ids: null, ingredients: [] });
+  return NextResponse.json({
+    ...rows[0],
+    times_per_day: 1,
+    day_type_ids: null,
+    batch: false,
+    ingredients: [],
+  });
 }
 
 /** Replaces a meal's name and its whole ingredient list in one go. */
 export async function PUT(req: Request) {
   await ensureSchema();
-  const { id, name, ingredients, times_per_day, day_type_ids } = await req.json();
+  const { id, name, ingredients, times_per_day, day_type_ids, batch } = await req.json();
 
   const reps = Number(times_per_day);
 
@@ -64,7 +71,8 @@ export async function PUT(req: Request) {
     update meals set
       name = ${name},
       times_per_day = ${Number.isFinite(reps) && reps > 0 ? reps : 1},
-      day_type_ids = ${types}::int[]
+      day_type_ids = ${types}::int[],
+      batch = ${!!batch}
     where id = ${id}`;
 
   await sql`delete from ingredients where meal_id = ${id}`;

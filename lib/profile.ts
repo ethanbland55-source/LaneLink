@@ -62,6 +62,19 @@ export function normaliseProfile(p: any): Profile {
     height_cm: num(p?.height_cm, 180),
     weight_kg: num(p?.weight_kg, 75),
     body_fat_pct: optionalNum(p?.body_fat_pct),
+    // A body fat figure typed in by hand wins; otherwise the tape estimate is
+    // used if there's a neck measurement to go with the waist.
+    bf_source:
+      p?.bf_source === "manual" || p?.bf_source === "tape"
+        ? p.bf_source
+        : optionalNum(p?.body_fat_pct) != null
+          ? "manual"
+          : p?.neck_cm
+            ? "tape"
+            : "none",
+    neck_cm: optionalNum(p?.neck_cm),
+    hip_cm: optionalNum(p?.hip_cm),
+    waist_cm: optionalNum(p?.waist_cm),
     activity: num(p?.activity, 1.725),
     base_activity: Math.min(1.8, Math.max(1.05, num(p?.base_activity, 1.3))),
     energy_model: model,

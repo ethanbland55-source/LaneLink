@@ -25,8 +25,10 @@ import {
   ageFromDob,
   buildWeekPlan,
   dayKey,
+  estimatedBodyFat,
   goalDef,
   leanMass,
+  proteinIsAssumed,
   proteinTarget,
   itemMacros,
   macroConsistency,
@@ -47,6 +49,8 @@ type Meal = {
   name: string;
   times_per_day: number;
   day_type_ids: number[] | null;
+  /** Cooked ahead in one go and served by weight. */
+  batch: boolean;
   ingredients: BoundedItem[];
 };
 
@@ -88,6 +92,7 @@ export default function PlanPage() {
           ...x,
           times_per_day: Number(x.times_per_day ?? 1),
           day_type_ids: x.day_type_ids ?? null,
+          batch: !!x.batch,
         }))
       );
       setDayTypes((dt as any[]).map((x, i) => normaliseDayType(x, i)));
@@ -253,7 +258,10 @@ export default function PlanPage() {
       body: JSON.stringify({ name: `Meal ${meals.length + 1}` }),
     });
     const created = await res.json();
-    setMeals((m) => [...m, { ...created, times_per_day: 1, day_type_ids: null, ingredients: [] }]);
+    setMeals((m) => [
+      ...m,
+      { ...created, times_per_day: 1, day_type_ids: null, batch: false, ingredients: [] },
+    ]);
   }
 
   async function persist(meal: Meal) {
@@ -327,7 +335,12 @@ export default function PlanPage() {
 
       {showRecalc && (
         <RecalculateDialog
-          meals={activeMeals.map((m) => ({ id: m.id, name: m.name, ingredients: m.ingredients }))}
+          meals={activeMeals.map((m) => ({
+            id: m.id,
+            name: m.name,
+            batch: m.batch,
+            ingredients: m.ingredients,
+          }))}
           target={target}
           dayLabel={dayLabel}
           defaultMode={profile.calorie_override != null ? "calories_exact" : "balanced"}
@@ -438,6 +451,14 @@ export default function PlanPage() {
                 />
               </label>
 
+              <button
+                className={meal.batch ? "btn btn-sm btn-accent" : "btn btn-sm"}
+                title="Cooked ahead in one go and served by weight, so the fit can only change the serving size"
+                onClick={() => patchMeal(meal.id, { batch: !meal.batch })}
+              >
+                {meal.batch ? "Cooked ahead" : "Plated fresh"}
+              </button>
+
               {profile.cycling && (
                 <span className="flex flex-wrap items-center gap-1.5">
                   <span className="text-[var(--color-mut)]">On</span>
@@ -481,6 +502,15 @@ export default function PlanPage() {
                 />
               ))}
             </div>
+
+            {meal.batch && meal.ingredients.length > 0 && (
+              <p className="mt-2.5 text-[0.7rem] leading-relaxed text-[#5b6270]">
+                One serving is {Math.round(totalGrams(meal))} g of the batch. Recalculate can
+                change how much of it you plate, but not the ratio inside it — once it's cooked,
+                that's fixed. The cook list on the Shop page turns this into what to cook and how
+                much to serve on each kind of day.
+              </p>
+            )}
 
             <button
               className="btn btn-sm btn-quiet mt-3"
@@ -836,18 +866,98 @@ export default function PlanPage() {
           </Field>
 
           <div className="sm:col-span-2">
-            <Field label="Body fat % — optional, but it makes the BMR figure better">
-              <input
-                type="number"
-                step={0.5}
-                className="field w-full"
-                placeholder="leave blank to use height and age instead"
-                value={profile.body_fat_pct ?? ""}
-                onChange={(e) =>
-                  set("body_fat_pct", e.target.value ? Number(e.target.value) : null)
-                }
-              />
+            <Field label="Body fat — optional, but it sharpens BMR and the protein target">
+              <div className="grid grid-cols-3 gap-2">
+                {(
+                  [
+                    ["none", "Don't use it"],
+                    ["tape", "From a tape"],
+                    ["manual", "I know it"],
+                  ] as const
+                ).map(([v, label]) => (
+                  <button
+                    key={v}
+                    className={profile.bf_source === v ? "btn btn-accent" : "btn"}
+                    onClick={() => set("bf_source", v)}
+                  >
+                    {label}
+                  </button>
+                ))}
+              </div>
             </Field>
+
+            {profile.bf_source === "manual" && (
+              <div className="mt-3">
+                <Field label="Body fat %">
+                  <Num
+                    value={profile.body_fat_pct ?? 0}
+                    onChange={(v) => set("body_fat_pct", v > 0 ? v : null)}
+                    step={0.5}
+                  />
+                </Field>
+              </div>
+            )}
+
+            {profile.bf_source === "tape" && (
+              <div className="mt-3 grid gap-3 sm:grid-cols-2">
+                <Field label="Neck (cm) — just below the larynx, once">
+                  <Num
+                    value={profile.neck_cm ?? 0}
+                    onChange={(v) => set("neck_cm", v > 0 ? v : null)}
+                    step={0.5}
+                  />
+                </Field>
+                {profile.sex === "female" && (
+                  <Field label="Hips (cm) — widest point">
+                    <Num
+                      value={profile.hip_cm ?? 0}
+                      onChange={(v) => set("hip_cm", v > 0 ? v : null)}
+                      step={0.5}
+                    />
+                  </Field>
+                )}
+                <Field label="Waist (cm) — kept up to date from Progress">
+                  <Num
+                    value={profile.waist_cm ?? 0}
+                    onChange={(v) => set("waist_cm", v > 0 ? v : null)}
+                    step={0.5}
+                  />
+                </Field>
+              </div>
+            )}
+
+            {(() => {
+              const bf = estimatedBodyFat(profile);
+              if (profile.bf_source === "none") {
+                return (
+                  <p className="mt-2 text-xs leading-relaxed text-[var(--color-mut)]">
+                    Fine to leave off. BMR falls back to height and age, and a lean-mass protein
+                    target assumes a plausible body fat rather than guessing high.
+                  </p>
+                );
+              }
+              if (!bf) {
+                return (
+                  <p className="mt-2 text-xs leading-relaxed" style={{ color: "var(--color-carbs)" }}>
+                    {profile.bf_source === "tape"
+                      ? "Needs a neck measurement and a waist reading. Neck is a one-off; the waist comes from the Progress page."
+                      : "Enter a percentage, or switch to the tape estimate."}
+                  </p>
+                );
+              }
+              return (
+                <p className="mt-2 text-xs leading-relaxed text-[var(--color-mut)]">
+                  <b className="text-[#f2f4f7]">{bf.pct}%</b> body fat ·{" "}
+                  {bf.leanKg} kg lean
+                  {bf.error > 0 && (
+                    <>
+                      {" "}· ±{bf.error} points against a scan, so treat the number as approximate
+                      and the change over time as the real signal
+                    </>
+                  )}
+                </p>
+              );
+            })()}
           </div>
 
           {profile.energy_model === "flat" && (
@@ -905,9 +1015,11 @@ export default function PlanPage() {
                 <option value="lean">of lean mass</option>
               </select>
             </div>
-            {profile.protein_basis === "lean" && leanMass(profile) == null && (
-              <p className="mt-2 text-xs leading-relaxed" style={{ color: "var(--color-carbs)" }}>
-                Lean mass needs a body fat percentage — without one this falls back to bodyweight.
+            {proteinIsAssumed(profile) && (
+              <p className="mt-2 text-xs leading-relaxed text-[var(--color-mut)]">
+                No body fat figure, so lean mass is assumed rather than known — the target is
+                converted rather than applied to bodyweight, which would silently add about 15%.
+                Set body fat above to make it exact.
               </p>
             )}
           </Field>
@@ -1258,6 +1370,10 @@ function IngredientRow({
       )}
     </div>
   );
+}
+
+function totalGrams(meal: { ingredients: BoundedItem[] }): number {
+  return meal.ingredients.reduce((a, i) => a + (Number(i.grams) || 0), 0);
 }
 
 function adjLabel(v: number): string {

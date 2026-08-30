@@ -11,16 +11,37 @@
  * the slope of that trend, which is the only part of the signal that means
  * anything over a week.
  *
+ * Two things make that honest rather than merely smooth:
+ *
+ *  - **Time of day is bias, not noise.** An evening reading is about a kilo
+ *    heavier than a morning one, every time. Averaging the two together
+ *    doesn't cancel out — it drags the trend around according to when you
+ *    happened to stand on the scale. So every reading carries a tag, and
+ *    readings are corrected to morning-equivalent using an offset learned from
+ *    your own data before anything else touches them. Weighing at a consistent
+ *    time is still better; not being able to is no longer a problem.
+ *  - **One bad reading can't move much.** A mistyped 87 for 78 would otherwise
+ *    poison the trend for a fortnight, so a single reading's pull is capped.
+ *
  * The trend also does something more useful than reassurance: intake minus
  * weight change *is* your real energy expenditure. Two or three weeks of both
  * numbers beats any prediction equation, because it's measured on you rather
  * than on a population.
  */
 
+export type Tag = "morning" | "evening" | "other";
+
+export const TAGS: { value: Tag; label: string; hint: string }[] = [
+  { value: "morning", label: "Morning", hint: "after the loo, before food" },
+  { value: "other", label: "Daytime", hint: "anything in between" },
+  { value: "evening", label: "Evening", hint: "end of the day" },
+];
+
 export type WeighIn = {
   day: string;
   weight_kg: number | null;
   waist_cm: number | null;
+  tag?: Tag | null;
 };
 
 export type IntakeDay = { day: string; kcal: number };
@@ -32,6 +53,9 @@ export type IntakeDay = { day: string; kcal: number };
  */
 export const ALPHA = 0.12;
 
+/** How far one reading may drag the trend, in kg. Guards against a typo. */
+export const MAX_PULL = 1.5;
+
 /**
  * Energy per kg of body mass change. 7,700 kcal/kg is the standard figure for
  * fat tissue and it is only ever approximately right — early weight change is
@@ -41,7 +65,31 @@ export const ALPHA = 0.12;
  */
 export const KCAL_PER_KG = 7700;
 
-export type TrendPoint = { day: string; weight: number | null; trend: number };
+/**
+ * Starting assumptions for how much heavier a reading is at each time of day,
+ * used until there's enough of your own data to replace them. The typical
+ * diurnal swing is around a kilo, most of it food and fluid still in transit.
+ */
+export const DEFAULT_WEIGHT_OFFSET: Record<Tag, number> = {
+  morning: 0,
+  other: 0.5,
+  evening: 1.1,
+};
+
+/** The same for the tape — a waist reads fuller after a day of eating. */
+export const DEFAULT_WAIST_OFFSET: Record<Tag, number> = {
+  morning: 0,
+  other: 0.6,
+  evening: 1.2,
+};
+
+export type Offsets = {
+  weight: Record<Tag, number>;
+  waist: Record<Tag, number>;
+  /** Which tags had enough readings to be measured rather than assumed. */
+  learned: Tag[];
+  counts: Record<Tag, number>;
+};
 
 function toDate(day: string): Date {
   return new Date(day + "T12:00:00");
@@ -54,12 +102,103 @@ function isoDay(d: Date): string {
   return `${y}-${m}-${day}`;
 }
 
+function tagOf(e: WeighIn): Tag {
+  return e.tag === "evening" || e.tag === "other" ? e.tag : "morning";
+}
+
+/** EWMA with the per-reading influence cap, over pre-sorted values. */
+function smooth(values: { day: string; v: number }[]): Map<string, number> {
+  const out = new Map<string, number>();
+  if (!values.length) return out;
+  let trend = values[0].v;
+  for (const p of values) {
+    const pull = Math.max(-MAX_PULL, Math.min(MAX_PULL, p.v - trend));
+    trend = trend + ALPHA * pull;
+    out.set(p.day, trend);
+  }
+  return out;
+}
+
+/**
+ * How much heavier each tag reads than a morning weigh-in — measured on you.
+ *
+ * Build a provisional trend from morning readings alone, then ask what each
+ * other tag sat above it. Uses the median so one odd reading can't set the
+ * offset, and needs a handful of examples before it will believe itself;
+ * otherwise the population defaults stand.
+ */
+export function learnOffsets(entries: WeighIn[]): Offsets {
+  const counts: Record<Tag, number> = { morning: 0, evening: 0, other: 0 };
+  for (const e of entries) if (e.weight_kg != null) counts[tagOf(e)]++;
+
+  const weight = { ...DEFAULT_WEIGHT_OFFSET };
+  const waist = { ...DEFAULT_WAIST_OFFSET };
+  const learned: Tag[] = [];
+
+  const reference = entries
+    .filter((e) => e.weight_kg != null && tagOf(e) === "morning")
+    .map((e) => ({ day: e.day, v: Number(e.weight_kg) }))
+    .sort((a, b) => a.day.localeCompare(b.day));
+
+  if (reference.length >= 8) {
+    const ref = smooth(reference);
+    const days = [...ref.keys()];
+
+    /** The morning trend nearest this day, if there is one close enough. */
+    const nearby = (day: string): number | null => {
+      let best: string | null = null;
+      let bestGap = Infinity;
+      for (const d of days) {
+        const gap = Math.abs(toDate(d).getTime() - toDate(day).getTime()) / 86_400_000;
+        if (gap < bestGap) {
+          bestGap = gap;
+          best = d;
+        }
+      }
+      return best != null && bestGap <= 5 ? ref.get(best)! : null;
+    };
+
+    for (const tag of ["evening", "other"] as Tag[]) {
+      const diffs: number[] = [];
+      for (const e of entries) {
+        if (e.weight_kg == null || tagOf(e) !== tag) continue;
+        const base = nearby(e.day);
+        if (base != null) diffs.push(Number(e.weight_kg) - base);
+      }
+      if (diffs.length >= 4) {
+        diffs.sort((a, b) => a - b);
+        const median = diffs[Math.floor(diffs.length / 2)];
+        weight[tag] = Math.max(-3, Math.min(3, median));
+        learned.push(tag);
+      }
+    }
+  }
+
+  return { weight, waist, learned, counts };
+}
+
+/** Every reading corrected to what it would have read first thing. */
+export function normalise(entries: WeighIn[], offsets?: Offsets): WeighIn[] {
+  const o = offsets ?? learnOffsets(entries);
+  return entries.map((e) => {
+    const tag = tagOf(e);
+    return {
+      ...e,
+      weight_kg: e.weight_kg == null ? null : Number(e.weight_kg) - o.weight[tag],
+      waist_cm: e.waist_cm == null ? null : Number(e.waist_cm) - o.waist[tag],
+    };
+  });
+}
+
+export type TrendPoint = { day: string; weight: number | null; trend: number };
+
 /**
  * The trend line, one point per calendar day between the first and last
- * weigh-in. Missing days carry the trend forward rather than interpolating a
+ * weigh-in. Missing days carry the trend forward rather than inventing a
  * weight you never stood on the scale for.
  */
-export function trendLine(entries: WeighIn[]): TrendPoint[] {
+export function trendLine(entriesRaw: WeighIn[], offsets?: Offsets): TrendPoint[] {
+  const entries = normalise(entriesRaw, offsets);
   const weights = entries
     .filter((e) => e.weight_kg != null && Number(e.weight_kg) > 0)
     .map((e) => ({ day: e.day, w: Number(e.weight_kg) }))
@@ -76,13 +215,16 @@ export function trendLine(entries: WeighIn[]): TrendPoint[] {
   for (let d = new Date(start); d <= end; d.setDate(d.getDate() + 1)) {
     const key = isoDay(d);
     const w = byDay.get(key) ?? null;
-    if (w != null) trend = trend + ALPHA * (w - trend);
+    if (w != null) {
+      const pull = Math.max(-MAX_PULL, Math.min(MAX_PULL, w - trend));
+      trend = trend + ALPHA * pull;
+    }
     out.push({ day: key, weight: w, trend });
   }
   return out;
 }
 
-/** Least-squares slope, in units per day, over the last `days` points. */
+/** Least-squares slope, in units per day. */
 function slopePerDay(points: { t: number; v: number }[]): number {
   const n = points.length;
   if (n < 2) return 0;
@@ -104,6 +246,8 @@ export type Rate = {
   pctPerWeek: number;
   /** How many days of trend the slope was measured over. */
   days: number;
+  /** How many of those days you actually weighed in on. */
+  readings: number;
   current: number;
 };
 
@@ -111,23 +255,34 @@ export function weightRate(entries: WeighIn[], windowDays = 21): Rate | null {
   const line = trendLine(entries);
   if (line.length < 8) return null;
   const window = line.slice(-windowDays);
+  const readings = window.filter((p) => p.weight != null).length;
+  // A trend carried forward across a fortnight of missed days has no slope
+  // worth reading, however smooth it looks.
+  if (readings < 5) return null;
+
   const slope = slopePerDay(window.map((p, i) => ({ t: i, v: p.trend })));
   const current = window[window.length - 1].trend;
   return {
     kgPerWeek: slope * 7,
     pctPerWeek: current > 0 ? ((slope * 7) / current) * 100 : 0,
     days: window.length,
+    readings,
     current,
   };
 }
 
-/** Same idea for the tape measure, which is the one that matters in a recomp. */
-export function waistRate(entries: WeighIn[], windowDays = 42): {
-  cmPerWeek: number;
-  current: number;
-  first: number;
-  days: number;
-} | null {
+/**
+ * Same idea for the tape measure.
+ *
+ * Built to work off a handful of points spread over a month or two rather than
+ * a daily habit — measuring a waist every morning is a habit almost nobody
+ * keeps, and weekly is entirely enough to see the thing move.
+ */
+export function waistRate(
+  entriesRaw: WeighIn[],
+  windowDays = 56
+): { cmPerWeek: number; current: number; first: number; days: number; points: number } | null {
+  const entries = normalise(entriesRaw);
   const pts = entries
     .filter((e) => e.waist_cm != null && Number(e.waist_cm) > 0)
     .map((e) => ({ day: e.day, v: Number(e.waist_cm) }))
@@ -144,11 +299,15 @@ export function waistRate(entries: WeighIn[], windowDays = 42): {
     window.map((p) => ({ t: (toDate(p.day).getTime() - t0) / 86_400_000, v: p.v }))
   );
   const spanDays = (toDate(last.day).getTime() - t0) / 86_400_000;
+  // Three measurements taken in one week say nothing about a trend.
+  if (spanDays < 10) return null;
+
   return {
     cmPerWeek: slope * 7,
     current: last.v,
     first: window[0].v,
     days: Math.max(1, Math.round(spanDays)),
+    points: window.length,
   };
 }
 
@@ -159,7 +318,7 @@ export type Calibration = {
   intake: number;
   kgPerWeek: number;
   days: number;
-  /** Days that had both a full food log and enough surrounding weigh-ins. */
+  /** Days that had a full food log, and days you weighed in. */
   intakeDays: number;
   weighDays: number;
   confidence: "low" | "fair" | "good";
@@ -239,7 +398,7 @@ export function recompVerdict(rate: Rate | null, waist: ReturnType<typeof waistR
     return {
       headline: "Not enough data yet",
       detail:
-        "Weigh in most mornings for a couple of weeks — the trend needs about that long before it means anything.",
+        "Weigh in on most days for a couple of weeks and the trend appears. It doesn't have to be the same time each day — tag when you weighed and the reading is corrected before it counts.",
       tone: "neutral",
     };
   }
@@ -270,14 +429,14 @@ export function recompVerdict(rate: Rate | null, waist: ReturnType<typeof waistR
       return {
         headline: "Weight steady, waist creeping up",
         detail:
-          "Holding weight while the tape goes the wrong way usually means the deficit isn't there. Let the phase drift a little further, or check the logging is honest.",
+          "Holding weight while the tape goes the wrong way usually means the deficit isn't there. Let the block drift a little further, or check the logging is honest.",
         tone: "watch",
       };
     }
     return {
       headline: "Holding steady",
       detail:
-        "Weight is flat, which is what maintenance should look like. Add a waist measurement once a week — in a recomp it's the measurement that moves first.",
+        "Weight is flat, which is what maintenance should look like. One waist measurement a week is enough to tell you whether composition is moving — in a recomp it's the number that shifts first.",
       tone: "neutral",
     };
   }

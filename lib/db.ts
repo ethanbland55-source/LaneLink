@@ -83,6 +83,8 @@ async function createSchema() {
   await sql`alter table meals add column if not exists times_per_day numeric not null default 1`;
   await sql`alter table meals add column if not exists day_types text[]`; // legacy
   await sql`alter table meals add column if not exists day_type_ids int[]`;
+  // Cooked ahead in one go and served by weight, rather than plated fresh.
+  await sql`alter table meals add column if not exists batch boolean not null default false`;
 
   await sql`alter table profile add column if not exists body_fat_pct numeric`;
   await sql`alter table profile add column if not exists fibre_per_1000 numeric not null default 14`;
@@ -97,6 +99,12 @@ async function createSchema() {
   // A brand-new profile is inserted as 'sessions' below.
   await sql`alter table profile add column if not exists energy_model text not null default 'flat'`;
   await sql`alter table profile add column if not exists protein_basis text not null default 'bodyweight'`;
+  // Body fat: typed in, or estimated from a tape. neck/hip are one-offs; waist
+  // is mirrored here from the latest weigh-in so the estimate stays current.
+  await sql`alter table profile add column if not exists bf_source text not null default 'none'`;
+  await sql`alter table profile add column if not exists neck_cm numeric`;
+  await sql`alter table profile add column if not exists hip_cm numeric`;
+  await sql`alter table profile add column if not exists waist_cm numeric`;
   await sql`alter table profile add column if not exists phase_name text`;
   await sql`alter table profile add column if not exists phase_start date`;
   await sql`alter table profile add column if not exists phase_weeks int not null default 0`;
@@ -129,15 +137,19 @@ async function createSchema() {
     updated_at timestamptz not null default now()
   )`;
 
-  // One row per morning you stood on the scale. Waist is optional and weekly
-  // is plenty — in a recomposition it's the number that actually moves.
+  // One row per time you stood on the scale. Waist is optional and weekly is
+  // plenty — in a recomposition it's the number that actually moves. The tag
+  // records when in the day it was taken, because that's a systematic offset
+  // rather than noise and has to be corrected before anything reads the trend.
   await sql`create table if not exists weigh_ins (
     day        date primary key,
     weight_kg  numeric,
     waist_cm   numeric,
+    tag        text not null default 'morning',
     note       text,
     created_at timestamptz not null default now()
   )`;
+  await sql`alter table weigh_ins add column if not exists tag text not null default 'morning'`;
 
   await sql`create table if not exists shop_checks (
     key text primary key,

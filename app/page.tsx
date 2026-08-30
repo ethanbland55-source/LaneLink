@@ -19,6 +19,7 @@ import {
 } from "@/lib/nutrition";
 import { activityLabel } from "@/lib/activities";
 import { appliesOn } from "@/lib/shopping";
+import { servingGrams, servingsByDayType } from "@/lib/batch";
 import { normaliseProfile } from "@/lib/profile";
 
 type Meal = {
@@ -26,6 +27,7 @@ type Meal = {
   name: string;
   times_per_day?: number;
   day_type_ids?: number[] | null;
+  batch?: boolean;
   ingredients: Item[];
 };
 type Entry = {
@@ -129,6 +131,16 @@ export default function TodayPage() {
     [meals, dayTypeId, dayTypes.length]
   );
 
+  /**
+   * How much of each cooked batch belongs on the plate today. Worked out by
+   * the same function the cook list uses, so the number on the kitchen scale
+   * is the number the log is expecting.
+   */
+  const servings = useMemo(
+    () => (plan ? servingsByDayType(meals as any, plan) : new Map()),
+    [meals, plan]
+  );
+
   /** Step a day back or forward; stop auto-rollover unless we're on today. */
   function go(delta: number) {
     setDay((d) => {
@@ -136,6 +148,17 @@ export default function TodayPage() {
       setFollowToday(next === dayKey());
       return next;
     });
+  }
+
+  /** A batch meal is logged at today's serving, not the plan's base serving. */
+  function itemsFor(meal: Meal): Item[] {
+    const base = meal.ingredients.map(stripItem);
+    if (!meal.batch) return base;
+    const planned = servingGrams({ ...meal, ingredients: meal.ingredients } as any);
+    const today = servings.get(meal.id)?.get(dayTypeId);
+    if (!planned || !today) return base;
+    const scale = today / planned;
+    return base.map((i) => ({ ...i, grams: Math.round(i.grams * scale * 10) / 10 }));
   }
 
   async function addMeal(meal: Meal) {
@@ -147,7 +170,7 @@ export default function TodayPage() {
         meal_id: meal.id,
         meal_name: meal.name,
         day_type_id: dayTypeId,
-        items: meal.ingredients.map(stripItem),
+        items: itemsFor(meal),
       }),
     });
     const created = await res.json();
@@ -317,7 +340,9 @@ export default function TodayPage() {
           </div>
           <div className="flex flex-wrap gap-2">
             {suggested.map((m) => {
-              const t = totalFor(m.ingredients);
+              // Show what you'd actually log today, which for a batch is
+              // today's serving rather than the plan's base one.
+              const t = totalFor(itemsFor(m));
               const used = entries.filter((e) => e.meal_id === m.id).length;
               const planned = Math.max(1, Number(m.times_per_day ?? 1));
               return (
@@ -332,6 +357,9 @@ export default function TodayPage() {
                     <span className="block text-xs tabular-nums text-[var(--color-mut)]">
                       {Math.round(t.kcal)} kcal
                       {planned > 1 && ` · ${planned}× a day`}
+                      {m.batch && servings.get(m.id)?.get(dayTypeId) != null && (
+                        <> · weigh {servings.get(m.id)!.get(dayTypeId)} g</>
+                      )}
                     </span>
                   </span>
                   {used > 0 && (

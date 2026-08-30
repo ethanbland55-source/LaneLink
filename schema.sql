@@ -9,6 +9,10 @@ create table if not exists profile (
   height_cm         numeric not null default 180,
   weight_kg         numeric not null default 75,
   body_fat_pct      numeric,                         -- optional; enables Katch-McArdle
+  bf_source         text    not null default 'none', -- none | manual | tape
+  neck_cm           numeric,                         -- one-off, for the Navy tape estimate
+  hip_cm            numeric,                         -- one-off, women only
+  waist_cm          numeric,                         -- mirrored from the latest weigh-in
   activity          numeric not null default 1.725,  -- legacy all-in-one multiplier
   base_activity     numeric not null default 1.3,     -- everything that isn't a session
   energy_model      text    not null default 'flat',  -- sessions | flat
@@ -57,6 +61,9 @@ create table if not exists meals (
   times_per_day numeric not null default 1,
   day_types     text[],                              -- legacy
   day_type_ids  int[],                               -- null = every day type
+  -- Cooked ahead in one go and served by weight. The optimiser may resize the
+  -- serving but never the ratio inside it, because you can't once it's cooked.
+  batch         boolean not null default false,
   sort_order    int     not null default 0,
   created_at    timestamptz not null default now()
 );
@@ -109,12 +116,15 @@ create table if not exists pantry (
   updated_at timestamptz not null default now()
 );
 
--- One row per morning on the scale. Waist is optional and weekly is plenty —
--- in a recomposition it is the number that actually moves.
+-- One row per time you stood on the scale. Waist is optional and weekly is
+-- plenty — in a recomposition it is the number that actually moves. The tag
+-- records when in the day it was taken: that is a systematic offset rather
+-- than noise, and is corrected out before anything reads the trend.
 create table if not exists weigh_ins (
   day        date primary key,
   weight_kg  numeric,
   waist_cm   numeric,
+  tag        text not null default 'morning',   -- morning | other | evening
   note       text,
   created_at timestamptz not null default now()
 );

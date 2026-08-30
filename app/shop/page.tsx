@@ -3,10 +3,13 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
 import Link from "next/link";
 import { Stat } from "../macro-ui";
-import { buildShoppingList, shopListText, type PlanMeal, type ShopLine } from "@/lib/shopping";
+import { buildShoppingList, shopListText, type ShopLine } from "@/lib/shopping";
+import { cookPlan, type BatchCook, type PlanMeal } from "@/lib/batch";
 import {
+  addDays,
   buildWeekPlan,
   dayKey,
+  dayTypeIdFor,
   normaliseDayType,
   type DayType,
   type Profile,
@@ -65,6 +68,15 @@ export default function ShopPage() {
       pantry,
     });
   }, [meals, profile, plan, days, start, pantry]);
+
+  /** What to cook once the shopping is done — same window, same day types. */
+  const cook = useMemo(() => {
+    if (!profile || !plan) return null;
+    return cookPlan(meals, plan, {
+      days: days ?? profile.shop_days,
+      dayTypeForDay: (i) => dayTypeIdFor(plan, addDays(start, i)),
+    });
+  }, [meals, profile, plan, days, start]);
 
   const say = useCallback((msg: string) => {
     setFlash(msg);
@@ -271,6 +283,29 @@ export default function ShopPage() {
             </section>
           ))}
 
+          {cook && cook.meals.length > 0 && (
+            <section className="card px-4 py-4 sm:px-5">
+              <p className="label">Cook list</p>
+              <p className="mt-1.5 text-xs leading-relaxed text-[var(--color-mut)]">
+                Everything you batch cook, for the whole window. Cook it once, then weigh the
+                serving out on the day — the amounts below are already sized to each kind of day,
+                so a heavier day gets a bigger plate rather than a different recipe.
+              </p>
+
+              <div className="mt-4 space-y-4">
+                {cook.meals.map((m) => (
+                  <CookCard key={m.mealId} cook={m} />
+                ))}
+              </div>
+
+              {cook.notes.map((n, i) => (
+                <p key={i} className="mt-3 text-xs leading-relaxed text-[#5b6270]">
+                  {n}
+                </p>
+              ))}
+            </section>
+          )}
+
           <p className="px-1 pb-4 text-center text-[0.7rem] leading-relaxed text-[#4a505c]">
             Amounts are rounded up to the nearest pack, and anything you already have is taken off
             first. Weights are as you'd weigh them for the plan — raw for meat, dry for rice and
@@ -375,6 +410,59 @@ function Line({
           </button>
         )}
       </div>
+    </div>
+  );
+}
+
+/**
+ * One batch: what to cook, and how much of it to put on the plate on each kind
+ * of day. The raw column is what you weigh into the pan; the cooked figure is
+ * what you'll actually have afterwards, which is the one that has to fit in
+ * your containers.
+ */
+function CookCard({ cook }: { cook: BatchCook }) {
+  const cooked = cook.ingredients.reduce((a, i) => a + i.cookedGrams, 0);
+  const spread = cook.byDayType.map((d) => d.grams);
+  const varies = spread.length > 1 && Math.max(...spread) - Math.min(...spread) >= 25;
+
+  return (
+    <div className="sunk px-3.5 py-3">
+      <div className="flex items-baseline gap-2">
+        <p className="mr-auto text-sm font-semibold">{cook.name}</p>
+        <span className="num text-sm" style={{ color: "var(--color-accent)" }}>
+          {cook.servings} servings
+        </span>
+      </div>
+
+      <div className="mt-2.5 space-y-1">
+        {cook.ingredients
+          .filter((i) => i.grams > 0)
+          .map((i) => (
+            <div key={i.name} className="flex items-center gap-3 text-xs">
+              <span className="mr-auto min-w-0 flex-1 truncate">{i.name}</span>
+              <span className="num w-16 text-right">{fmt(i.grams)}</span>
+              {i.rawToCooked !== 1 && (
+                <span className="w-24 text-right text-[0.68rem] text-[#5b6270]">
+                  → {fmt(i.cookedGrams)} cooked
+                </span>
+              )}
+            </div>
+          ))}
+      </div>
+
+      <p className="mt-2.5 border-t border-[#1c1f25] pt-2.5 text-[0.7rem] text-[var(--color-mut)]">
+        Makes about {fmt(cooked)} of food. Serve{" "}
+        {varies ? (
+          <>
+            {cook.byDayType
+              .map((d) => `${Math.round(d.grams)} g on ${d.name.toLowerCase()} days (×${d.count})`)
+              .join(", ")}
+            .
+          </>
+        ) : (
+          <>{Math.round(cook.averageServing)} g a time.</>
+        )}
+      </p>
     </div>
   );
 }

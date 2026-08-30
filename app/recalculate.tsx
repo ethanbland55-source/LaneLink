@@ -14,9 +14,16 @@ import {
 } from "@/lib/optimise";
 import { smartBounds, VOLUME_FOODS } from "@/lib/foods";
 import { dayVolume, fillerSuggestions, volumeHeadline } from "@/lib/prep";
+import { collapse, expand, servingGrams } from "@/lib/batch";
 import type { Macros } from "@/lib/nutrition";
 
-type Meal = { id: number; name: string; ingredients: BoundedItem[] };
+type Meal = {
+  id: number;
+  name: string;
+  /** Cooked ahead and served by weight — the fit may only resize the serving. */
+  batch?: boolean;
+  ingredients: BoundedItem[];
+};
 
 const KEYS: MacroKey[] = ["kcal", "protein", "carbs", "fat"];
 
@@ -47,25 +54,24 @@ export function RecalculateDialog({
   const [saving, setSaving] = useState(false);
   const [tab, setTab] = useState<"portions" | "prep">("portions");
 
-  // The fit is a whole-day fit, so flatten every ingredient across every meal.
-  const flat = useMemo(
-    () => draft.flatMap((m) => m.ingredients.map((it, i) => ({ mealId: m.id, index: i, it }))),
-    [draft]
-  );
+  /**
+   * The fit is a whole-day fit. Meals you plate fresh contribute one variable
+   * per ingredient; a meal you cooked ahead contributes exactly one — how much
+   * of it goes on the plate — because that's the only thing you can actually
+   * change once it's in a tray in the fridge.
+   */
+  const { items: flatItems, slots } = useMemo(() => collapse(draft), [draft]);
 
   const result = useMemo(
-    () => optimisePortions(flat.map((f) => f.it), target, { mode }),
-    [flat, target, mode]
+    () => optimisePortions(flatItems, target, { mode }),
+    [flatItems, target, mode]
   );
 
   /** The plan as it would be after applying — used by the prep guide. */
-  const fitted = useMemo(() => {
-    let n = 0;
-    return draft.map((m) => ({
-      ...m,
-      ingredients: m.ingredients.map((it) => ({ ...it, grams: result.grams[n++] ?? it.grams })),
-    }));
-  }, [draft, result]);
+  const fitted = useMemo(
+    () => expand(draft, slots, result.grams) as Meal[],
+    [draft, slots, result]
+  );
 
   const volume = useMemo(() => dayVolume(fitted), [fitted]);
   const fillers = useMemo(
@@ -93,11 +99,36 @@ export function RecalculateDialog({
     );
   }
 
-  /** Take the optimiser up on one of its own suggestions. */
+  /**
+   * Take the optimiser up on one of its own suggestions.
+   *
+   * On a cooked batch the suggestion is about the serving, so it's applied to
+   * every component in proportion — widening "the tray" rather than one
+   * ingredient inside it, which you couldn't do anyway.
+   */
   function applySuggestion(s: Suggestion) {
-    const f = flat[s.index];
-    if (!f) return;
-    patch(f.mealId, f.index, s.direction === "up" ? { max_grams: s.to } : { min_grams: s.to });
+    const slot = slots[s.index];
+    if (!slot) return;
+    if (slot.kind === "item") {
+      patch(slot.mealId, slot.index, s.direction === "up" ? { max_grams: s.to } : { min_grams: s.to });
+      return;
+    }
+    const scale = slot.baseTotal > 0 ? s.to / slot.baseTotal : 1;
+    setDraft((ms) =>
+      ms.map((m) =>
+        m.id !== slot.mealId
+          ? m
+          : {
+              ...m,
+              ingredients: m.ingredients.map((it) => ({
+                ...it,
+                ...(s.direction === "up"
+                  ? { max_grams: Math.round((Number(it.grams) || 0) * scale) }
+                  : { min_grams: Math.round((Number(it.grams) || 0) * scale) }),
+              })),
+            }
+      )
+    );
   }
 
   function addFiller(name: string, grams: number, mealId: number) {
@@ -256,31 +287,84 @@ export function RecalculateDialog({
         <div className="mt-3 min-h-0 flex-1 overflow-y-auto px-5 pb-1">
           {tab === "portions" ? (
             draft.map((meal) => {
-              const rows = flat.map((f, gi) => ({ ...f, gi })).filter((f) => f.mealId === meal.id);
+              const rows = slots
+                .map((slot, gi) => ({ slot, gi }))
+                .filter(({ slot }) => slot.mealId === meal.id);
               if (!rows.length) return null;
+
               return (
                 <div key={meal.id} className="mb-5 last:mb-0">
-                  <p className="label mb-2">{meal.name}</p>
+                  <p className="label mb-2">
+                    {meal.name}
+                    {meal.batch && (
+                      <span className="ml-2 normal-case tracking-normal text-[#5b6270]">
+                        cooked ahead · served by weight
+                      </span>
+                    )}
+                  </p>
                   <div className="space-y-1.5">
-                    {rows.map(({ it, index, gi }) => (
-                      <PortionRow
-                        key={index}
-                        it={it}
-                        from={Number(it.grams)}
-                        to={result.grams[gi]}
-                        binding={result.binding.includes(gi)}
-                        onPatch={(p) => patch(meal.id, index, p)}
-                        onRemove={() =>
-                          setDraft((ms) =>
-                            ms.map((m) =>
-                              m.id !== meal.id
-                                ? m
-                                : { ...m, ingredients: m.ingredients.filter((_, j) => j !== index) }
+                    {rows.map(({ slot, gi }) =>
+                      slot.kind === "batch" ? (
+                        <BatchRow
+                          key="batch"
+                          meal={meal}
+                          item={flatItems[gi]}
+                          to={result.grams[gi]}
+                          binding={result.binding.includes(gi)}
+                          onScaleBand={(lo, hi) =>
+                            setDraft((ms) =>
+                              ms.map((m) =>
+                                m.id !== meal.id
+                                  ? m
+                                  : {
+                                      ...m,
+                                      ingredients: m.ingredients.map((it) => ({
+                                        ...it,
+                                        min_grams: Math.round((Number(it.grams) || 0) * lo),
+                                        max_grams: Math.round((Number(it.grams) || 0) * hi),
+                                      })),
+                                    }
+                              )
                             )
-                          )
-                        }
-                      />
-                    ))}
+                          }
+                          onLock={(locked) =>
+                            setDraft((ms) =>
+                              ms.map((m) =>
+                                m.id !== meal.id
+                                  ? m
+                                  : {
+                                      ...m,
+                                      ingredients: m.ingredients.map((it) => ({ ...it, locked })),
+                                    }
+                              )
+                            )
+                          }
+                        />
+                      ) : (
+                        <PortionRow
+                          key={slot.index}
+                          it={meal.ingredients[slot.index]}
+                          from={Number(meal.ingredients[slot.index]?.grams ?? 0)}
+                          to={result.grams[gi]}
+                          binding={result.binding.includes(gi)}
+                          onPatch={(p) => patch(meal.id, slot.index, p)}
+                          onRemove={() =>
+                            setDraft((ms) =>
+                              ms.map((m) =>
+                                m.id !== meal.id
+                                  ? m
+                                  : {
+                                      ...m,
+                                      ingredients: m.ingredients.filter(
+                                        (_, j) => j !== slot.index
+                                      ),
+                                    }
+                              )
+                            )
+                          }
+                        />
+                      )
+                    )}
                   </div>
                 </div>
               );
@@ -310,6 +394,111 @@ export function RecalculateDialog({
 }
 
 /* -------------------------------------------------------------------- */
+
+/**
+ * A cooked batch, as one row.
+ *
+ * There is one number to change — how much of it goes on the plate — and the
+ * components underneath are shown at that serving so you know what you're
+ * actually eating, not so you can adjust them. That's the honest interface for
+ * a tray of food that already exists.
+ */
+function BatchRow({
+  meal,
+  item,
+  to,
+  binding,
+  onScaleBand,
+  onLock,
+}: {
+  meal: Meal;
+  item: BoundedItem;
+  to: number;
+  binding: boolean;
+  onScaleBand: (lo: number, hi: number) => void;
+  onLock: (locked: boolean) => void;
+}) {
+  const from = servingGrams(meal);
+  const scale = from > 0 ? to / from : 1;
+  const delta = to - from;
+  const b = boundsFor(item);
+  const locked = meal.ingredients.every((i) => i.locked);
+
+  return (
+    <div className="sunk px-3 py-2.5">
+      <div className="flex flex-wrap items-center gap-2">
+        <button
+          title={locked ? "Locked — this serving won't move" : "Lock this serving"}
+          onClick={() => onLock(!locked)}
+          className="shrink-0 rounded-lg p-1 transition hover:bg-white/5"
+          style={{ color: locked ? "var(--color-accent)" : "#454b57" }}
+        >
+          <LockIcon open={!locked} />
+        </button>
+
+        <span className="min-w-0 flex-1 basis-[7rem] truncate text-sm font-medium">
+          Serving from the batch
+        </span>
+
+        <span className="num ml-auto text-sm text-[#545b68]">{Math.round(from)}</span>
+        <span className="text-[#454b57]">→</span>
+        <span
+          className="num w-16 text-right text-sm"
+          style={{
+            color:
+              Math.abs(delta) < 0.5
+                ? "var(--color-mut)"
+                : delta > 0
+                  ? "var(--color-accent)"
+                  : "var(--color-fat)",
+          }}
+        >
+          {Math.round(to)}g
+        </span>
+
+        <span className="flex shrink-0 items-center gap-1">
+          <input
+            type="number"
+            title="Smallest serving you'd accept"
+            className="field w-[4.4rem] px-1.5 py-1 text-right text-xs"
+            value={Math.round(b.min)}
+            disabled={locked}
+            onChange={(e) =>
+              onScaleBand(
+                from > 0 ? Math.max(0.1, Number(e.target.value) / from) : 0.75,
+                from > 0 ? b.max / from : 1.35
+              )
+            }
+          />
+          <span className="text-xs text-[#454b57]">–</span>
+          <input
+            type="number"
+            title="Largest serving you'd accept"
+            className="field w-[4.4rem] px-1.5 py-1 text-right text-xs"
+            value={Math.round(b.max)}
+            disabled={locked}
+            onChange={(e) =>
+              onScaleBand(
+                from > 0 ? b.min / from : 0.75,
+                from > 0 ? Math.max(0.1, Number(e.target.value) / from) : 1.35
+              )
+            }
+          />
+        </span>
+      </div>
+
+      <div className="mt-1.5 flex flex-wrap items-center gap-x-3 gap-y-1 pl-8 text-[0.68rem] text-[#5b6270]">
+        <span>
+          {meal.ingredients
+            .filter((i) => (Number(i.grams) || 0) > 0)
+            .map((i) => `${i.name.toLowerCase()} ${Math.round((Number(i.grams) || 0) * scale)}g`)
+            .join(" · ")}
+        </span>
+        {binding && !locked && <span style={{ color: "var(--color-carbs)" }}>at its limit</span>}
+      </div>
+    </div>
+  );
+}
 
 function PortionRow({
   it,

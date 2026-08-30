@@ -18,6 +18,7 @@
 
 import { profileFor } from "./foods";
 import { normaliseSessions, sessionsKcal, type Session } from "./activities";
+import { assumedBodyFat, navyBodyFat, type BfEstimate } from "./bodyfat";
 
 export type Goal = "cut" | "maintain" | "recomp" | "bulk";
 
@@ -99,6 +100,13 @@ export type Profile = {
   height_cm: number;
   weight_kg: number;
   body_fat_pct: number | null;
+  /** Where the body fat figure comes from: typed in, from the tape, or nowhere. */
+  bf_source: "none" | "manual" | "tape";
+  /** One-off tape measurements for the Navy estimate. */
+  neck_cm: number | null;
+  hip_cm: number | null;
+  /** Most recent waist reading, kept here so the estimate stays current. */
+  waist_cm: number | null;
   /** Legacy all-in-one multiplier, used only when energy_model is "flat". */
   activity: number;
   /** Everything that isn't a logged session. Used when energy_model is "sessions". */
@@ -286,10 +294,43 @@ export function phaseOf(p: Profile, today: string): Phase {
   };
 }
 
-/** Lean body mass, when body fat is known. */
+/**
+ * A body fat percentage, however we can get one.
+ *
+ * Typed in by hand if you've had it measured; otherwise estimated from a tape,
+ * which most people can actually do. Neck is a one-off measurement and the
+ * waist you're taking anyway, so the estimate keeps itself current as the
+ * waist moves — which is the half of it worth trusting.
+ */
+export function estimatedBodyFat(p: Profile): BfEstimate | null {
+  if (p.bf_source === "manual" && p.body_fat_pct != null && p.body_fat_pct > 0) {
+    const pct = p.body_fat_pct;
+    return {
+      pct,
+      leanKg: Math.round(p.weight_kg * (1 - pct / 100) * 10) / 10,
+      fatKg: Math.round(p.weight_kg * (pct / 100) * 10) / 10,
+      error: 0,
+      method: "measured",
+    };
+  }
+  if (p.bf_source === "tape" && p.neck_cm && p.waist_cm) {
+    return navyBodyFat({
+      sex: p.sex,
+      heightCm: p.height_cm,
+      neckCm: p.neck_cm,
+      waistCm: p.waist_cm,
+      hipCm: p.hip_cm,
+      weightKg: p.weight_kg,
+    });
+  }
+  return null;
+}
+
+/** Lean body mass, when a body fat figure is available from anywhere. */
 export function leanMass(p: Profile): number | null {
-  if (p.body_fat_pct == null || p.body_fat_pct <= 0 || p.body_fat_pct >= 60) return null;
-  return p.weight_kg * (1 - p.body_fat_pct / 100);
+  const bf = estimatedBodyFat(p);
+  if (!bf || bf.pct <= 0 || bf.pct >= 60) return null;
+  return p.weight_kg * (1 - bf.pct / 100);
 }
 
 /** Katch-McArdle if we know lean mass, otherwise Mifflin-St Jeor. */
@@ -369,11 +410,25 @@ export type WeekPlan = {
  */
 export function proteinTarget(p: Profile): number {
   const lbm = leanMass(p);
-  const raw =
-    p.protein_basis === "lean" && lbm != null
-      ? p.protein_per_kg * lbm
-      : p.protein_per_kg * p.weight_kg;
+  let raw: number;
+
+  if (p.protein_basis === "lean") {
+    // Falling back to bodyweight without converting would be a silent 15%
+    // jump — 2.8 g/kg of lean mass and 2.8 g/kg of bodyweight are not the
+    // same number. Assume a plausible body fat figure instead, erring on the
+    // high side so the target doesn't inflate.
+    const lean = lbm ?? p.weight_kg * (1 - assumedBodyFat(p.sex) / 100);
+    raw = p.protein_per_kg * lean;
+  } else {
+    raw = p.protein_per_kg * p.weight_kg;
+  }
+
   return Math.min(3.2 * p.weight_kg, Math.max(1.4 * p.weight_kg, raw));
+}
+
+/** True when the lean-mass target is running on an assumption, not a figure. */
+export function proteinIsAssumed(p: Profile): boolean {
+  return p.protein_basis === "lean" && leanMass(p) == null;
 }
 
 function macrosFor(p: Profile, kcal: number): Macros {

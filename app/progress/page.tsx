@@ -1,23 +1,27 @@
 "use client";
 
 import { useCallback, useEffect, useMemo, useState } from "react";
-import { Stat } from "../macro-ui";
+import { Segmented, Stat } from "../macro-ui";
 import { TrendChart } from "../trend-chart";
 import {
   buildWeekPlan,
   dayKey,
+  estimatedBodyFat,
   normaliseDayType,
   type DayType,
   type Profile,
 } from "@/lib/nutrition";
 import { normaliseProfile } from "@/lib/profile";
 import {
+  TAGS,
   calibrate,
+  learnOffsets,
   recompVerdict,
   trendLine,
   waistRate,
   weightRate,
   type IntakeDay,
+  type Tag,
   type WeighIn,
 } from "@/lib/trend";
 
@@ -32,6 +36,7 @@ export default function ProgressPage() {
   const today = dayKey();
   const [weight, setWeight] = useState("");
   const [waist, setWaist] = useState("");
+  const [tag, setTag] = useState<Tag>("morning");
 
   const load = useCallback(async () => {
     const [p, dt, w, i] = await Promise.all([
@@ -47,6 +52,7 @@ export default function ProgressPage() {
     const mine = (w as WeighIn[]).find((e) => e.day === dayKey());
     setWeight(mine?.weight_kg != null ? String(mine.weight_kg) : "");
     setWaist(mine?.waist_cm != null ? String(mine.waist_cm) : "");
+    setTag(mine?.tag ?? "morning");
     setLoading(false);
   }, []);
 
@@ -72,6 +78,9 @@ export default function ProgressPage() {
     [entries, intake, plan]
   );
 
+  const offsets = useMemo(() => learnOffsets(entries), [entries]);
+  const bodyFat = useMemo(() => (profile ? estimatedBodyFat(profile) : null), [profile]);
+
   const waistPoints = useMemo(() => {
     const pts = entries
       .filter((e) => e.waist_cm != null && Number(e.waist_cm) > 0)
@@ -95,6 +104,7 @@ export default function ProgressPage() {
       day: today,
       weight_kg: weight ? Number(weight) : null,
       waist_cm: waist ? Number(waist) : null,
+      tag,
     };
     await fetch("/api/weigh-ins", {
       method: "PUT",
@@ -221,11 +231,36 @@ export default function ProgressPage() {
             Save
           </button>
         </div>
+
+        <div className="mt-4">
+          <p className="label mb-2">When</p>
+          <Segmented
+            size="sm"
+            value={tag}
+            onChange={setTag}
+            options={TAGS.map((t) => ({ value: t.value, label: t.label, hint: t.hint }))}
+          />
+        </div>
+
         <p className="mt-3 text-xs leading-relaxed text-[var(--color-mut)]">
-          Weigh first thing, after the loo, before food — same conditions each time matters far
-          more than the number itself. The waist only needs doing once a week, at the navel, relaxed
-          on the out-breath.
+          You don't have to weigh at the same time every day. Say when you did it and the reading
+          is corrected to what it would have been first thing before it touches the trend —
+          otherwise an evening weigh-in reads about a kilo heavier and drags the line around for a
+          week. The waist only needs doing once a week, at the navel, relaxed on the out-breath.
         </p>
+
+        {(offsets.counts.evening > 0 || offsets.counts.other > 0) && (
+          <p className="mt-2 text-xs leading-relaxed text-[#5b6270]">
+            {offsets.learned.length > 0
+              ? `Measured on you: your ${offsets.learned
+                  .map(
+                    (t) =>
+                      `${t === "other" ? "daytime" : t} readings run ${offsets.weight[t].toFixed(1)} kg heavier`
+                  )
+                  .join(", ")}. That's subtracted before the trend sees them.`
+              : "Using a typical time-of-day correction for now — once there are a few more readings it switches to one measured on you."}
+          </p>
+        )}
       </section>
 
       {/* Waist */}
@@ -238,6 +273,10 @@ export default function ProgressPage() {
           <div className="mt-3">
             <TrendChart points={waistPoints} color="var(--color-fibre)" unit="cm" decimals={1} />
           </div>
+          <p className="mt-1 text-[0.7rem] text-[#5b6270]">
+            {waistTrend.points} measurement{waistTrend.points === 1 ? "" : "s"} over{" "}
+            {waistTrend.days} days — weekly is plenty for this to mean something.
+          </p>
           <p className="mt-2 text-xs leading-relaxed text-[var(--color-mut)]">
             {waistTrend.cmPerWeek <= -0.05
               ? `Down ${Math.abs(waistTrend.cmPerWeek * 4).toFixed(1)} cm a month. In a recomposition this is the number that moves first — the scale can sit still for weeks while this doesn't.`
@@ -245,6 +284,42 @@ export default function ProgressPage() {
                 ? `Up ${(waistTrend.cmPerWeek * 4).toFixed(1)} cm a month.`
                 : "Holding steady."}
           </p>
+        </section>
+      )}
+
+      {/* Body fat */}
+      {profile.bf_source !== "none" && (
+        <section className="card px-5 py-5">
+          <div className="flex items-baseline">
+            <p className="label mr-auto">Body fat</p>
+            {bodyFat && <span className="num text-lg">{bodyFat.pct}%</span>}
+          </div>
+          {bodyFat ? (
+            <>
+              <div className="mt-3 grid grid-cols-3 gap-3">
+                <Stat label="Lean" value={`${bodyFat.leanKg} kg`} accent />
+                <Stat label="Fat" value={`${bodyFat.fatKg} kg`} />
+                <Stat
+                  label="From"
+                  value={bodyFat.method === "measured" ? "Measured" : "Tape"}
+                  sub={bodyFat.error > 0 ? `±${bodyFat.error} pts` : undefined}
+                />
+              </div>
+              {bodyFat.method === "Navy tape" && (
+                <p className="mt-3 text-xs leading-relaxed text-[var(--color-mut)]">
+                  Estimated from your height, neck and latest waist. It's worth ±3–4 points against
+                  a scan, but most of that error is a fixed offset for your build — so treat the
+                  percentage as approximate and the direction it moves as real. It updates itself
+                  every time you log a waist.
+                </p>
+              )}
+            </>
+          ) : (
+            <p className="mt-3 text-xs leading-relaxed" style={{ color: "var(--color-carbs)" }}>
+              Add a neck measurement on the Plan page and log a waist above, and this fills itself
+              in from then on.
+            </p>
+          )}
         </section>
       )}
 
@@ -351,7 +426,8 @@ export default function ProgressPage() {
                   <th className="pb-2 pr-4 font-semibold">Day</th>
                   <th className="pb-2 pr-4 font-semibold">Weight</th>
                   <th className="pb-2 pr-4 font-semibold">Trend</th>
-                  <th className="pb-2 font-semibold">Waist</th>
+                  <th className="pb-2 pr-4 font-semibold">Waist</th>
+                  <th className="pb-2 font-semibold">When</th>
                 </tr>
               </thead>
               <tbody>
@@ -369,8 +445,11 @@ export default function ProgressPage() {
                         <td className="py-1.5 pr-4 text-[var(--color-mut)]">
                           {t ? t.trend.toFixed(2) : "—"}
                         </td>
-                        <td className="py-1.5">
+                        <td className="py-1.5 pr-4">
                           {e.waist_cm != null ? e.waist_cm.toFixed(1) : "—"}
+                        </td>
+                        <td className="py-1.5 text-[var(--color-mut)]">
+                          {TAGS.find((t) => t.value === (e.tag ?? "morning"))?.label ?? "—"}
                         </td>
                       </tr>
                     );

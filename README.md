@@ -117,9 +117,10 @@ zero rather than a large deficit. So the block:
   the scale barely reacts,
 - **puts protein on lean mass** — 2.8 g/kg of fat-free mass, mid-range of the
   2.6–3.5 g/kg FFM the recomposition literature points at, which for 78 kg at 14% works
-  out around 188 g, or 2.4 g/kg of bodyweight. Without a body fat figure it falls back
-  to bodyweight, and the result is clamped either way so a mistyped percentage can't
-  ask you to eat 400 g,
+  out around 188 g, or 2.4 g/kg of bodyweight. Without a body fat figure it *converts*
+  using a plausible one rather than falling back — applying a per-lean-mass number to
+  scale weight would silently add about 15% (218 g instead of 179 g) — and the result is
+  clamped either way so a mistyped percentage can't ask you to eat 400 g,
 - **holds protein and fat flat on a rest day** and lets carbohydrate absorb the whole
   swing, with a floor under carbs and a hard 0.45 g/kg floor under fat. If the carb
   floor ever squeezes fat below 0.6 g/kg the Plan page says so, because a long block on
@@ -132,12 +133,71 @@ still buys the plan you actually eat.
 Cutting, maintaining and bulking are the same machinery with the start and end set
 equal. Any of them can be given a ramp if you want one.
 
+## Batch cooking
+
+If you cook every lunch and dinner for the week on a Sunday, the usual assumption —
+that each ingredient's portion is yours to adjust — is simply false. Once it's a tray in
+the fridge you can't serve 12% more chicken on Saturday. You can only serve more *tray*.
+
+So mark a meal **Cooked ahead** and it's modelled as what it physically is: **one
+ingredient, served by weight**. Its per-100g macros are the weighted average of what
+went in, its portion is how much goes on the plate, and the components come back out
+afterwards in exactly the ratio they were cooked in. In the optimiser a four-ingredient
+batch is one variable instead of four, which is both faster and the only honest
+constraint — the fit can make Saturday's plate bigger without pretending you picked the
+chicken out of it. Lock anything inside a batch and the whole serving pins, which is the
+right reading of "this much chicken, no more".
+
+The **cook list** on the Shop page then turns the week into a session at the hob: what
+to cook, in raw weights, with the cooked weight beside it so you know what has to fit in
+your containers — and what to weigh onto the plate on each kind of day, since a double
+day gets a bigger serving of the same tray rather than a different recipe. Today's meal
+button shows that same figure, so the kitchen scale and the log agree.
+
+There's a ceiling, and the app says so rather than quietly landing short: past about
+1.5× a normal plate, serving more tray stops being the answer. If your cooked meals
+can't reach a big day, the cook list tells you which day and by how much, and the fix is
+the mechanism already there — a meal restricted to those day types, like a shake or a
+bagel, plated fresh.
+
 ## Weight, waist and calibration
 
 **Nothing here looks at today's weight.** A morning reading is mostly water, glycogen
 and last night's dinner; it moves ±1 kg for reasons that have nothing to do with fat.
 Everything works off an exponentially weighted trend line and its slope, which is the
 only part of the signal that means anything over a week.
+
+**You don't have to weigh at the same time every day.** Time of day is *bias*, not
+noise — an evening reading is about a kilo heavier, every time, so averaging morning and
+evening readings together doesn't cancel out, it drags the line around according to when
+you happened to stand on the scale. Tag each reading and it's corrected to
+morning-equivalent before anything else touches it, using an offset the app measures
+from your own data once there are a few of each (it starts from a population default and
+switches over). In testing, a flat 78 kg with two evening weigh-ins a week reads as
+78.35 kg drifting up 0.04 kg/week if the tags are ignored, and 78.01 kg drifting
+0.00 kg/week once they're used.
+
+A single reading also can't drag the trend more than 1.5 kg, so a mistyped 87 for 78
+moves it by 0.09 kg rather than 9.
+
+**The waist is a weekly job, not a daily one.** Three points spread over ten days is
+enough for a slope, and the tape gets the same time-of-day correction as the scale.
+
+**Waist matters more than weight in a recomp.** Weight is supposed to sit still — that
+*is* the objective — so the scale gives you no feedback for months while the tape does.
+The verdict on the Progress page reads them together: flat weight with the waist coming
+in is "working, don't let the scale talk you out of it"; losing more than 0.7% of
+bodyweight a week is flagged, because past there you're giving lean mass back and in a
+training block you'll feel it in the pool before you see it anywhere else.
+
+**Body fat, without knowing your body fat.** Lean-mass protein targets want a
+percentage and most people don't have one, so the app will estimate it from a tape using
+the US Navy circumference method — height, neck and waist. Neck is a one-off; the waist
+you're measuring anyway, so the estimate keeps itself current. It's worth ±3–4 points
+against a DEXA scan, but most of that error is a fixed offset for a given build, which
+makes the absolute number approximate and the *direction it moves* the part worth
+trusting. Don't read a rising lean-mass figure as muscle gained — a shrinking waist at
+the same weight will produce one whether or not any muscle appeared.
 
 **Waist matters more than weight in a recomp.** Weight is supposed to sit still — that
 *is* the objective — so the scale gives you no feedback for months while the tape does.
@@ -288,6 +348,8 @@ forward day by day from your shop day and totals every ingredient.
   expressed per kg of fat-free mass while in a deficit.
 - Ainsworth et al., *Compendium of Physical Activities* — the MET values behind every
   session cost.
+- Hodgdon & Beckett (1984), the US Navy circumference equations — the tape body fat
+  estimate, quoted at roughly ±3–4 percentage points against hydrostatic weighing.
 - Mifflin-St Jeor and Katch-McArdle for BMR; the trend line is the Hacker's Diet EWMA.
 
 They're population averages, not measurements of you. That's exactly why the
