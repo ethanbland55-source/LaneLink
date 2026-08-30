@@ -15,6 +15,7 @@ import {
   type Profile,
 } from "@/lib/nutrition";
 import { normaliseProfile, SHOP_DAY_OPTIONS } from "@/lib/profile";
+import { NumberField, scrollIntoViewSoon } from "../number-field";
 
 type PantryRow = { name: string; grams: number };
 
@@ -196,15 +197,13 @@ export default function ShopPage() {
             the whole fix. */}
         <label className="no-print mt-2 flex items-center gap-2">
           <span className="text-xs text-[var(--color-mut)]">or</span>
-          <input
-            type="number"
-            inputMode="numeric"
+          <NumberField
             min={1}
             max={21}
-            className="field w-20 px-2 py-1 text-center text-sm"
-            value={days ?? ""}
+            className="w-20 px-2 py-1 text-center text-sm"
+            value={days}
             aria-label="Number of days to buy for"
-            onChange={(e) => saveDays(Math.min(21, Math.max(1, Number(e.target.value) || 1)))}
+            onCommit={(v) => v != null && saveDays(Math.min(21, Math.max(1, v)))}
           />
           <span className="text-xs text-[var(--color-mut)]">days</span>
         </label>
@@ -391,10 +390,12 @@ function Line({
           <span className="flex items-center gap-1.5">
             <input
               type="number"
+              inputMode="decimal"
               autoFocus
               className="field w-24 px-2 py-1 text-right text-xs"
               value={have}
               placeholder="grams"
+              onFocus={(e) => scrollIntoViewSoon(e.currentTarget)}
               onChange={(e) => setHaveLocal(e.target.value)}
             />
             <button

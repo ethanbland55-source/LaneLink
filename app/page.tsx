@@ -20,6 +20,7 @@ import {
 } from "@/lib/nutrition";
 import { activityLabel } from "@/lib/activities";
 import { doseSpacing } from "@/lib/protein";
+import { NumberField } from "./number-field";
 import {
   TIMING_LABEL,
   doseLabel,
@@ -649,12 +650,10 @@ export default function TodayPage() {
                           <span className="hidden text-xs tabular-nums text-[var(--color-mut)] sm:block">
                             {Math.round(m.kcal)} kcal
                           </span>
-                          <input
-                            type="number"
-                            inputMode="decimal"
-                            className="field w-[4.5rem] py-1.5 text-right text-sm"
+                          <NumberField
+                            className="w-[4.5rem] py-1.5 text-right text-sm"
                             value={it.grams}
-                            onChange={(ev) => setGrams(e.id, i, Number(ev.target.value))}
+                            onCommit={(v) => setGrams(e.id, i, v ?? 0)}
                           />
                           <span className="w-2 text-xs text-[var(--color-mut)]">g</span>
                         </div>

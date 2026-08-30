@@ -12,6 +12,7 @@ import { proteinDistribution } from "@/lib/protein";
 import { fixedMacros, type Supplement } from "@/lib/supplements";
 import { short } from "@/lib/evidence";
 import { AddSupplement, References, SupplementRow } from "../supplements-ui";
+import { NumberField } from "../number-field";
 import {
   ACTIVITIES,
   BASE_ACTIVITY_LEVELS,
@@ -578,15 +579,12 @@ export default function PlanPage() {
             <div className="mt-3 flex flex-wrap items-center gap-x-4 gap-y-2 text-xs">
               <label className="flex items-center gap-2">
                 <span className="text-[var(--color-mut)]">Times a day</span>
-                <input
-                  type="number"
+                <NumberField
                   min={0.5}
                   step={0.5}
-                  className="field w-16 px-2 py-1 text-right text-xs"
+                  className="w-16 px-2 py-1 text-right text-xs"
                   value={meal.times_per_day}
-                  onChange={(e) =>
-                    patchMeal(meal.id, { times_per_day: Number(e.target.value) || 1 })
-                  }
+                  onCommit={(v) => patchMeal(meal.id, { times_per_day: v ?? 1 })}
                 />
               </label>
 
@@ -630,19 +628,15 @@ export default function PlanPage() {
               {shareGroups.get(meal.id) && (
                 <label className="flex items-center gap-2">
                   <span className="text-[var(--color-mut)]">Share of those days</span>
-                  <input
-                    type="number"
+                  <NumberField
                     min={0}
                     max={100}
                     placeholder="auto"
-                    className="field w-16 px-2 py-1 text-right text-xs"
+                    allowEmpty
+                    className="w-16 px-2 py-1 text-right text-xs"
                     title="How much of what this group of meals adds up to should be this one. Leave empty to let the fit decide."
-                    value={meal.share_pct ?? ""}
-                    onChange={(e) =>
-                      patchMeal(meal.id, {
-                        share_pct: e.target.value === "" ? null : Number(e.target.value),
-                      })
-                    }
+                    value={meal.share_pct}
+                    onCommit={(v) => patchMeal(meal.id, { share_pct: v })}
                   />
                   <span className="text-[var(--color-mut)]">%</span>
                 </label>
@@ -1350,14 +1344,12 @@ export default function PlanPage() {
 
           <div className="sm:col-span-2">
             <Field label="Manual kcal override — your own number, used as the weekly average">
-              <input
-                type="number"
-                className="field w-full"
-                value={profile.calorie_override ?? ""}
+              <NumberField
+                className="w-full"
+                allowEmpty
+                value={profile.calorie_override}
                 placeholder={`${plan.maintenance} — calculated`}
-                onChange={(e) =>
-                  set("calorie_override", e.target.value ? Number(e.target.value) : null)
-                }
+                onCommit={(v) => set("calorie_override", v)}
               />
             </Field>
             {profile.calorie_override != null && (
@@ -1475,13 +1467,12 @@ function DayTypeCard({
                     </option>
                   ))}
                 </select>
-                <input
-                  type="number"
+                <NumberField
                   min={0}
                   step={5}
-                  className="field w-[4.2rem] px-2 py-1 text-right text-xs"
+                  className="w-[4.2rem] px-2 py-1 text-right text-xs"
                   value={s.minutes}
-                  onChange={(e) => patchSession(i, { minutes: Number(e.target.value) || 0 })}
+                  onCommit={(v) => patchSession(i, { minutes: v ?? 0 })}
                 />
                 <span className="text-xs text-[var(--color-mut)]">min</span>
                 <span className="num text-xs text-[#5b6270]">
@@ -1511,14 +1502,12 @@ function DayTypeCard({
 
           <label className="flex items-center gap-2 pt-1 text-xs">
             <span className="text-[var(--color-mut)]">Pin to a fixed kcal</span>
-            <input
-              type="number"
-              className="field w-24 px-2 py-1 text-right text-xs"
+            <NumberField
+              className="w-24 px-2 py-1 text-right text-xs"
               placeholder="auto"
-              value={dt.fixed_kcal ?? ""}
-              onChange={(e) =>
-                onPatch({ fixed_kcal: e.target.value ? Number(e.target.value) : null })
-              }
+              allowEmpty
+              value={dt.fixed_kcal}
+              onCommit={(v) => onPatch({ fixed_kcal: v })}
             />
           </label>
 
@@ -1570,12 +1559,10 @@ function IngredientRow({
           onChange={(e) => onPatch({ name: e.target.value })}
         />
         <span className="num text-sm text-[var(--color-mut)]">{Math.round(m.kcal)} kcal</span>
-        <input
-          type="number"
-          inputMode="decimal"
-          className="field w-[4.5rem] py-1.5 text-right text-sm font-bold"
+        <NumberField
+          className="w-[4.5rem] py-1.5 text-right text-sm font-bold"
           value={it.grams}
-          onChange={(e) => onPatch({ grams: Number(e.target.value) })}
+          onCommit={(v) => v != null && onPatch({ grams: v })}
         />
         <span className="w-2 text-xs text-[var(--color-mut)]">g</span>
         <button
@@ -1602,12 +1589,12 @@ function IngredientRow({
             <span className="text-[0.7rem] font-bold" style={{ color: colour }}>
               {tag}
             </span>
-            <input
-              type="number"
-              inputMode="decimal"
-              className="field w-[3.6rem] px-2 py-1 text-right text-xs"
+            <NumberField
+              className="w-[3.6rem] px-2 py-1 text-right text-xs"
               value={(it as any)[key] ?? 0}
-              onChange={(e) => onPatch({ [key]: Number(e.target.value) } as Partial<BoundedItem>)}
+              onCommit={(v) =>
+                v != null && onPatch({ [key]: v } as Partial<BoundedItem>)
+              }
             />
           </span>
         ))}
@@ -1628,24 +1615,20 @@ function IngredientRow({
               <span className="text-[#5b6270]">{food.aisle.toLowerCase()}</span>
               <span className="flex items-center gap-1 text-[#5b6270]">
                 limits
-                <input
-                  type="number"
-                  className="field w-[3.4rem] px-1.5 py-0.5 text-right text-[0.68rem]"
+                <NumberField
+                  className="w-[3.4rem] px-1.5 py-0.5 text-right text-[0.68rem]"
                   placeholder="auto"
-                  value={it.min_grams ?? ""}
-                  onChange={(e) =>
-                    onPatch({ min_grams: e.target.value ? Number(e.target.value) : null })
-                  }
+                  allowEmpty
+                  value={it.min_grams}
+                  onCommit={(v) => onPatch({ min_grams: v })}
                 />
                 –
-                <input
-                  type="number"
-                  className="field w-[3.4rem] px-1.5 py-0.5 text-right text-[0.68rem]"
+                <NumberField
+                  className="w-[3.4rem] px-1.5 py-0.5 text-right text-[0.68rem]"
                   placeholder="auto"
-                  value={it.max_grams ?? ""}
-                  onChange={(e) =>
-                    onPatch({ max_grams: e.target.value ? Number(e.target.value) : null })
-                  }
+                  allowEmpty
+                  value={it.max_grams}
+                  onCommit={(v) => onPatch({ max_grams: v })}
                 />
               </span>
               {/* Share of this meal's calories. Only means anything where the
@@ -1653,17 +1636,15 @@ function IngredientRow({
               {shareable && (
                 <span className="flex items-center gap-1 text-[#5b6270]">
                   share
-                  <input
-                    type="number"
+                  <NumberField
                     min={0}
                     max={100}
-                    className="field w-[3.4rem] px-1.5 py-0.5 text-right text-[0.68rem]"
+                    className="w-[3.4rem] px-1.5 py-0.5 text-right text-[0.68rem]"
                     placeholder="auto"
+                    allowEmpty
                     title="Share of this meal's calories. Leave empty to let the fit decide."
-                    value={it.share_pct ?? ""}
-                    onChange={(e) =>
-                      onPatch({ share_pct: e.target.value ? Number(e.target.value) : null })
-                    }
+                    value={it.share_pct}
+                    onCommit={(v) => onPatch({ share_pct: v })}
                   />
                   %
                 </span>
@@ -1711,13 +1692,11 @@ function Num({
   step?: number;
 }) {
   return (
-    <input
-      type="number"
-      inputMode="decimal"
+    <NumberField
       step={step}
-      className="field w-full"
+      className="w-full"
       value={value}
-      onChange={(e) => onChange(Number(e.target.value))}
+      onCommit={(v) => v != null && onChange(v)}
     />
   );
 }

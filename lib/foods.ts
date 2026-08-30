@@ -396,7 +396,7 @@ export const FOODS: Entry[] = [
   { match: ["bread", "toast", "sourdough"], cls: "bread", unitGrams: 40, unitName: "slice", packGrams: 800 },
   { match: ["weetabix"], cls: "grain", unitGrams: 20, unitName: "biscuit", packGrams: 430, aisle: "Cupboard" },
   { match: ["granola", "muesli", "cereal"], cls: "grain", packGrams: 500, rawToCooked: 1 },
-  { match: ["rice cake"], cls: "grain", unitGrams: 8, unitName: "cake", packGrams: 130, rawToCooked: 1 },
+  { match: ["rice cake"], cls: "grain", unitGrams: 7, unitName: "cake", packGrams: 130, rawToCooked: 1 },
 
   // ---- Produce -----------------------------------------------------------
   { match: ["sweet potato"], cls: "starchy_veg", unitGrams: 200, unitName: "potato", packGrams: 1000 },

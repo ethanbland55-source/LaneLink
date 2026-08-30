@@ -20,6 +20,8 @@ import {
   short,
 } from "@/lib/evidence";
 
+import { NumberField } from "./number-field";
+
 const UNITS: SuppUnit[] = ["g", "mg", "mcg", "IU", "capsule", "scoop", "ml"];
 
 /** The evidence badge. The colour is the whole message; the words back it up. */
@@ -226,12 +228,10 @@ export function SupplementRow({
           <div className="flex flex-wrap items-end gap-2">
             <label className="block">
               <span className="mb-1 block text-[0.68rem] text-[var(--color-mut)]">Dose</span>
-              <input
-                type="number"
-                inputMode="decimal"
-                className="field w-20 py-1 text-right text-xs"
+              <NumberField
+                className="w-20 py-1 text-right text-xs"
                 value={s.dose}
-                onChange={(e) => onPatch({ dose: Number(e.target.value) })}
+                onCommit={(v) => v != null && onPatch({ dose: v })}
               />
             </label>
             <label className="block">
@@ -264,12 +264,11 @@ export function SupplementRow({
             </label>
             <label className="block">
               <span className="mb-1 block text-[0.68rem] text-[var(--color-mut)]">A day</span>
-              <input
-                type="number"
+              <NumberField
                 min={1}
-                className="field w-16 py-1 text-right text-xs"
+                className="w-16 py-1 text-right text-xs"
                 value={s.times_per_day}
-                onChange={(e) => onPatch({ times_per_day: Number(e.target.value) || 1 })}
+                onCommit={(v) => onPatch({ times_per_day: v ?? 1 })}
               />
             </label>
           </div>
@@ -288,12 +287,10 @@ export function SupplementRow({
                 <span className="mb-1 block text-[0.68rem] text-[var(--color-mut)]">
                   {tag} per dose
                 </span>
-                <input
-                  type="number"
-                  inputMode="decimal"
-                  className="field w-[4.2rem] py-1 text-right text-xs"
+                <NumberField
+                  className="w-[4.2rem] py-1 text-right text-xs"
                   value={(s as any)[k]}
-                  onChange={(e) => onPatch({ [k]: Number(e.target.value) } as Partial<Supplement>)}
+                  onCommit={(v) => onPatch({ [k]: v ?? 0 } as Partial<Supplement>)}
                 />
               </label>
             ))}

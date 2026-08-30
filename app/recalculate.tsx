@@ -19,6 +19,7 @@ import { appliesOn, fitWeek, mealGroups, repsOf } from "@/lib/weekfit";
 import type { WeekPlan } from "@/lib/nutrition";
 import type { Supplement } from "@/lib/supplements";
 import { Sheet } from "./sheet";
+import { NumberField } from "./number-field";
 
 /**
  * Rebalance the week.
@@ -679,16 +680,15 @@ function ShareRow({
     <div>
       <div className="flex flex-wrap items-center gap-2">
         <span className="mr-auto min-w-0 flex-1 basis-20 truncate text-sm font-medium">{name}</span>
-        <input
-          type="number"
-          inputMode="numeric"
+        <NumberField
           min={0}
           max={100}
           placeholder="auto"
+          allowEmpty
           aria-label={`${name} share of the calories, per cent`}
-          className="field w-[3.9rem] px-2 py-1.5 text-right text-sm"
-          value={value ?? ""}
-          onChange={(e) => onChange(e.target.value === "" ? null : Number(e.target.value))}
+          className="w-[3.9rem] px-2 py-1.5 text-right text-sm"
+          value={value}
+          onCommit={onChange}
         />
         <span className="text-xs text-[var(--color-mut)]">%</span>
         <span className="shrink-0 text-[#454b57]">→</span>
@@ -1005,26 +1005,22 @@ function Limits({
 }) {
   return (
     <span className="flex shrink-0 items-center gap-1">
-      <input
-        type="number"
-        inputMode="numeric"
+      <NumberField
         aria-label="Smallest portion you would accept"
         title="Smallest portion you'd accept"
-        className="field w-[4.2rem] px-2 py-1 text-right text-xs"
+        className="w-[4.2rem] px-2 py-1 text-right text-xs"
         value={min}
         disabled={disabled}
-        onChange={(e) => onMin(Number(e.target.value))}
+        onCommit={(v) => v != null && onMin(v)}
       />
       <span className="text-xs text-[#454b57]">–</span>
-      <input
-        type="number"
-        inputMode="numeric"
+      <NumberField
         aria-label="Largest portion you would accept"
         title="Largest portion you'd accept"
-        className="field w-[4.2rem] px-2 py-1 text-right text-xs"
+        className="w-[4.2rem] px-2 py-1 text-right text-xs"
         value={max}
         disabled={disabled}
-        onChange={(e) => onMax(Number(e.target.value))}
+        onCommit={(v) => v != null && onMax(v)}
       />
     </span>
   );

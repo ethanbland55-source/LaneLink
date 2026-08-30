@@ -3,6 +3,7 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { Segmented, Stat } from "../macro-ui";
 import { TrendChart } from "../trend-chart";
+import { NumberField } from "../number-field";
 import {
   ageFromDob,
   buildWeekPlan,
@@ -439,14 +440,13 @@ export default function ProgressPage() {
                 <div key={key} className="sunk px-3.5 py-3">
                   <div className="flex items-center gap-3">
                     <span className="mr-auto text-sm font-medium">{site.label}</span>
-                    <input
-                      type="number"
-                      inputMode="decimal"
+                    <NumberField
                       step={0.1}
+                      allowEmpty
                       aria-label={`${site.label} in ${site.unit}`}
-                      className="field w-24 text-right"
-                      value={sites[key] ?? ""}
-                      onChange={(e) => setSite(key, e.target.value)}
+                      className="w-24 text-right"
+                      value={sites[key] === undefined || sites[key] === "" ? null : Number(sites[key])}
+                      onCommit={(v) => setSite(key, v == null ? "" : String(v))}
                     />
                     <span className="w-6 text-xs text-[var(--color-mut)]">{site.unit}</span>
                   </div>
@@ -762,13 +762,12 @@ function Measure({
       <span className="mb-1.5 block text-xs text-[var(--color-mut)]">
         {label} ({unit})
       </span>
-      <input
-        type="number"
-        inputMode="decimal"
+      <NumberField
         step={step}
-        className="field w-full"
-        value={value}
-        onChange={(e) => onChange(e.target.value)}
+        className="w-full"
+        allowEmpty
+        value={value === "" ? null : Number(value)}
+        onCommit={(v) => onChange(v == null ? "" : String(v))}
       />
     </label>
   );
