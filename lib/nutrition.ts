@@ -473,8 +473,25 @@ export function buildWeekPlan(
 ): WeekPlan {
   const today = opts.today ?? dayKey();
   const phase = phaseOf(p, today);
-  const types = [...dayTypes].sort((a, b) => a.sort_order - b.sort_order || a.id - b.id);
-  const fallbackId = types[0]?.id ?? 0;
+
+  // Never end up with no day types at all. If seeding hasn't run yet, or the
+  // fetch failed, or someone deleted the last one, fall back to a single
+  // unnamed day rather than producing a plan of zeroes — a blank target is a
+  // far worse failure than an unlabelled one.
+  const supplied = [...dayTypes].sort((a, b) => a.sort_order - b.sort_order || a.id - b.id);
+  const types: DayType[] = supplied.length
+    ? supplied
+    : [
+        {
+          id: 0,
+          name: "Every day",
+          sort_order: 0,
+          sessions: [],
+          fixed_kcal: null,
+          percent: null,
+        },
+      ];
+  const fallbackId = types[0].id;
   const week = {} as WeekMap;
   for (const d of WEEKDAYS) {
     const id = p.week?.[d];
