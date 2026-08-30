@@ -61,13 +61,12 @@ const BLANK: BoundedItem = {
   protein_100: 0,
   carbs_100: 0,
   fat_100: 0,
-  fibre_100: 0,
   min_grams: null,
   max_grams: null,
   locked: false,
 };
 
-const BAR_KEYS: MacroKey[] = ["kcal", "protein", "carbs", "fat", "fibre"];
+const BAR_KEYS: MacroKey[] = ["kcal", "protein", "carbs", "fat"];
 
 export default function PlanPage() {
   const [profile, setProfile] = useState<Profile | null>(null);
@@ -1036,14 +1035,6 @@ export default function PlanPage() {
             />
           </Field>
 
-          <Field label="Fibre g per 1000 kcal">
-            <Num
-              value={profile.fibre_per_1000}
-              onChange={(v) => set("fibre_per_1000", v)}
-              step={1}
-            />
-          </Field>
-
           <div className="sm:col-span-2">
             <Field label="Manual kcal override — your own number, used as the weekly average">
               <input
@@ -1290,7 +1281,6 @@ function IngredientRow({
             ["protein_100", "P", MACRO_COLOR.protein],
             ["carbs_100", "C", MACRO_COLOR.carbs],
             ["fat_100", "F", MACRO_COLOR.fat],
-            ["fibre_100", "Fib", MACRO_COLOR.fibre],
           ] as const
         ).map(([key, tag, colour]) => (
           <span key={key} className="flex items-center gap-1">
@@ -1301,23 +1291,8 @@ function IngredientRow({
               type="number"
               inputMode="decimal"
               className="field w-[3.6rem] px-2 py-1 text-right text-xs"
-              style={
-                key === "fibre_100" && estimated
-                  ? { borderStyle: "dashed", color: "var(--color-mut)" }
-                  : undefined
-              }
-              title={
-                key === "fibre_100" && estimated
-                  ? "Estimated from the type of food — check the packet"
-                  : undefined
-              }
               value={(it as any)[key] ?? 0}
-              onChange={(e) =>
-                onPatch({
-                  [key]: Number(e.target.value),
-                  ...(key === "fibre_100" ? { fibre_estimated: false } : {}),
-                } as Partial<BoundedItem>)
-              }
+              onChange={(e) => onPatch({ [key]: Number(e.target.value) } as Partial<BoundedItem>)}
             />
           </span>
         ))}

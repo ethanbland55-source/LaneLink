@@ -31,7 +31,6 @@ export async function PUT(req: Request) {
       protein_per_kg = ${b.protein_per_kg},
       fat_per_kg = ${b.fat_per_kg},
       calorie_override = ${b.calorie_override},
-      fibre_per_1000 = ${b.fibre_per_1000},
       carb_floor_per_kg = ${b.carb_floor_per_kg},
       cycling = ${b.cycling},
       energy_model = ${b.energy_model},

@@ -39,6 +39,15 @@ export type PlanMeal = {
   day_type_ids?: number[] | null;
   /** Cooked ahead in one go, served by weight. */
   batch?: boolean;
+  /**
+   * Share of its group's calories, 0–100, or null to let the fit decide.
+   *
+   * Only meaningful where two or more meals appear on exactly the same days:
+   * they rise and fall together, so nothing in the targets can say how to
+   * divide them. This is where you say — 20% of the swim calories in the dates
+   * beforehand, 80% in the yoghurt after.
+   */
+  share_pct?: number | null;
   ingredients: BoundedItem[];
 };
 
@@ -98,7 +107,6 @@ function compositeFor(meal: PlanMeal): { item: BoundedItem; slot: Slot } | null 
       protein_100: per100(totals.protein),
       carbs_100: per100(totals.carbs),
       fat_100: per100(totals.fat),
-      fibre_100: per100(totals.fibre),
       min_grams: Math.round(baseTotal * lo),
       max_grams: Math.round(baseTotal * hi),
       locked: anyLocked,
@@ -372,7 +380,6 @@ export function servingMacros(meal: PlanMeal, grams: number): Macros {
     protein: totals.protein * scale,
     carbs: totals.carbs * scale,
     fat: totals.fat * scale,
-    fibre: totals.fibre * scale,
   };
 }
 

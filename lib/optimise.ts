@@ -27,8 +27,8 @@
  *  - **An anchor term.** Among equally good answers it prefers the one that
  *    looks most like the plan you wrote, so re-running it doesn't reshuffle
  *    your whole day for a 3-calorie gain.
- *  - **Fibre and volume** participate: a fibre floor, and an optional mode
- *    that prefers the more filling of two equally accurate plans.
+ *  - **Volume participates**: an optional mode that prefers the more filling
+ *    of two equally accurate plans.
  *  - **It explains itself.** When the target can't be reached, it works out
  *    which limit is in the way and what to change it to.
  */
@@ -109,14 +109,12 @@ const PENALTIES: Record<Mode, Record<MacroKey, Penalty>> = {
 };
 
 /**
- * Anchor, fibre and volume are *tie-breakers*, not objectives. They are
- * weighted far below the macro terms on purpose: among answers that are
- * equally accurate they pick the one that looks like your plan, carries more
- * fibre and fills you up more — but none of them is ever allowed to buy that
- * at the cost of missing a macro.
+ * Anchor and volume are *tie-breakers*, not objectives. They are weighted far
+ * below the macro terms on purpose: among answers that are equally accurate
+ * they pick the one that looks like your plan and fills you up more — but
+ * neither is ever allowed to buy that at the cost of missing a macro.
  */
 const ANCHOR_WEIGHT = 0.004;
-const FIBRE_WEIGHT = 0.06;
 const VOLUME_WEIGHT = 0.02;
 
 export type Density = {
@@ -124,7 +122,6 @@ export type Density = {
   protein: number;
   carbs: number;
   fat: number;
-  fibre: number;
   /** Fullness contribution per gram — satiety × plate volume. */
   fill: number;
 };
@@ -137,7 +134,6 @@ export function density(it: Item): Density {
     protein: (Number(it.protein_100) || 0) / 100,
     carbs: (Number(it.carbs_100) || 0) / 100,
     fat: (Number(it.fat_100) || 0) / 100,
-    fibre: (Number(it.fibre_100) || 0) / 100,
     fill: (p.spec.satiety * p.mlPerG) / 100,
   };
 }
@@ -196,7 +192,6 @@ export function totalsOf(items: Item[], grams: number[]): Macros {
     out.protein += d.protein * g;
     out.carbs += d.carbs * g;
     out.fat += d.fat * g;
-    out.fibre += d.fibre * g;
   });
   return out;
 }
@@ -208,33 +203,107 @@ function fillOf(ds: Density[], grams: number[]): number {
 }
 
 /* ------------------------------------------------------------------ */
-/* Cost                                                                */
+/* The problem                                                         */
 /* ------------------------------------------------------------------ */
+
+/**
+ * One kind of day that the same set of portions has to satisfy.
+ *
+ * This is the thing that changed. Portions used to be fitted against a single
+ * target, one day type at a time — which is fine until the same breakfast has
+ * to work on a rest day *and* a training day. It can't be re-weighed on
+ * Tuesday because you cooked it on Sunday, so fitting each day separately just
+ * means the last one you ran wins and every other day quietly drifts.
+ *
+ * So the portions are fitted against every kind of day at once. `counts` says
+ * how many times each portion is eaten on this kind of day — zero when that
+ * meal isn't on the menu — and `weight` is how many weekdays actually use it,
+ * so the days that come round most often pull hardest.
+ */
+export type DayRow = {
+  id: number;
+  name: string;
+  weight: number;
+  target: Macros;
+  counts: number[];
+};
+
+/**
+ * How a group of meals divides its calories between them.
+ *
+ * Part of this problem is genuinely underdetermined. If dates before a swim
+ * and yoghurt after it are the only two meals on swim days, the fit knows what
+ * the pair must add up to, but nothing tells it the split — 90/10 costs
+ * exactly the same as 20/80. Left alone the solver picks whichever is nearest
+ * the plan already written, which is how a handful of dates ends up carrying
+ * half the session's calories.
+ *
+ * A share rule says what the split should be. It is a soft term, so it gives
+ * way when the macros need it to, but among answers the macros can't tell
+ * apart it picks yours.
+ */
+export type ShareRule = {
+  /** Meals in the group: which portions they own, and the share they want. */
+  members: { mealId: number; name: string; vars: number[]; reps: number; want: number }[];
+};
+
+/**
+ * How hard a share pulls.
+ *
+ * A share exists to break a tie the macros cannot break, so it must be strong
+ * enough to choose the split and weak enough never to buy it with accuracy.
+ * Swept against the real plan. Below about 0.05 a 20/80 share barely moves the
+ * split; above about 1.0 it will buy the split with 100 kcal a day, which is
+ * not a trade anyone asked for. At 0.3 the split moves as far as the portion
+ * limits allow and the mean daily miss *improves* — pinning the degenerate
+ * direction leaves the solver a better-posed problem than it had before.
+ *
+ * When the share still can't be met it is because a portion is against a
+ * limit, and `ShareOutcome.blocked` says so rather than leaving you to wonder.
+ */
+const SHARE_WEIGHT = 0.3;
 
 type Ctx = {
   ds: Density[];
   anchor: number[];
-  target: Macros;
+  rows: DayRow[];
+  /** Sum of row weights, so the macro term is a weighted mean and not a sum. */
+  totalWeight: number;
+  shares: ShareRule[];
   pen: Record<MacroKey, Penalty>;
   mode: Mode;
   fillRef: number;
 };
 
-function macroCost(ctx: Ctx, t: Macros): number {
+/* ------------------------------------------------------------------ */
+/* Cost                                                                */
+/* ------------------------------------------------------------------ */
+
+function macroCost(ctx: Ctx, target: Macros, t: Macros): number {
   let f = 0;
   for (const k of KEYS) {
-    const g = ctx.target[k];
+    const g = target[k];
     if (!g) continue;
     const rel = (t[k] - g) / g;
     const p = ctx.pen[k];
     f += p.w * (rel > 0 ? p.over : p.under) * rel * rel;
   }
-  const ft = ctx.target.fibre;
-  if (ft > 0 && t.fibre < ft) {
-    const rel = (t.fibre - ft) / ft;
-    f += FIBRE_WEIGHT * rel * rel;
-  }
   return f;
+}
+
+/** Totals for one kind of day: each portion counted as often as it is eaten. */
+function rowTotals(ctx: Ctx, row: DayRow, grams: number[]): Macros {
+  const out: Macros = { ...ZERO_MACROS };
+  for (let i = 0; i < ctx.ds.length; i++) {
+    const n = row.counts[i];
+    if (!n) continue;
+    const g = (grams[i] || 0) * n;
+    out.kcal += ctx.ds[i].kcal * g;
+    out.protein += ctx.ds[i].protein * g;
+    out.carbs += ctx.ds[i].carbs * g;
+    out.fat += ctx.ds[i].fat * g;
+  }
+  return out;
 }
 
 function anchorCost(ctx: Ctx, grams: number[]): number {
@@ -250,80 +319,106 @@ function anchorCost(ctx: Ctx, grams: number[]): number {
   return n ? (ANCHOR_WEIGHT * f) / n : 0;
 }
 
+/** Calories one meal contributes to a day it appears on. */
+function memberKcal(ctx: Ctx, m: ShareRule["members"][number], grams: number[]): number {
+  let k = 0;
+  for (const i of m.vars) k += ctx.ds[i].kcal * (grams[i] || 0);
+  return k * m.reps;
+}
+
+function shareCost(ctx: Ctx, grams: number[]): number {
+  let f = 0;
+  for (const rule of ctx.shares) {
+    const ks = rule.members.map((m) => memberKcal(ctx, m, grams));
+    const total = ks.reduce((a, b) => a + b, 0);
+    if (total <= 0) continue;
+    for (let i = 0; i < ks.length; i++) {
+      const rel = ks[i] / total - rule.members[i].want;
+      f += SHARE_WEIGHT * rel * rel;
+    }
+  }
+  return f;
+}
+
 function totalCost(ctx: Ctx, grams: number[]): number {
-  const t = totalsOf2(ctx.ds, grams);
-  let f = macroCost(ctx, t) + anchorCost(ctx, grams);
+  let f = 0;
+  for (const row of ctx.rows) {
+    f += (row.weight / ctx.totalWeight) * macroCost(ctx, row.target, rowTotals(ctx, row, grams));
+  }
+  f += anchorCost(ctx, grams) + shareCost(ctx, grams);
   if (ctx.mode === "volume" && ctx.fillRef > 0) {
     f -= VOLUME_WEIGHT * (fillOf(ctx.ds, grams) / ctx.fillRef);
   }
   return f;
 }
 
-function totalsOf2(ds: Density[], grams: number[]): Macros {
-  const out: Macros = { ...ZERO_MACROS };
-  for (let i = 0; i < ds.length; i++) {
-    const g = grams[i] || 0;
-    out.kcal += ds[i].kcal * g;
-    out.protein += ds[i].protein * g;
-    out.carbs += ds[i].carbs * g;
-    out.fat += ds[i].fat * g;
-    out.fibre += ds[i].fibre * g;
-  }
-  return out;
-}
-
 /**
  * Cost as a function of one portion, with everything else held still.
- * Evaluated in O(1) from the running totals rather than re-summing the day.
+ *
+ * `bases` holds each day's totals with portion `i` removed, so moving it is an
+ * O(rows) update rather than re-summing the whole week.
  */
-function costAlong(ctx: Ctx, base: Macros, i: number, x: number, grams: number[]): number {
+function costAlong(ctx: Ctx, bases: Macros[], i: number, x: number, grams: number[]): number {
   const d = ctx.ds[i];
-  const t: Macros = {
-    kcal: base.kcal + d.kcal * x,
-    protein: base.protein + d.protein * x,
-    carbs: base.carbs + d.carbs * x,
-    fat: base.fat + d.fat * x,
-    fibre: base.fibre + d.fibre * x,
-  };
-  let f = macroCost(ctx, t);
+  let f = 0;
 
-  // anchor, only the term that moves
-  const a = ctx.anchor[i];
-  let anch = 0;
-  let n = 0;
-  for (let j = 0; j < grams.length; j++) if (ctx.anchor[j]) n++;
-  if (a && n) {
-    const rel = (x - a) / a;
-    anch = (ANCHOR_WEIGHT * rel * rel) / n;
-    for (let j = 0; j < grams.length; j++) {
-      if (j === i || !ctx.anchor[j]) continue;
-      const r = (grams[j] - ctx.anchor[j]) / ctx.anchor[j];
-      anch += (ANCHOR_WEIGHT * r * r) / n;
-    }
+  for (let r = 0; r < ctx.rows.length; r++) {
+    const row = ctx.rows[r];
+    const n = row.counts[i] || 0;
+    const b = bases[r];
+    const g = x * n;
+    const t: Macros = {
+      kcal: b.kcal + d.kcal * g,
+      protein: b.protein + d.protein * g,
+      carbs: b.carbs + d.carbs * g,
+      fat: b.fat + d.fat * g,
+    };
+    f += (row.weight / ctx.totalWeight) * macroCost(ctx, row.target, t);
   }
-  f += anch;
 
+  // Anchor and shares both read the whole vector, so swap the value in and out.
+  const held = grams[i];
+  grams[i] = x;
+  f += anchorCost(ctx, grams) + shareCost(ctx, grams);
   if (ctx.mode === "volume" && ctx.fillRef > 0) {
-    let v = d.fill * x;
-    for (let j = 0; j < grams.length; j++) if (j !== i) v += ctx.ds[j].fill * (grams[j] || 0);
-    f -= VOLUME_WEIGHT * (v / ctx.fillRef);
+    f -= VOLUME_WEIGHT * (fillOf(ctx.ds, grams) / ctx.fillRef);
   }
+  grams[i] = held;
+
   return f;
 }
 
 /** Ternary search — the 1-D slice is convex, so this finds the true minimum. */
-function minimiseAlong(ctx: Ctx, base: Macros, i: number, b: Bounds, grams: number[]): number {
+function minimiseAlong(ctx: Ctx, bases: Macros[], i: number, b: Bounds, grams: number[]): number {
   let lo = b.min;
   let hi = b.max;
   if (hi - lo < 1e-9) return lo;
   for (let k = 0; k < 60; k++) {
     const m1 = lo + (hi - lo) / 3;
     const m2 = hi - (hi - lo) / 3;
-    if (costAlong(ctx, base, i, m1, grams) <= costAlong(ctx, base, i, m2, grams)) hi = m2;
+    if (costAlong(ctx, bases, i, m1, grams) <= costAlong(ctx, bases, i, m2, grams)) hi = m2;
     else lo = m1;
     if (hi - lo < 1e-4) break;
   }
   return (lo + hi) / 2;
+}
+
+/** Each day's totals with portion `i` taken out. */
+function basesWithout(ctx: Ctx, i: number, grams: number[]): Macros[] {
+  return ctx.rows.map((row) => {
+    const out: Macros = { ...ZERO_MACROS };
+    for (let j = 0; j < ctx.ds.length; j++) {
+      if (j === i) continue;
+      const n = row.counts[j];
+      if (!n) continue;
+      const g = (grams[j] || 0) * n;
+      out.kcal += ctx.ds[j].kcal * g;
+      out.protein += ctx.ds[j].protein * g;
+      out.carbs += ctx.ds[j].carbs * g;
+      out.fat += ctx.ds[j].fat * g;
+    }
+    return out;
+  });
 }
 
 /* ------------------------------------------------------------------ */
@@ -332,15 +427,17 @@ function minimiseAlong(ctx: Ctx, base: Macros, i: number, b: Bounds, grams: numb
 
 export type Feasible = { min: Macros; max: Macros };
 
-/** The macro range the bounds physically allow. */
-export function feasibleRange(items: BoundedItem[]): Feasible {
+/** The macro range the bounds physically allow, for one kind of day. */
+export function feasibleRange(items: BoundedItem[], counts?: number[]): Feasible {
   const min: Macros = { ...ZERO_MACROS };
   const max: Macros = { ...ZERO_MACROS };
-  items.forEach((it) => {
+  items.forEach((it, i) => {
+    const n = counts ? counts[i] ?? 0 : 1;
+    if (!n) return;
     const d = density(it);
     const b = boundsFor(it);
-    (["kcal", "protein", "carbs", "fat", "fibre"] as const).forEach((k) => {
-      const per = d[k];
+    (["kcal", "protein", "carbs", "fat"] as const).forEach((k) => {
+      const per = d[k] * n;
       min[k] += per * (per >= 0 ? b.min : b.max);
       max[k] += per * (per >= 0 ? b.max : b.min);
     });
@@ -358,10 +455,12 @@ export type Suggestion = {
   to: number;
   /** How much of the shortfall this one change would close, in macro units. */
   closes: number;
+  /** Which kind of day it would fix, when there is more than one. */
+  dayName?: string;
 };
 
 /**
- * When a macro can't reach its target, work out whose limit is in the way.
+ * When a macro cannot reach its target, work out whose limit is in the way.
  *
  * For each ingredient pinned against a bound in the unhelpful direction, ask:
  * how far would this bound have to move to close the gap on its own, and is
@@ -371,7 +470,8 @@ export function suggestFixes(
   items: BoundedItem[],
   grams: number[],
   target: Macros,
-  after: Macros
+  after: Macros,
+  opts: { counts?: number[]; dayName?: string } = {}
 ): Suggestion[] {
   const out: Suggestion[] = [];
 
@@ -382,8 +482,9 @@ export function suggestFixes(
 
     items.forEach((it, i) => {
       if (it.locked) return;
-      const d = density(it);
-      const per = d[key];
+      const n = opts.counts ? opts.counts[i] ?? 0 : 1;
+      if (!n) return;
+      const per = density(it)[key] * n;
       if (per <= 1e-6) return;
       const b = boundsFor(it);
       const at = grams[i];
@@ -405,74 +506,111 @@ export function suggestFixes(
         from: wantMore ? b.max : b.min,
         to: Math.round(to),
         closes: Math.abs(gap),
+        dayName: opts.dayName,
       });
     });
   }
 
   // Cheapest fix first: the smallest change to a limit.
-  return out
-    .sort((a, b) => Math.abs(a.to - a.from) - Math.abs(b.to - b.from))
-    .slice(0, 4);
+  return out.sort((a, b) => Math.abs(a.to - a.from) - Math.abs(b.to - b.from)).slice(0, 4);
 }
 
 /* ------------------------------------------------------------------ */
 /* Solve                                                               */
 /* ------------------------------------------------------------------ */
 
-export type OptimiseResult = {
-  grams: number[];
+export type DayResult = {
+  id: number;
+  name: string;
+  weight: number;
+  target: Macros;
   before: Macros;
   after: Macros;
-  cost: number;
   residual: Record<MacroKey, number>;
   hit: Record<MacroKey, boolean>;
-  constrained: boolean;
-  binding: number[];
   feasible: Feasible;
   unreachable: { key: MacroKey; by: number }[];
+};
+
+export type SolveResult = {
+  grams: number[];
+  days: DayResult[];
+  /** Every day averaged by how often it comes round, which is what a week is. */
+  weekly: { target: Macros; before: Macros; after: Macros };
+  binding: number[];
   suggestions: Suggestion[];
-  /** Sum of satiety-weighted volume, and the same for the original plan. */
+  shares: ShareOutcome[];
   fill: { before: number; after: number };
+};
+
+/**
+ * What actually happened to a share, and why.
+ *
+ * A share you asked for and did not get is not a failure to report quietly:
+ * it always means a portion limit is in the way, and the fix is a number you
+ * can change. `blocked` says which end, and `suggestGrams` is what that limit
+ * would have to become.
+ */
+export type ShareOutcome = {
+  mealId: number;
+  name: string;
+  want: number;
+  got: number;
+  blocked: "min" | "max" | null;
+  /** Total grams this meal would need for the share you asked for. */
+  suggestGrams: number | null;
 };
 
 export type Options = {
   mode?: Mode;
   /** Skip the discrete snap — used by the accuracy tests. */
   continuous?: boolean;
+  /** How each group of meals should divide its calories. */
+  shares?: ShareRule[];
 };
 
-export function optimisePortions(
-  items: BoundedItem[],
-  target: Macros,
-  opts: Options = {}
-): OptimiseResult {
+const emptyMacros = (): Macros => ({ ...ZERO_MACROS });
+
+function tolerance(target: Macros, k: MacroKey): number {
+  return Math.max(2, target[k] * 0.02);
+}
+
+/**
+ * Fit one set of portions to every kind of day at once.
+ *
+ * The portions are the unknowns and there is exactly one of each, because
+ * there is exactly one of each in the fridge. What varies from day to day is
+ * which meals are on the menu, and that is what `rows` describes.
+ */
+export function solveRows(items: BoundedItem[], rows: DayRow[], opts: Options = {}): SolveResult {
   const mode: Mode = opts.mode ?? "balanced";
   const start = items.map((i) => Math.max(0, Number(i.grams) || 0));
-  const before = totalsOf(items, start);
+  const ds = items.map(density);
+  const bounds = items.map(boundsFor);
 
-  if (items.length === 0) {
+  // A day type nobody has put in the week is not a day you eat, and fitting to
+  // it would drag every shared portion toward a meal that never happens.
+  const live = rows.filter((r) => r.weight > 0);
+  const usable = live.length ? live : rows;
+
+  if (items.length === 0 || usable.length === 0) {
     return {
-      grams: [],
-      before,
-      after: before,
-      cost: 0,
-      residual: { kcal: 0, protein: 0, carbs: 0, fat: 0 },
-      hit: { kcal: true, protein: true, carbs: true, fat: true },
-      constrained: false,
+      grams: start,
+      days: [],
+      weekly: { target: emptyMacros(), before: emptyMacros(), after: emptyMacros() },
       binding: [],
-      feasible: { min: { ...ZERO_MACROS }, max: { ...ZERO_MACROS } },
-      unreachable: [],
       suggestions: [],
+      shares: [],
       fill: { before: 0, after: 0 },
     };
   }
 
-  const ds = items.map(density);
-  const bounds = items.map(boundsFor);
   const ctx: Ctx = {
     ds,
     anchor: start.slice(),
-    target,
+    rows: usable,
+    totalWeight: usable.reduce((a, r) => a + r.weight, 0) || 1,
+    shares: opts.shares ?? [],
     pen: PENALTIES[mode],
     mode,
     fillRef: Math.max(1, fillOf(ds, start)),
@@ -483,8 +621,9 @@ export function optimisePortions(
 
   // --- Several starting points, because the discrete pass afterwards is what
   // --- actually decides the answer and it is sensitive to where it begins.
-  const kcalNow = before.kcal || 1;
-  const scale = target.kcal / kcalNow;
+  const heaviest = usable.reduce((a, r) => (r.weight > a.weight ? r : a), usable[0]);
+  const nowKcal = rowTotals(ctx, heaviest, start).kcal || 1;
+  const scale = heaviest.target.kcal / nowKcal;
   const starts: number[][] = [
     project(start),
     project(start.map((v) => v * scale)),
@@ -496,7 +635,7 @@ export function optimisePortions(
   let bestCost = Infinity;
 
   for (const s of starts) {
-    let x = s.slice();
+    const x = s.slice();
     let prev = totalCost(ctx, x);
 
     for (let sweep = 0; sweep < 60; sweep++) {
@@ -504,19 +643,7 @@ export function optimisePortions(
         if (items[i].locked) continue;
         const b = bounds[i];
         if (b.max - b.min < 1e-9) continue;
-
-        // running totals with i removed
-        const base: Macros = { ...ZERO_MACROS };
-        for (let j = 0; j < x.length; j++) {
-          if (j === i) continue;
-          const g = x[j];
-          base.kcal += ds[j].kcal * g;
-          base.protein += ds[j].protein * g;
-          base.carbs += ds[j].carbs * g;
-          base.fat += ds[j].fat * g;
-          base.fibre += ds[j].fibre * g;
-        }
-        x[i] = minimiseAlong(ctx, base, i, b, x);
+        x[i] = minimiseAlong(ctx, basesWithout(ctx, i, x), i, b, x);
       }
       const now = totalCost(ctx, x);
       if (prev - now < 1e-10) break;
@@ -531,25 +658,63 @@ export function optimisePortions(
   }
 
   let x = best ?? project(start);
+  if (!opts.continuous) x = discretise(ctx, items, bounds, x);
 
-  if (!opts.continuous) {
-    x = discretise(ctx, items, bounds, x);
+  // --- Results, day by day ------------------------------------------------
+  const days: DayResult[] = rows.map((row) => {
+    const before = rowTotals(ctx, row, start);
+    const after = rowTotals(ctx, row, x);
+    const residual = {
+      kcal: after.kcal - row.target.kcal,
+      protein: after.protein - row.target.protein,
+      carbs: after.carbs - row.target.carbs,
+      fat: after.fat - row.target.fat,
+    };
+    const feasible = feasibleRange(items, row.counts);
+    return {
+      id: row.id,
+      name: row.name,
+      weight: row.weight,
+      target: row.target,
+      before,
+      after,
+      residual,
+      hit: {
+        kcal: Math.abs(residual.kcal) <= tolerance(row.target, "kcal"),
+        protein: Math.abs(residual.protein) <= tolerance(row.target, "protein"),
+        carbs: Math.abs(residual.carbs) <= tolerance(row.target, "carbs"),
+        fat: Math.abs(residual.fat) <= tolerance(row.target, "fat"),
+      },
+      feasible,
+      unreachable: KEYS.flatMap((k) => {
+        if (row.target[k] > feasible.max[k])
+          return [{ key: k, by: row.target[k] - feasible.max[k] }];
+        if (row.target[k] < feasible.min[k])
+          return [{ key: k, by: row.target[k] - feasible.min[k] }];
+        return [];
+      }),
+    };
+  });
+
+  // --- The week, averaged by how often each kind of day comes round -------
+  const weekly = { target: emptyMacros(), before: emptyMacros(), after: emptyMacros() };
+  let wsum = 0;
+  for (const d of days) {
+    if (d.weight <= 0) continue;
+    wsum += d.weight;
+    for (const k of KEYS) {
+      weekly.target[k] += d.target[k] * d.weight;
+      weekly.before[k] += d.before[k] * d.weight;
+      weekly.after[k] += d.after[k] * d.weight;
+    }
   }
-
-  const after = totalsOf(items, x);
-  const residual = {
-    kcal: after.kcal - target.kcal,
-    protein: after.protein - target.protein,
-    carbs: after.carbs - target.carbs,
-    fat: after.fat - target.fat,
-  };
-  const tol = (k: MacroKey) => Math.max(2, target[k] * 0.02);
-  const hit = {
-    kcal: Math.abs(residual.kcal) <= tol("kcal"),
-    protein: Math.abs(residual.protein) <= tol("protein"),
-    carbs: Math.abs(residual.carbs) <= tol("carbs"),
-    fat: Math.abs(residual.fat) <= tol("fat"),
-  };
+  if (wsum > 0) {
+    for (const k of KEYS) {
+      weekly.target[k] /= wsum;
+      weekly.before[k] /= wsum;
+      weekly.after[k] /= wsum;
+    }
+  }
 
   const binding = x
     .map((v, i) =>
@@ -557,42 +722,135 @@ export function optimisePortions(
     )
     .filter((i) => i >= 0);
 
-  const feasible = feasibleRange(items);
-  const unreachable = KEYS.flatMap((k) => {
-    if (target[k] > feasible.max[k]) return [{ key: k, by: target[k] - feasible.max[k] }];
-    if (target[k] < feasible.min[k]) return [{ key: k, by: target[k] - feasible.min[k] }];
-    return [];
+  // Explain the day that came out worst, which is the one worth fixing.
+  const worst = days
+    .filter((d) => d.weight > 0)
+    .sort(
+      (a, b) =>
+        Math.abs(b.residual.kcal) / Math.max(1, b.target.kcal) -
+        Math.abs(a.residual.kcal) / Math.max(1, a.target.kcal)
+    )[0];
+
+  const suggestions = worst
+    ? suggestFixes(items, x, worst.target, worst.after, {
+        counts: rows.find((r) => r.id === worst.id)?.counts,
+        dayName: days.filter((d) => d.weight > 0).length > 1 ? worst.name : undefined,
+      })
+    : [];
+
+  const shares: ShareOutcome[] = ctx.shares.flatMap((rule) => {
+    const ks = rule.members.map((m) => memberKcal(ctx, m, x));
+    const total = ks.reduce((a, b) => a + b, 0);
+    return rule.members.map((m, i) => {
+      const got = total > 0 ? ks[i] / total : 0;
+      const off = got - m.want;
+      const free = m.vars.filter((v) => !items[v].locked);
+
+      // A share only misses because something is pinned. Too big a share means
+      // its portions are on their minimums; too small, on their maximums.
+      const allAt = (end: "min" | "max") =>
+        free.length > 0 &&
+        free.every((v) =>
+          end === "min" ? x[v] <= bounds[v].min + 1e-6 : x[v] >= bounds[v].max - 1e-6
+        );
+
+      let blocked: "min" | "max" | null = null;
+      if (Math.abs(off) > 0.02) {
+        if (off > 0 && allAt("min")) blocked = "min";
+        else if (off < 0 && allAt("max")) blocked = "max";
+      }
+
+      const nowGrams = m.vars.reduce((a, v) => a + x[v], 0);
+      const suggestGrams =
+        blocked && ks[i] > 0
+          ? Math.round((nowGrams * (m.want * total)) / ks[i])
+          : null;
+
+      return { mealId: m.mealId, name: m.name, want: m.want, got, blocked, suggestGrams };
+    });
   });
 
   return {
     grams: x,
-    before,
-    after,
-    cost: totalCost(ctx, x),
-    residual,
-    hit,
-    constrained: binding.length > 0,
+    days,
+    weekly,
     binding,
-    feasible,
-    unreachable,
-    suggestions: suggestFixes(items, x, target, after),
+    suggestions,
+    shares,
     fill: { before: fillOf(ds, start), after: fillOf(ds, x) },
+  };
+}
+
+export type OptimiseResult = {
+  grams: number[];
+  before: Macros;
+  after: Macros;
+  residual: Record<MacroKey, number>;
+  hit: Record<MacroKey, boolean>;
+  constrained: boolean;
+  binding: number[];
+  feasible: Feasible;
+  unreachable: { key: MacroKey; by: number }[];
+  suggestions: Suggestion[];
+  fill: { before: number; after: number };
+};
+
+/**
+ * Fit one set of portions to one target — the single-day case, which is still
+ * what the shopping list and the log want.
+ */
+export function optimisePortions(
+  items: BoundedItem[],
+  target: Macros,
+  opts: Options = {}
+): OptimiseResult {
+  const row: DayRow = { id: 0, name: "", weight: 1, target, counts: items.map(() => 1) };
+  const res = solveRows(items, [row], opts);
+  const day = res.days[0];
+
+  if (!day) {
+    const before = totalsOf(
+      items,
+      items.map((i) => Math.max(0, Number(i.grams) || 0))
+    );
+    return {
+      grams: res.grams,
+      before,
+      after: before,
+      residual: { kcal: 0, protein: 0, carbs: 0, fat: 0 },
+      hit: { kcal: true, protein: true, carbs: true, fat: true },
+      constrained: false,
+      binding: [],
+      feasible: { min: emptyMacros(), max: emptyMacros() },
+      unreachable: [],
+      suggestions: [],
+      fill: res.fill,
+    };
+  }
+
+  return {
+    grams: res.grams,
+    before: day.before,
+    after: day.after,
+    residual: day.residual,
+    hit: day.hit,
+    constrained: res.binding.length > 0,
+    binding: res.binding,
+    feasible: day.feasible,
+    unreachable: day.unreachable,
+    suggestions: res.suggestions,
+    fill: res.fill,
   };
 }
 
 /**
  * Snap to amounts you can actually weigh, then win back what that cost.
  *
- * Single-portion nudges plateau quickly — one portion can't move without
+ * Single-portion nudges plateau quickly — one portion cannot move without
  * breaking calories. Pairwise moves (one up, one down) get off that plateau,
- * and they're what closes the last few grams.
+ * and they are what closes the last few grams.
  */
-function discretise(
-  ctx: Ctx,
-  items: BoundedItem[],
-  bounds: Bounds[],
-  xIn: number[]
-): number[] {
+function discretise(ctx: Ctx, items: BoundedItem[], bounds: Bounds[], xIn: number[]): number[] {
   const snap = (v: number, i: number) => {
     const b = bounds[i];
     const s = b.unit ?? b.step;

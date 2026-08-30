@@ -4,6 +4,13 @@
  * Score is the mean absolute percentage error across the four macros after
  * the solver has finished and portions have been snapped to weighable
  * amounts. Lower is better. Run with: npx tsx bench/compare.ts
+ *
+ * Note that the score weights all four macros equally and the solver does not:
+ * protein carries nearly three times the weight of carbohydrate on purpose. So
+ * the handful of plans at the top of `--worst` are mostly ones where the two
+ * genuinely conflict and the solver chose to protect protein — which is the
+ * behaviour asked for, being scored as an error. Read the median and p90; the
+ * tail is measuring the metric as much as the solver.
  */
 import { optimisePortions as oldSolve } from "./old-optimise";
 import { optimisePortions as newSolve, boundsFor as newBounds } from "../lib/optimise";
@@ -71,6 +78,7 @@ let oldProteinMiss = 0;
 let newProteinMiss = 0;
 let oldWorst = 0;
 let newWorst = 0;
+const newAll: { e: number; target: any; after: any }[] = [];
 
 /**
  * Build a target that is genuinely reachable: take a random point inside each
@@ -115,6 +123,7 @@ for (let t = 0; t < TRIALS; t++) {
   newKcal += Math.abs(b.after.kcal - target.kcal);
   oldProteinMiss += Math.max(0, target.protein - a.after.protein);
   newProteinMiss += Math.max(0, target.protein - b.after.protein);
+  newAll.push({ e: eb, target, after: b.after });
   if (eb <= ea + 1e-9) newWins++;
 }
 
@@ -129,3 +138,17 @@ console.log(`mean kcal miss      new     ${f(newKcal / TRIALS)} kcal`);
 console.log(`mean protein short  old     ${f(oldProteinMiss / TRIALS)} g`);
 console.log(`mean protein short  new     ${f(newProteinMiss / TRIALS)} g`);
 console.log(`new at least as good in     ${((100 * newWins) / TRIALS).toFixed(1)}% of plans`);
+
+const sorted = newAll.map((x) => x.e).sort((a, b) => a - b);
+const pc = (q: number) => f(sorted[Math.floor(q * (sorted.length - 1))]);
+console.log(`new error   median/p90/p99  ${pc(0.5)}% / ${pc(0.9)}% / ${pc(0.99)}%`);
+
+if (process.argv.includes("--worst")) {
+  console.log("\nworst five, and what the denominators were:");
+  for (const w of [...newAll].sort((a, b) => b.e - a.e).slice(0, 5)) {
+    const parts = (["kcal", "protein", "carbs", "fat"] as const).map(
+      (k) => `${k} ${Math.round(w.after[k])}/${Math.round(w.target[k])}`
+    );
+    console.log(`  ${f(w.e)}%  ${parts.join("  ")}`);
+  }
+}

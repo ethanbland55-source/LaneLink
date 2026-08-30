@@ -127,7 +127,6 @@ export type Profile = {
   calibrated_tdee: number | null;
   use_calibration: boolean;
   calorie_override: number | null;
-  fibre_per_1000: number;
   carb_floor_per_kg: number;
   /** Off means one flat number every day, and the week grid is ignored. */
   cycling: boolean;
@@ -141,10 +140,9 @@ export type Macros = {
   protein: number;
   carbs: number;
   fat: number;
-  fibre: number;
 };
 
-export const ZERO_MACROS: Macros = { kcal: 0, protein: 0, carbs: 0, fat: 0, fibre: 0 };
+export const ZERO_MACROS: Macros = { kcal: 0, protein: 0, carbs: 0, fat: 0 };
 
 /** Legacy single-multiplier levels, kept for the "flat" energy model. */
 export const ACTIVITY_LEVELS = [
@@ -453,7 +451,6 @@ function macrosFor(p: Profile, kcal: number): Macros {
     protein: Math.round(protein),
     carbs: Math.round(Math.max(0, carbs)),
     fat: Math.round(fat),
-    fibre: Math.round(Math.max(25, (kcal / 1000) * (p.fibre_per_1000 ?? 14))),
   };
 }
 
@@ -658,7 +655,6 @@ export type Item = {
   protein_100: number;
   carbs_100: number;
   fat_100: number;
-  fibre_100?: number;
 };
 
 export function itemMacros(i: Item): Macros {
@@ -668,7 +664,6 @@ export function itemMacros(i: Item): Macros {
     protein: (Number(i.protein_100) || 0) * f,
     carbs: (Number(i.carbs_100) || 0) * f,
     fat: (Number(i.fat_100) || 0) * f,
-    fibre: (Number(i.fibre_100) || 0) * f,
   };
 }
 
@@ -679,7 +674,6 @@ export function sumMacros(list: Macros[]): Macros {
       protein: a.protein + m.protein,
       carbs: a.carbs + m.carbs,
       fat: a.fat + m.fat,
-      fibre: a.fibre + (m.fibre || 0),
     }),
     { ...ZERO_MACROS }
   );
@@ -691,7 +685,6 @@ export function scaleMacros(m: Macros, k: number): Macros {
     protein: m.protein * k,
     carbs: m.carbs * k,
     fat: m.fat * k,
-    fibre: (m.fibre || 0) * k,
   };
 }
 

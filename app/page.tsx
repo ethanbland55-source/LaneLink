@@ -317,7 +317,6 @@ export default function TodayPage() {
         <MacroTile k="protein" eaten={eaten.protein} target={target.protein} />
         <MacroTile k="carbs" eaten={eaten.carbs} target={target.carbs} />
         <MacroTile k="fat" eaten={eaten.fat} target={target.fat} />
-        <MacroTile k="fibre" eaten={eaten.fibre} target={target.fibre} overIsFine />
       </section>
 
       {/* Add a meal */}
@@ -399,7 +398,7 @@ export default function TodayPage() {
                   <div className="mr-auto min-w-0">
                     <p className="truncate font-semibold">{e.meal_name}</p>
                     <div className="mt-1">
-                      <MacroChips m={t} fibre />
+                      <MacroChips m={t} />
                     </div>
                   </div>
                   {e.confirmed ? (
@@ -463,7 +462,6 @@ function stripItem(i: Item): Item {
     protein_100: Number(i.protein_100),
     carbs_100: Number(i.carbs_100),
     fat_100: Number(i.fat_100),
-    fibre_100: Number(i.fibre_100 ?? 0),
   };
 }
 
