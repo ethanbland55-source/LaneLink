@@ -327,6 +327,26 @@ So the Plan page shows each meal's protein against that threshold, counts how ma
 doses actually clear it, and tells you which meal is closest to clearing and by how
 much. A meal eaten twice a day counts as two doses.
 
+## Sheets on a phone
+
+A `position: fixed` overlay with a scrolling area inside it is where iOS Safari
+does its worst, so the rebalance dialog is a proper bottom sheet
+(`app/sheet.tsx`) rather than a div that happens to be on top. Everything it
+does is a thing that actually went wrong:
+
+- **The page scrolled behind it.** Dragging the header, the backdrop or the
+  footer scrolled the document underneath; so did reaching the end of the inner
+  scroll and carrying on. `overscroll-behavior: contain` fixes the second. Only
+  pinning the body — `position: fixed`, remembering the offset — fixes the
+  first, and remembering it is what stops the page jumping to the top when the
+  sheet closes.
+- **The keyboard hid the field you were typing in.** `dvh` accounts for browser
+  chrome and not for the keyboard, so a fixed sheet stayed full height and the
+  input went under it. The sheet is sized from `visualViewport` instead, which
+  is the only thing that knows.
+- **It didn't move like a sheet.** There's a grip, it follows your thumb, and a
+  flick past 110px closes it. Tapping the backdrop closes it; so does Escape.
+
 ## Rebalance the week
 
 **Portions are fixed, the menu is what changes.** That is the whole idea, and getting

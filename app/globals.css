@@ -33,6 +33,15 @@ body {
 .scroll-x {
   overflow-x: auto;
   -webkit-overflow-scrolling: touch;
+  overscroll-behavior-x: contain;
+}
+
+/* A scrolling region inside a sheet. Without this, reaching the bottom and
+   carrying on hands the gesture to the page behind, which on iOS reads as the
+   popup having lost your finger. */
+.overscroll-contain {
+  overscroll-behavior: contain;
+  -webkit-overflow-scrolling: touch;
 }
 
 /* The home indicator on a modern iPhone sits over the bottom ~34px. Anything
