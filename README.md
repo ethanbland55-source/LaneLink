@@ -256,6 +256,25 @@ createdb mealhub
 PGTEST=postgres://localhost/mealhub npx tsx bench/staging-db.ts
 ```
 
+### A settings change reaches the plan that is waiting
+
+Staging writes the portions a fit produced *at the time you pressed it*. Change
+a setting afterwards — fat per kg, protein, a session, your weight — and the
+targets those grams were fitted to no longer exist. Nothing noticed: the plan
+waiting for Monday sat there looking authoritative and would have come into
+force as an answer to a question that had already changed.
+
+So `PUT /api/profile` compares a signature of every field that moves a target,
+before and after the save, and re-runs the fit against what is staged when one
+of them changes. The day it applies on is kept; the live plan is untouched; the
+note on the queue says it was re-fitted rather than still claiming to be the
+rebalance you asked for.
+
+It anchors on the **live** portions rather than the staged ones. "Keep it
+close" should mean close to the food you are actually eating this week, not
+close to a draft of next week's — anchoring on the draft compounds two changes
+and drifts you twice as far as you meant to go.
+
 ### Putting the portions back
 
 Three things rewrite every portion at once — the weekly re-fit, a staged change

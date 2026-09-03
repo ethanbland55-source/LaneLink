@@ -18,7 +18,7 @@
 
 import { sql } from "./db";
 import { snapshot } from "./history";
-import { applyDuePortions } from "./pending";
+import { applyDuePortions, listPending, stagePortions } from "./pending";
 import { buildWeekPlan, normaliseDayType, type DayType, type Profile } from "./nutrition";
 import { fitWeek } from "./weekfit";
 import type { PlanMeal } from "./batch";
@@ -54,6 +54,77 @@ function toMeals(meals: Row[], ings: Row[]): PlanMeal[] {
         locked: !!i.locked,
       })) as any,
   }));
+}
+
+/**
+ * Re-fit the change that is waiting for roll day, against targets that have
+ * since moved.
+ *
+ * Staging writes the portions a fit produced *at the time you pressed it*. Then
+ * you change a setting — fat per kg, protein, a session, your weight — and the
+ * targets those portions were fitted to no longer exist. Nothing noticed. The
+ * plan waiting for Monday was an answer to a question you had already changed,
+ * and it would have come into force looking perfectly authoritative.
+ *
+ * So a settings change re-runs the fit and rewrites what is staged, keeping
+ * the day it applies on. It anchors on the *live* portions rather than the
+ * staged ones, because "keep it close" should mean close to the food you are
+ * actually eating this week, not close to a draft of next week's — otherwise
+ * two changes compound and you drift twice as far as you meant to.
+ */
+export async function restagePlan(
+  profile: Profile,
+  applyOn: string
+): Promise<{ staged: number } | null> {
+  try {
+    const waiting = await listPending();
+    if (!waiting.length) return null;
+
+    const fitted = await fitFromDb(profile, applyOn);
+    if (!fitted) return null;
+
+    const rows = fitted.meals.flatMap((m) =>
+      (m.ingredients as any[]).map((it, slot) => ({
+        meal_id: m.id,
+        slot,
+        name: String(it.name),
+        grams: Math.round(Number(it.grams) * 10) / 10,
+      }))
+    );
+
+    const staged = await stagePortions(rows, applyOn, "Re-fitted after a settings change");
+    return { staged };
+  } catch (e) {
+    console.warn("re-staging skipped:", e);
+    return null;
+  }
+}
+
+/**
+ * Load the plan out of the database and fit it. Shared by the two things that
+ * want a fresh fit — the weekly roll, which writes it to the plan, and a
+ * settings change, which writes it to what is staged.
+ */
+async function fitFromDb(profile: Profile, today?: string) {
+  const [dtRows, mealRows, ingRows, supRows] = await Promise.all([
+    sql`select * from day_types order by sort_order, id`,
+    sql`select * from meals order by sort_order, id`,
+    sql`select * from ingredients order by sort_order, id`,
+    sql`select * from supplements order by sort_order, id`.catch(() => [] as Row[]),
+  ]);
+
+  const dayTypes: DayType[] = (dtRows as Row[]).map((r, i) => normaliseDayType(r, i));
+  const meals = toMeals(mealRows as Row[], ingRows as Row[]);
+  if (!meals.length || !dayTypes.length) return null;
+
+  const supplements = (supRows as Row[]).map((s) => ({
+    ...s,
+    id: Number(s.id),
+    grams: Number(s.grams ?? 0),
+  })) as unknown as Supplement[];
+
+  const plan = buildWeekPlan(profile, dayTypes, today ? { today } : {});
+  return fitWeek(meals, plan, { mode: "balanced", supplements, drift: "keep_close" });
 }
 
 export type RefitResult = {

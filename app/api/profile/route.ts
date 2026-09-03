@@ -2,7 +2,9 @@ import { NextResponse } from "next/server";
 import { sql, ensureSchema } from "@/lib/db";
 import { normaliseProfile } from "@/lib/profile";
 import { applyRoll, rollState } from "@/lib/weekly";
-import { refitPlan } from "@/lib/refit";
+import { refitPlan, restagePlan } from "@/lib/refit";
+import { applyDayFor } from "@/lib/pending";
+import { dayKey } from "@/lib/nutrition";
 import type { WeighIn } from "@/lib/trend";
 import type { Profile } from "@/lib/nutrition";
 
@@ -81,9 +83,12 @@ export async function PUT(req: Request) {
   // Normalise on the way in too, so a stale client can't write nonsense.
   const b = normaliseProfile(await req.json());
   const prev = (await sql`
-    select to_char(plan_updated_on, 'YYYY-MM-DD') as plan_updated_on
+    select *, to_char(plan_updated_on, 'YYYY-MM-DD') as plan_updated_on,
+              to_char(phase_start, 'YYYY-MM-DD') as phase_start,
+              to_char(dob, 'YYYY-MM-DD') as dob
       from profile where id = 1`) as any[];
   const before: string | null = prev[0]?.plan_updated_on ?? null;
+  const targetsBefore = prev.length ? targetSignature(normaliseProfile(prev[0])) : null;
   const rows = await sql`
     update profile set
       sex = ${b.sex},
@@ -142,5 +147,53 @@ export async function PUT(req: Request) {
     await refitPlan(next, next.plan_updated_on);
   }
 
+  /**
+   * A settings change has to reach the plan that is waiting, not just the one
+   * in force. Staged portions were fitted to the targets as they stood when
+   * the button was pressed; change fat per kg or protein or a session and
+   * those targets no longer exist, but the staged grams sit there looking
+   * authoritative and would come into force on Monday as an answer to a
+   * question that had already changed.
+   */
+  if (targetsBefore && targetSignature(next) !== targetsBefore) {
+    await restagePlan(next, applyDayFor(next.plan_roll_dow ?? next.shop_start_dow, dayKey()));
+  }
+
   return NextResponse.json(next);
+}
+
+/**
+ * Everything that moves a target. Compared before and after a save so that a
+ * change to any of it can re-fit what is staged — and a change to a name, a
+ * shopping day or a display preference doesn't.
+ */
+function targetSignature(p: Profile): string {
+  return JSON.stringify([
+    p.sex,
+    p.dob,
+    p.height_cm,
+    p.weight_kg,
+    p.body_fat_pct,
+    p.bf_source,
+    p.activity,
+    p.base_activity,
+    p.energy_model,
+    p.goal,
+    p.protein_basis,
+    p.protein_per_kg,
+    p.fat_per_kg,
+    p.carb_floor_per_kg,
+    p.calorie_override,
+    p.cycling,
+    p.periodise,
+    p.week,
+    p.phase_start,
+    p.phase_weeks,
+    p.phase_start_adjust,
+    p.phase_end_adjust,
+    p.calibrated_tdee,
+    p.use_calibration,
+    p.plan_weight_kg,
+    p.plan_bf_pct,
+  ]);
 }

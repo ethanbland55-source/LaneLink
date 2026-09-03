@@ -302,6 +302,78 @@ async function main() {
   const otherMeal = overlayPending(2, [{ name: "Chicken Breast", grams: 190 }], pend);
   check("a different meal is untouched", otherMeal[0].grams === 190);
 
+  console.log("\n=== 9b. A settings change re-fits what is staged ===\n");
+  const { restagePlan } = await import("../lib/refit");
+  const { normaliseProfile } = await import("../lib/profile");
+
+  await discardPending();
+  await sql`delete from day_types`;
+  await sql`
+    insert into day_types (id, name, sort_order, sessions)
+    values (1, 'Rest', 0, '[]'::jsonb),
+           (2, 'Swim', 1, '[{"activity":"swim","level":"moderate","met":8.3,"minutes":90}]'::jsonb)`;
+  await sql`
+    update profile set sex='male', dob='2007-01-01', height_cm=182.9, weight_kg=78,
+      body_fat_pct=12, bf_source='skinfold', energy_model='sessions', base_activity=1.25,
+      cycling=true, protein_basis='lean', protein_per_kg=2.45, fat_per_kg=0.65,
+      carb_floor_per_kg=1, calorie_override=null,
+      week_ids='{"mon":2,"tue":2,"wed":1,"thu":2,"fri":2,"sat":1,"sun":1}'::jsonb,
+      plan_roll_dow=1, shop_start_dow=6 where id = 1`;
+
+  await saveMeal(sql, 1, [
+    { name: "Rice Cakes", grams: 70 },
+    { name: "Banana", grams: 210 },
+  ]);
+  await saveMeal(sql, 2, [{ name: "Chicken Breast", grams: 190 }]);
+
+  const profRow = (await sql`
+    select *, to_char(phase_start,'YYYY-MM-DD') as phase_start,
+              to_char(dob,'YYYY-MM-DD') as dob from profile where id = 1`) as any[];
+  const prof = normaliseProfile(profRow[0]);
+
+  // Something is staged, fitted under fat 0.65.
+  await stagePortions(
+    [
+      { meal_id: 1, slot: 0, name: "Rice Cakes", grams: 60 },
+      { meal_id: 2, slot: 0, name: "Chicken Breast", grams: 175 },
+    ],
+    "2026-09-07",
+    "Rebalanced"
+  );
+  const staged0 = await listPending();
+  check("a change is staged to begin with", staged0.length === 2, `${staged0.length}`);
+
+  // Now fat moves to 0.8 — the targets those grams were fitted to are gone.
+  await sql`update profile set fat_per_kg = 0.8 where id = 1`;
+  const reread = (await sql`
+    select *, to_char(phase_start,'YYYY-MM-DD') as phase_start,
+              to_char(dob,'YYYY-MM-DD') as dob from profile where id = 1`) as any[];
+  const restaged = await restagePlan(normaliseProfile(reread[0]), "2026-09-07");
+  check("re-staging runs and writes something", (restaged?.staged ?? 0) > 0, `${restaged?.staged} staged`);
+
+  const nowStaged = await listPending();
+  check("the queue still applies on the same day", nowStaged.every((r) => r.apply_on === "2026-09-07"));
+  check(
+    "and it is marked as re-fitted, not left saying 'Rebalanced'",
+    nowStaged.every((r) => r.note === "Re-fitted after a settings change"),
+    nowStaged[0]?.note ?? "none"
+  );
+  check(
+    "the live plan is untouched by the re-stage",
+    Number(
+      ((await sql`select grams from ingredients where meal_id = 1 and sort_order = 0`) as any[])[0]
+        .grams
+    ) === 70
+  );
+  console.log(
+    `            staged now: ${nowStaged.map((r) => `${r.name} ${r.was_grams}→${r.grams}`).join(", ")}`
+  );
+
+  // With nothing staged it must do nothing rather than inventing a stage.
+  await discardPending();
+  const none = await restagePlan(prof, "2026-09-07");
+  check("nothing staged means nothing to re-stage", none === null);
+
   console.log("\n=== 10. applyDayFor ===\n");
   check("Thursday stages for the next Monday", applyDayFor(1, "2026-09-03") === "2026-09-07");
   check("Saturday stages for the next Monday", applyDayFor(1, "2026-09-05") === "2026-09-07");
