@@ -25,7 +25,10 @@ export async function POST(req: Request) {
     // Vercel is https; localhost isn't, and a secure cookie there never sticks.
     secure: process.env.NODE_ENV === "production",
     path: "/",
-    maxAge: SESSION_MAX_AGE,
+    // Deliberately no maxAge, which makes this a *session* cookie: closing the
+    // app signs you out. The signed payload carries its own expiry
+    // (SESSION_MAX_AGE) as the backstop for a phone that suspends the app
+    // rather than closing it.
   });
   return res;
 }

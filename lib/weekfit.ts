@@ -34,6 +34,7 @@ import {
   solveRows,
   type BoundedItem,
   type DayRow,
+  type Drift,
   type Mode,
   type ShareRule,
   type SolveResult,
@@ -350,13 +351,20 @@ export type WeekFitResult = SolveResult & {
 export function fitWeek(
   meals: PlanMeal[],
   plan: WeekPlan,
-  opts: { mode?: Mode; continuous?: boolean; supplements?: Supplement[] } = {}
+  opts: {
+    mode?: Mode;
+    continuous?: boolean;
+    supplements?: Supplement[];
+    /** "keep_close" adjusts the plan you have; "free" builds the best one. */
+    drift?: Drift;
+  } = {}
 ): WeekFitResult {
   const fit = buildWeekFit(meals, plan, opts.supplements);
   const res = solveRows(fit.items, fit.rows, {
     mode: opts.mode ?? "balanced",
     continuous: opts.continuous,
     shares: fit.shares,
+    drift: opts.drift,
   });
 
   // Expand over the same meals the fit was built on, so a batch whose recipe

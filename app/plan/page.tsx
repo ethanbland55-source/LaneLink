@@ -3,6 +3,7 @@
 import { useEffect, useMemo, useState } from "react";
 import Link from "next/link";
 import { RecalculateDialog } from "../recalculate";
+import { applyDayFor, type PendingPortion } from "@/lib/pending";
 import { Bar, MACRO_COLOR, MACRO_LABEL, Segmented, Stat, type MacroKey } from "../macro-ui";
 import { type BoundedItem } from "@/lib/optimise";
 import { appliesOn, mealGroups, weekStanding, weeklyAverage, type PlanMeal } from "@/lib/weekfit";
@@ -87,15 +88,21 @@ export default function PlanPage() {
   const [showRecalc, setShowRecalc] = useState(false);
   const [planFor, setPlanFor] = useState<number>(0);
   const [advanced, setAdvanced] = useState(false);
+  /** Portions agreed but waiting for roll day. See lib/pending.ts. */
+  const [pending, setPending] = useState<PendingPortion[]>([]);
 
   useEffect(() => {
     (async () => {
-      const [p, m, dt, su] = await Promise.all([
+      const [p, m, dt, su, pe] = await Promise.all([
         fetch("/api/profile").then((r) => r.json()),
         fetch("/api/meals").then((r) => r.json()),
         fetch("/api/day-types").then((r) => r.json()),
         fetch("/api/supplements").then((r) => r.json()),
+        fetch("/api/pending")
+          .then((r) => r.json())
+          .catch(() => ({ portions: [] })),
       ]);
+      setPending(pe.portions ?? []);
       setProfile(normaliseProfile(p));
       setMeals(
         (m as any[]).map((x) => ({
@@ -115,6 +122,16 @@ export default function PlanPage() {
   const plan = useMemo(
     () => (profile ? buildWeekPlan(profile, dayTypes) : null),
     [profile, dayTypes]
+  );
+
+  const todayKey = useMemo(() => dayKey(), []);
+  /** The day a change made now would come into force. */
+  const rollDay = useMemo(
+    () =>
+      profile
+        ? applyDayFor(profile.plan_roll_dow ?? profile.shop_start_dow, todayKey)
+        : todayKey,
+    [profile, todayKey]
   );
 
   // Default to whichever day type the week uses most — usually the one you
@@ -365,15 +382,79 @@ export default function PlanPage() {
    * The rebalance covers the whole week, so it comes back with every meal —
    * portions and the splits you set while you were in there.
    */
-  async function applyRecalc(next: PlanMeal[]) {
+  /**
+   * Applying a rebalance, either now or on the day it is really for.
+   *
+   * Staged is the default and the honest one. Mid-week the containers in the
+   * fridge already hold this week's portions; changing the numbers the app
+   * shows does not change the food, it just makes the app wrong until Sunday.
+   * So the new portions wait for roll day, and only the shopping list — which
+   * is buying for the week after — reads them in the meantime.
+   *
+   * Shares are a different kind of thing and are saved either way: they are an
+   * instruction to the solver rather than a weight on a plate, so there is
+   * nothing about them that has to wait.
+   */
+  async function applyRecalc(next: PlanMeal[], when: "now" | "staged") {
     const merged = meals.map((m) => {
       const n = next.find((x) => x.id === m.id);
       return n ? { ...m, ingredients: n.ingredients, share_pct: n.share_pct ?? null } : m;
     });
-    for (const m of merged) await persist(m);
-    setMeals(merged);
+
+    if (when === "now") {
+      for (const m of merged) await persist(m);
+      setMeals(merged);
+      setPending([]);
+      setShowRecalc(false);
+      flash("Week rebalanced");
+      return;
+    }
+
+    // Shares now, portions later.
+    for (const m of merged) {
+      const live = meals.find((x) => x.id === m.id);
+      if (!live) continue;
+      await persist({
+        ...live,
+        share_pct: m.share_pct ?? null,
+        ingredients: live.ingredients.map((it, i) => ({
+          ...it,
+          share_pct: m.ingredients[i]?.share_pct ?? null,
+        })),
+      } as Meal);
+    }
+
+    const portions = merged.flatMap((m) =>
+      m.ingredients.map((it: any) => ({ ingredient_id: Number(it.id), grams: Number(it.grams) }))
+    );
+    const res = await fetch("/api/pending", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ portions, note: "Rebalanced" }),
+    }).then((r) => r.json());
+
+    await loadPending();
     setShowRecalc(false);
-    flash("Week rebalanced");
+    flash(
+      res.count > 0
+        ? `${res.count} portion${res.count === 1 ? "" : "s"} staged`
+        : "Nothing needed changing"
+    );
+  }
+
+  async function loadPending() {
+    try {
+      const r = await fetch("/api/pending").then((x) => x.json());
+      setPending(r.portions ?? []);
+    } catch {
+      setPending([]);
+    }
+  }
+
+  async function discardStaged() {
+    await fetch("/api/pending", { method: "DELETE" });
+    setPending([]);
+    flash("Staged changes discarded");
   }
 
   async function deleteMeal(id: number) {
@@ -455,9 +536,56 @@ export default function PlanPage() {
           plan={plan}
           supplements={supplements}
           defaultMode={profile.calorie_override != null ? "calories_exact" : "balanced"}
+          applyOn={rollDay === todayKey ? null : rollDay}
           onClose={() => setShowRecalc(false)}
           onApply={applyRecalc}
         />
+      )}
+
+      {/* Staged, not yet in force. The one thing you must be able to see at a
+          glance, because otherwise the plan on screen and the plan the shop
+          bought for disagree with nothing to explain why. */}
+      {pending.length > 0 && (
+        <section className="card border border-[var(--color-carbs)]/30 px-5 py-4">
+          <div className="flex items-baseline gap-3">
+            <p className="mr-auto text-sm font-bold">
+              {pending.length} portion{pending.length === 1 ? "" : "s"} waiting for{" "}
+              {new Date(pending[0].apply_on + "T12:00:00").toLocaleDateString(undefined, {
+                weekday: "long",
+                day: "numeric",
+                month: "short",
+              })}
+            </p>
+            <button className="btn btn-sm shrink-0" onClick={discardStaged}>
+              Discard
+            </button>
+          </div>
+          <p className="mt-1 text-xs leading-relaxed text-[var(--color-mut)]">
+            The plan below is what is in the fridge this week. The shopping list is already
+            buying for these.
+          </p>
+          <ul className="mt-2.5 space-y-0.5">
+            {pending.slice(0, 6).map((c) => (
+              <li
+                key={c.ingredient_id}
+                className="flex items-baseline gap-2 text-xs text-[var(--color-mut)]"
+              >
+                <span className="truncate">
+                  {c.meal_name} · {c.name}
+                </span>
+                <span className="ml-auto shrink-0 tabular-nums">
+                  {c.was_grams != null ? `${Math.round(c.was_grams)} → ` : ""}
+                  {Math.round(c.grams)} g
+                </span>
+              </li>
+            ))}
+          </ul>
+          {pending.length > 6 && (
+            <p className="mt-1 text-[0.7rem] text-[var(--color-mut)]">
+              and {pending.length - 6} more
+            </p>
+          )}
+        </section>
       )}
 
       {/* The week — what each kind of day should be, and what it is */}
@@ -1116,6 +1244,29 @@ export default function PlanPage() {
             ))}
           </select>
         </label>
+
+        <label className="mt-3 block">
+          <span className="label mb-1.5 block">Plan rolls over on</span>
+          <select
+            className="field w-full max-w-[13rem]"
+            value={profile.plan_roll_dow}
+            onChange={(e) => set("plan_roll_dow", Number(e.target.value))}
+          >
+            {DOW_LABELS.map((d, i) => (
+              <option key={d} value={i}>
+                {d}
+              </option>
+            ))}
+          </select>
+        </label>
+        <p className="mt-2 text-xs leading-relaxed text-[var(--color-mut)]">
+          Not the same day as the shop, and shouldn't be. You buy on{" "}
+          {DOW_LABELS[profile.shop_start_dow].toLowerCase()} for food you start eating on{" "}
+          {DOW_LABELS[profile.plan_roll_dow].toLowerCase()} — so the shopping list is built
+          against next week's targets, while the plan you're still eating holds still until
+          then. The block's drift steps on this day too, once a week rather than every
+          morning.
+        </p>
 
         <Link href="/shop" className="btn btn-accent mt-4 w-full">
           Open the shopping list

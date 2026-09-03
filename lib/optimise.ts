@@ -122,6 +122,44 @@ const PENALTIES: Record<Mode, Record<MacroKey, Penalty>> = {
 const ANCHOR_WEIGHT = 0.004;
 const VOLUME_WEIGHT = 0.02;
 
+/**
+ * The anchor, turned up until it is an objective in its own right.
+ *
+ * There is a real difference between two questions. "What is the best plan for
+ * these targets?" is what the tie-breaker weight answers, and it is the right
+ * question the first time you build a plan. "These targets have moved a
+ * little — what is the smallest change to the plan I already have?" is a
+ * different question, and answering it with the first weight gives you a plan
+ * that is technically better and practically unrecognisable: the solver has no
+ * reason not to halve the rice cakes and make it up in rice, because to the
+ * maths those are the same calories.
+ *
+ * They are not the same to you. You bought the rice cakes, you know what 70 g
+ * of them looks like on the plate, and a week where every portion moved 4 % is
+ * far easier to live with than a week where one moved 40 %. So `keep_close`
+ * weights the movement heavily enough to spread a change across the whole plan
+ * instead of dumping it on whichever ingredient is cheapest to sacrifice.
+ *
+ * It is still a penalty and not a constraint — a target that genuinely cannot
+ * be met without moving something a long way will still move it, and the fit
+ * reports how far. It just won't do it for a rounding error.
+ *
+ * 0.3 is where the knee is. `bench/anchor-sweep.ts` runs four sizes of change
+ * against seven weights; on an 8 % cut the free fit takes 50 % out of one
+ * portion, and 0.3 caps the worst move at 20 % while landing the macros
+ * *better* (4.3 % worst vs 5.7 %) for about 6 kcal a day. Past 0.6 the accuracy
+ * starts to go, which is the wrong trade — the point is to change the plan
+ * gently, not to refuse to change it.
+ */
+const CLOSE_ANCHOR_WEIGHT = 0.3;
+
+/** How hard a fit should try to keep the plan looking like it does now. */
+export type Drift = "free" | "keep_close";
+
+export function anchorWeightFor(drift: Drift | undefined): number {
+  return drift === "keep_close" ? CLOSE_ANCHOR_WEIGHT : ANCHOR_WEIGHT;
+}
+
 export type Density = {
   kcal: number;
   protein: number;
@@ -277,6 +315,7 @@ const SHARE_WEIGHT = 0.3;
 type Ctx = {
   ds: Density[];
   anchor: number[];
+  anchorWeight: number;
   rows: DayRow[];
   /** Sum of row weights, so the macro term is a weighted mean and not a sum. */
   totalWeight: number;
@@ -327,7 +366,7 @@ function anchorCost(ctx: Ctx, grams: number[]): number {
     f += rel * rel;
     n++;
   }
-  return n ? (ANCHOR_WEIGHT * f) / n : 0;
+  return n ? (ctx.anchorWeight * f) / n : 0;
 }
 
 /** Calories one meal contributes to a day it appears on. */
@@ -578,6 +617,14 @@ export type Options = {
   continuous?: boolean;
   /** How each group of meals should divide its calories. */
   shares?: ShareRule[];
+  /**
+   * Whether this is a fresh fit or an adjustment to the plan you already have.
+   * `keep_close` spreads a change over everything rather than letting one
+   * portion take it all. See CLOSE_ANCHOR_WEIGHT.
+   */
+  drift?: Drift;
+  /** Overrides `drift`. Exists so the benches can sweep it; the app uses drift. */
+  anchorWeight?: number;
 };
 
 const emptyMacros = (): Macros => ({ ...ZERO_MACROS });
@@ -619,6 +666,7 @@ export function solveRows(items: BoundedItem[], rows: DayRow[], opts: Options = 
   const ctx: Ctx = {
     ds,
     anchor: start.slice(),
+    anchorWeight: opts.anchorWeight ?? anchorWeightFor(opts.drift),
     rows: usable,
     totalWeight: usable.reduce((a, r) => a + r.weight, 0) || 1,
     shares: opts.shares ?? [],

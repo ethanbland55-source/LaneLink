@@ -146,6 +146,12 @@ export type Profile = {
   week: WeekMap;
   shop_days: number;
   shop_start_dow: number;
+  /**
+   * The weekday the plan itself rolls over on, 0 = Sunday. Separate from
+   * shopping day on purpose: you shop Saturday for food you start eating
+   * Monday, and the days in between are still running on the old plan.
+   */
+  plan_roll_dow: number;
 };
 
 export type Macros = {
@@ -293,12 +299,24 @@ export function phaseOf(p: Profile, today: string): Phase {
   );
   const total = weeks * 7;
   const clamped = Math.min(total, Math.max(0, daysIn));
-  const progress = total > 0 ? clamped / total : 1;
+
+  /**
+   * The drift steps once a week, not once a day.
+   *
+   * A target that slides every morning means the containers you portioned on
+   * Sunday are wrong by Wednesday and the shopping list disagrees with the
+   * plan it was built from. Holding it flat for the whole week and stepping on
+   * roll day is both easier to live with and easier to trust — and across the
+   * block the average adjustment comes out the same either way.
+   */
+  const weeksIn = Math.floor(clamped / 7);
+  const steppedDays = Math.min(total, weeksIn * 7);
+  const progress = total > 0 ? steppedDays / total : 1;
 
   return {
     ...base,
     progress,
-    week: Math.floor(clamped / 7) + 1,
+    week: weeksIn + 1,
     adjust: p.phase_start_adjust + (p.phase_end_adjust - p.phase_start_adjust) * progress,
     daysIn,
     daysLeft: total - clamped,

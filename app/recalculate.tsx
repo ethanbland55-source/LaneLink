@@ -8,6 +8,7 @@ import {
   MODES,
   type BoundedItem,
   type DayResult,
+  type Drift,
   type Mode,
   type ShareOutcome,
   type Suggestion,
@@ -39,6 +40,7 @@ export function RecalculateDialog({
   plan,
   supplements = [],
   defaultMode = "balanced",
+  applyOn = null,
   onClose,
   onApply,
 }: {
@@ -52,11 +54,26 @@ export function RecalculateDialog({
    */
   supplements?: Supplement[];
   defaultMode?: Mode;
+  /**
+   * The day a change would come into force — roll day, not today. Null means
+   * today is roll day, and there is nothing to wait for.
+   */
+  applyOn?: string | null;
   onClose: () => void;
-  onApply: (meals: PlanMeal[]) => Promise<void>;
+  onApply: (meals: PlanMeal[], when: "now" | "staged") => Promise<void>;
 }) {
   const [draft, setDraft] = useState<PlanMeal[]>(() => structuredClone(meals));
   const [mode, setMode] = useState<Mode>(defaultMode);
+  /**
+   * Whether this is a fresh plan or an adjustment to the one you have.
+   *
+   * Defaults to keeping close, because by the time you have a plan almost
+   * every press of this button is the second kind — the targets moved a little
+   * and you want the same food, resized. A free fit answers a 2% change by
+   * halving the banana, and it is right to, given what it was asked. It just
+   * isn't what you meant.
+   */
+  const [drift, setDrift] = useState<Drift>("keep_close");
   const [saving, setSaving] = useState(false);
   const [tab, setTab] = useState<"days" | "splits" | "portions" | "prep">("days");
   /**
@@ -72,9 +89,33 @@ export function RecalculateDialog({
   );
 
   const result = useMemo(
-    () => fitWeek(draft, plan, { mode, supplements }),
-    [draft, plan, mode, supplements]
+    () => fitWeek(draft, plan, { mode, supplements, drift }),
+    [draft, plan, mode, supplements, drift]
   );
+
+  /**
+   * How far the fit moves the plan, worst portion first.
+   *
+   * Worth putting on screen because it is the question you actually have
+   * standing in the kitchen: not "are the macros right" but "is my breakfast
+   * still my breakfast". Measured against the plan as it was when the dialog
+   * opened, so editing bounds in here doesn't quietly reset the baseline.
+   */
+  const movement = useMemo(() => {
+    const rows: { name: string; from: number; to: number; rel: number }[] = [];
+    for (const m of result.meals) {
+      const was = meals.find((x) => x.id === m.id);
+      if (!was) continue;
+      m.ingredients.forEach((it, i) => {
+        const from = Number(was.ingredients[i]?.grams ?? 0);
+        const to = Number(it.grams);
+        if (from <= 0 || Math.abs(to - from) < 1) return;
+        rows.push({ name: `${m.name} · ${it.name}`, from, to, rel: (to - from) / from });
+      });
+    }
+    rows.sort((a, b) => Math.abs(b.rel) - Math.abs(a.rel));
+    return rows;
+  }, [result.meals, meals]);
 
   const live = result.days.filter((d) => d.weight > 0);
   const unused = result.days.filter((d) => d.weight === 0);
@@ -307,7 +348,7 @@ export function RecalculateDialog({
     );
   }
 
-  async function apply() {
+  async function apply(when: "now" | "staged") {
     setSaving(true);
     // The shares you set here are part of the answer, so they are saved with it.
     await onApply(
@@ -321,7 +362,8 @@ export function RecalculateDialog({
             share_pct: d?.ingredients[i]?.share_pct ?? null,
           })),
         };
-      })
+      }),
+      when
     );
     setSaving(false);
   }
@@ -426,6 +468,52 @@ export function RecalculateDialog({
                 <p className="mt-2 text-xs text-[var(--color-mut)]">
                   {MODES.find((m) => m.value === mode)?.blurb}
                 </p>
+              </div>
+
+              <div className="pt-2">
+                <p className="label mb-2">How much it may change</p>
+                <Segmented
+                  size="sm"
+                  value={drift}
+                  onChange={(v) => setDrift(v as Drift)}
+                  options={[
+                    { value: "keep_close", label: "Keep it close" },
+                    { value: "free", label: "Best fit" },
+                  ]}
+                />
+                <p className="mt-2 text-xs leading-relaxed text-[var(--color-mut)]">
+                  {drift === "keep_close"
+                    ? "Spreads a change over everything instead of taking it all out of one thing. Slightly less exact on paper, much more like the food you already buy."
+                    : "Ignores what the plan looks like now and fits the targets outright. Right for a plan you are building from scratch, blunt for one you are adjusting."}
+                </p>
+
+                {movement.length > 0 && (
+                  <div className="mt-3 rounded-lg bg-[var(--color-surface)] px-3 py-2.5">
+                    <p className="text-xs font-semibold">
+                      {movement.length} portion{movement.length === 1 ? "" : "s"} move
+                      {movement.length === 1 ? "s" : ""}, the biggest by{" "}
+                      {Math.round(Math.abs(movement[0].rel) * 100)}%
+                    </p>
+                    <ul className="mt-1.5 space-y-0.5">
+                      {movement.slice(0, 4).map((m) => (
+                        <li
+                          key={m.name}
+                          className="flex items-baseline gap-2 text-xs text-[var(--color-mut)]"
+                        >
+                          <span className="truncate">{m.name}</span>
+                          <span className="ml-auto shrink-0 tabular-nums">
+                            {Math.round(m.from)} &rarr; {Math.round(m.to)} g
+                          </span>
+                        </li>
+                      ))}
+                    </ul>
+                    {movement.length > 4 && (
+                      <p className="mt-1 text-[0.7rem] text-[var(--color-mut)]">
+                        and {movement.length - 4} smaller
+                      </p>
+                    )}
+                  </div>
+                )}
               </div>
             </div>
           )}
@@ -636,16 +724,59 @@ export function RecalculateDialog({
         </div>
 
         {/* Footer */}
-        <div className="safe-b flex shrink-0 gap-2 border-t border-[#1c1f25] px-5 pt-4">
-          <button className="btn flex-1" onClick={onClose}>
-            Cancel
-          </button>
-          <button className="btn btn-accent flex-1" disabled={saving} onClick={apply}>
-            {saving ? "Applying…" : "Apply"}
-          </button>
+        <div className="safe-b shrink-0 border-t border-[#1c1f25] px-5 pt-3">
+          {applyOn && (
+            <p className="mb-2.5 text-xs leading-relaxed text-[var(--color-mut)]">
+              You are part-way through a week you have already shopped for and cooked. Staging
+              writes this to <b className="text-[var(--color-fg)]">{prettyDay(applyOn)}</b> — the
+              shopping list starts buying for it straight away, and the plan changes the morning
+              you start eating it.
+            </p>
+          )}
+          <div className="flex gap-2">
+            <button className="btn flex-1" onClick={onClose}>
+              Cancel
+            </button>
+            {applyOn ? (
+              <>
+                <button
+                  className="btn shrink-0"
+                  disabled={saving}
+                  onClick={() => apply("now")}
+                  title="Change the plan today, mid-week"
+                >
+                  Now
+                </button>
+                <button
+                  className="btn btn-accent flex-1"
+                  disabled={saving}
+                  onClick={() => apply("staged")}
+                >
+                  {saving ? "Saving…" : `Stage for ${prettyDay(applyOn)}`}
+                </button>
+              </>
+            ) : (
+              <button
+                className="btn btn-accent flex-1"
+                disabled={saving}
+                onClick={() => apply("now")}
+              >
+                {saving ? "Applying…" : "Apply"}
+              </button>
+            )}
+          </div>
         </div>
     </Sheet>
   );
+}
+
+/** "Mon 7 Sep" — short enough for a button, unambiguous enough to trust. */
+function prettyDay(day: string): string {
+  return new Date(day + "T12:00:00").toLocaleDateString(undefined, {
+    weekday: "short",
+    day: "numeric",
+    month: "short",
+  });
 }
 
 /* -------------------------------------------------------------------- */

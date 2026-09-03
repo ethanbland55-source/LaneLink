@@ -2,6 +2,7 @@
 
 import { usePathname } from "next/navigation";
 import { Nav } from "./nav";
+import { Lock } from "./lock";
 
 /**
  * The app chrome, or none of it.
@@ -15,6 +16,7 @@ export function Shell({ children }: { children: React.ReactNode }) {
 
   return (
     <>
+      <Lock />
       <Nav />
       <main className="mx-auto max-w-3xl px-4 pb-24 pt-5">{children}</main>
     </>

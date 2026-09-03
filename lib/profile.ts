@@ -124,6 +124,9 @@ export function normaliseProfile(p: any): Profile {
     week: normaliseWeek(p?.week_ids ?? p?.week),
     shop_days: Math.min(21, Math.max(1, Math.round(num(p?.shop_days, 7)))),
     shop_start_dow: Math.min(6, Math.max(0, Math.round(num(p?.shop_start_dow, 6)))),
+    // Monday by default — you shop Saturday, cook Sunday, and start the new
+    // plan Monday morning.
+    plan_roll_dow: Math.min(6, Math.max(0, Math.round(num(p?.plan_roll_dow, 1)))),
   };
 }
 

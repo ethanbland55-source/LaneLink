@@ -113,7 +113,8 @@ export async function PUT(req: Request) {
   }
 
   // --- Body fat, from whichever measurements are actually here -------------
-  const prof = (await sql`select sex, dob, height_cm, weight_kg from profile where id = 1`) as any[];
+  const prof = (await sql`
+    select sex, dob, height_cm, weight_kg, neck_cm, hip_cm from profile where id = 1`) as any[];
   const p = prof[0] ?? {};
   const sex = p.sex === "female" ? "female" : "male";
   const weightForBf = w ?? (Number(p.weight_kg) || 0);
@@ -144,13 +145,21 @@ export async function PUT(req: Request) {
       }
     }
 
-    if (bfPct == null && m.waist_cm != null && m.neck_cm != null) {
+    // Neck and hips are one-off measurements, so a reading that doesn't carry
+    // them falls back to the profile's. That's what lets the tape stay a real
+    // backup while you're using calipers: the waist is logged every time
+    // regardless of method, and on a day the skinfolds are missing or
+    // incomplete this still produces a figure rather than nothing.
+    const neck = m.neck_cm ?? (p.neck_cm == null ? null : Number(p.neck_cm));
+    const hip = m.hip_cm ?? (p.hip_cm == null ? null : Number(p.hip_cm));
+
+    if (bfPct == null && m.waist_cm != null && neck != null) {
       const est = navyBodyFat({
         sex,
         heightCm: Number(p.height_cm) || 0,
-        neckCm: m.neck_cm,
+        neckCm: neck,
         waistCm: m.waist_cm,
-        hipCm: m.hip_cm,
+        hipCm: hip,
         weightKg: weightForBf,
       });
       if (est) {

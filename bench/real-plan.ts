@@ -88,6 +88,7 @@ export const REAL_PROFILE: Profile = {
   week: { mon: 4, tue: 3, wed: 3, thu: 4, fri: 3, sat: 4, sun: 1 },
   shop_days: 7,
   shop_start_dow: 6,
+  plan_roll_dow: 1,
 };
 
 const ing = (

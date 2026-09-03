@@ -1,12 +1,20 @@
 import { NextResponse } from "next/server";
 import { sql, ensureSchema } from "@/lib/db";
 import { profileFor } from "@/lib/foods";
+import { applyDuePortions } from "@/lib/pending";
 
 export const dynamic = "force-dynamic";
 
-/** All meals with their ingredients, ordered. */
+/**
+ * All meals with their ingredients, ordered.
+ *
+ * This is the only place portions are read from, which makes it the right and
+ * only place to swap in a staged change that has come due. One statement,
+ * whether or not anything is waiting — see lib/pending.ts.
+ */
 export async function GET() {
   await ensureSchema();
+  await applyDuePortions();
   const meals = await sql`select * from meals order by sort_order, id`;
   const ings = await sql`select * from ingredients order by sort_order, id`;
   return NextResponse.json(

@@ -34,6 +34,9 @@ import { appliesOn } from "@/lib/shopping";
 import { servingGrams } from "@/lib/batch";
 
 import { normaliseProfile } from "@/lib/profile";
+import { CheatCard, CheatSheet } from "./cheat-ui";
+import { absorbCheat, cheatForWeek, daysAfter, type CheatMeal } from "@/lib/cheat";
+import { lastRollDay, nextRollDay } from "@/lib/weekly";
 
 type Meal = {
   id: number;
@@ -71,17 +74,24 @@ export default function TodayPage() {
   const [supplements, setSupplements] = useState<Supplement[]>([]);
   /** How many of each supplement have been taken today. */
   const [takenMap, setTakenMap] = useState<Map<number, number>>(new Map());
+  /** Cheat meals in the plan week around `day` — at most one counts. */
+  const [cheats, setCheats] = useState<CheatMeal[]>([]);
+  const [showCheat, setShowCheat] = useState(false);
 
   const load = useCallback(async (d: string) => {
     try {
-      const [p, m, l, dt, su, sl] = await Promise.all([
+      const [p, m, l, dt, su, sl, ch] = await Promise.all([
         fetch("/api/profile").then((r) => r.json()),
         fetch("/api/meals").then((r) => r.json()),
         fetch(`/api/log?day=${d}`).then((r) => r.json()),
         fetch("/api/day-types").then((r) => r.json()),
         fetch("/api/supplements").then((r) => r.json()),
         fetch(`/api/supplement-log?day=${d}`).then((r) => r.json()),
+        fetch(`/api/cheat?from=${addDays(d, -7)}&to=${addDays(d, 7)}`)
+          .then((r) => r.json())
+          .catch(() => []),
       ]);
+      setCheats(Array.isArray(ch) ? ch : []);
       setProfile(normaliseProfile(p));
       setMeals(m);
       setEntries(l);
@@ -174,6 +184,123 @@ export default function TodayPage() {
     () => meals.filter((m) => appliesOn(m, dayTypeId, dayTypes.length)),
     [meals, dayTypeId, dayTypes.length]
   );
+
+  /* --- the cheat meal, and what the week does about it ----------------- */
+
+  /**
+   * The plan week `day` falls in: roll day to the day before the next one.
+   *
+   * The allowance is one a week and the week that matters is the plan's, not
+   * the calendar's — the whole app runs Monday to Sunday off `plan_roll_dow`,
+   * and a cheat meal that reset on a different boundary would let you have two
+   * in four days without either of them looking like a second one.
+   */
+  const planWeek = useMemo(() => {
+    if (!profile) return null;
+    const dow = profile.plan_roll_dow ?? profile.shop_start_dow;
+    return { from: lastRollDay(dow, day), to: addDays(nextRollDay(dow, day), -1), dow };
+  }, [profile, day]);
+
+  const weekCheat = useMemo(
+    () => (planWeek ? cheatForWeek(cheats, planWeek.from, planWeek.to) : null),
+    [cheats, planWeek]
+  );
+  const todayCheat = weekCheat && weekCheat.day === day ? weekCheat : null;
+
+  /**
+   * Worked out here rather than stored, on purpose.
+   *
+   * The answer depends on the plan, the day type and the targets, all of which
+   * can move after the meal was entered. A stored absorption would go stale
+   * silently; a recomputed one is always about the plan you actually have.
+   */
+  const absorption = useMemo(() => {
+    if (!todayCheat || !plan || !profile) return null;
+    return absorbCheat({
+      cheat: todayCheat,
+      meals: meals as any,
+      plan,
+      dayTypes,
+      dayTypeId,
+      supplements,
+      rest: daysAfter(day, plan, planWeek?.dow ?? 1),
+    });
+  }, [todayCheat, plan, profile, meals, dayTypes, dayTypeId, supplements, day, planWeek]);
+
+  async function saveCheat(c: Omit<CheatMeal, "id">) {
+    const saved = await fetch("/api/cheat", {
+      method: "PUT",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify(c),
+    }).then((r) => r.json());
+    setCheats((list) => [...list.filter((x) => x.day !== saved.day), saved]);
+    setShowCheat(false);
+  }
+
+  async function clearCheat() {
+    await fetch(`/api/cheat?day=${day}`, { method: "DELETE" });
+    setCheats((list) => list.filter((x) => x.day !== day));
+  }
+
+  /**
+   * The menu as the cheat meal leaves it.
+   *
+   * This is the part that has to be right. Working out that dinner comes off
+   * and lunch shrinks is worth nothing if the list you tap through on the day
+   * still shows the plan you are no longer eating — you would log the old one
+   * out of habit and the day would be wrong by exactly the amount the whole
+   * mechanism was there to handle.
+   *
+   * The cheat meal itself is in the list too, as an ordinary row carrying its
+   * own macros. That way logging it is the same gesture as logging anything
+   * else, and `eaten` adds up without knowing anything about cheat meals.
+   */
+  const menu = useMemo<Meal[]>(() => {
+    if (!absorption || !todayCheat) return suggested;
+
+    const byId = new Map(absorption.meals.map((m) => [m.mealId, m]));
+    const kept: Meal[] = [];
+
+    for (const m of suggested) {
+      const o = byId.get(m.id);
+      if (!o || o.action === "kept") {
+        kept.push(m);
+        continue;
+      }
+      if (o.action === "dropped" || o.action === "replaced") continue;
+
+      const moved = new Map(o.portions.map((p) => [p.name, p.to]));
+      kept.push({
+        ...m,
+        ingredients: m.ingredients.map((it) =>
+          moved.has(it.name) ? { ...it, grams: moved.get(it.name) as number } : it
+        ),
+      });
+    }
+
+    // One synthetic row for the meal out. Grams of 100 with the macros stated
+    // per 100 g means the existing arithmetic gives its real totals, with no
+    // special case anywhere downstream.
+    kept.push({
+      id: -1,
+      name: todayCheat.name,
+      times_per_day: 1,
+      day_type_ids: null,
+      batch: false,
+      ingredients: [
+        {
+          name: todayCheat.name,
+          grams: 100,
+          kcal_100: todayCheat.kcal,
+          protein_100: todayCheat.protein,
+          carbs_100: todayCheat.carbs,
+          fat_100: todayCheat.fat,
+        } as Item,
+      ],
+    });
+
+    return kept;
+  }, [absorption, todayCheat, suggested]);
 
   /**
    * What the times you logged actually say. Only meals with a time can be
@@ -413,6 +540,29 @@ export default function TodayPage() {
         <MacroTile k="fat" eaten={eaten.fat} target={target.fat} />
       </section>
 
+      {/* The cheat meal. Below the macros because it is a thing that happens to
+          a day rather than a thing you do every day, and above the meal list
+          because what it does to that list is the point. */}
+      {meals.length > 0 && (
+        <CheatCard
+          cheat={todayCheat}
+          absorption={absorption}
+          used={!!weekCheat && weekCheat.day !== day}
+          onOpen={() => setShowCheat(true)}
+          onClear={clearCheat}
+        />
+      )}
+
+      {showCheat && (
+        <CheatSheet
+          day={day}
+          meals={suggested as any}
+          existing={todayCheat}
+          onClose={() => setShowCheat(false)}
+          onSave={saveCheat}
+        />
+      )}
+
       {/* Add a meal */}
       {meals.length === 0 ? (
         <section className="card px-5 py-10 text-center">
@@ -435,7 +585,7 @@ export default function TodayPage() {
           {/* A list, not a wrapped row of pills. Full-width rows give a thumb
               something to aim at and leave room to say what each meal is. */}
           <div className="space-y-1.5">
-            {suggested.map((m) => {
+            {menu.map((m) => {
               const t = totalFor(itemsFor(m));
               const used = entries.filter((e) => e.meal_id === m.id).length;
               const planned = Math.max(1, Number(m.times_per_day ?? 1));

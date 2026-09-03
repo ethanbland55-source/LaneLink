@@ -13,17 +13,68 @@ export const sql = neon(url ?? "postgresql://user:pass@localhost/db");
 let schemaReady: Promise<void> | null = null;
 
 /**
+ * Bump this whenever the DDL below changes. Nothing else has to be updated —
+ * a database stamped with an older number runs the whole migration again, and
+ * every statement in it is `if not exists`, so running it again is harmless.
+ */
+const SCHEMA_VERSION = "2026-09-03.2";
+
+/**
  * Creates the tables if they don't exist, adds any columns a newer version
- * needs, and brings existing rows up to date with the current model. Cheap
- * after the first call in a warm instance, so there is no migration step to
- * forget.
+ * needs, and brings existing rows up to date with the current model.
+ *
+ * The memoised promise makes this free on a *warm* instance, but serverless
+ * spends much of its life cold, and the migration is 78 statements — which on
+ * Neon's HTTP driver is 78 sequential round trips before the first page can
+ * render. So the whole thing now sits behind one cheap version check: a
+ * database already stamped with the current version costs a single query.
+ *
+ * The check is deliberately fail-open. If the stamp can't be read for any
+ * reason — the table isn't there yet, a permission oddity — it runs the
+ * migration rather than assuming the schema is fine, because a missing column
+ * is a much worse failure than a slow first load.
  */
 export function ensureSchema(): Promise<void> {
-  if (!schemaReady) schemaReady = createSchema().then(() => backfill());
+  if (!schemaReady) schemaReady = run();
   return schemaReady;
 }
 
+async function run(): Promise<void> {
+  if (await alreadyCurrent()) return;
+  await createSchema();
+  await backfill();
+  await stamp();
+}
+
+async function alreadyCurrent(): Promise<boolean> {
+  try {
+    const rows = (await sql`
+      select value from schema_meta where key = 'version' limit 1`) as any[];
+    return rows[0]?.value === SCHEMA_VERSION;
+  } catch {
+    return false;
+  }
+}
+
+async function stamp(): Promise<void> {
+  try {
+    await sql`
+      insert into schema_meta (key, value) values ('version', ${SCHEMA_VERSION})
+      on conflict (key) do update set value = ${SCHEMA_VERSION}, updated_at = now()`;
+  } catch (e) {
+    // Worst case the stamp doesn't stick and the next cold start migrates
+    // again — slow, but correct. Never a reason to fail the request.
+    console.warn("schema stamp skipped:", e);
+  }
+}
+
 async function createSchema() {
+  // Created first so the version stamp has somewhere to live.
+  await sql`create table if not exists schema_meta (
+    key        text primary key,
+    value      text not null,
+    updated_at timestamptz not null default now()
+  )`;
   await sql`create table if not exists profile (
     id int primary key default 1,
     sex text not null default 'male',
@@ -121,6 +172,7 @@ async function createSchema() {
   await sql`alter table profile add column if not exists use_calibration boolean not null default false`;
   await sql`alter table profile add column if not exists shop_days int not null default 7`;
   await sql`alter table profile add column if not exists shop_start_dow int not null default 6`;
+  await sql`alter table profile add column if not exists plan_roll_dow int not null default 1`;
   // The figures this week's targets are built on, and when they were last
   // rolled forward. Deliberately separate from weight_kg: the plan must not
   // move under you every time you stand on the scale, only once a week on
@@ -222,6 +274,35 @@ async function createSchema() {
     updated_at timestamptz not null default now()
   )`;
 
+  // Portions agreed but not yet in force. Keyed by ingredient because that is
+  // what a staged change is: one number, waiting for a date. See lib/pending.ts.
+  await sql`create table if not exists pending_portions (
+    ingredient_id int primary key references ingredients(id) on delete cascade,
+    grams      numeric not null,
+    was_grams  numeric,
+    staged_on  date not null default current_date,
+    apply_on   date not null,
+    note       text,
+    created_at timestamptz not null default now()
+  )`;
+
+  // One meal out, entered as macros because that is all a menu tells you.
+  // Never resized by the optimiser and never written back into the plan — it
+  // is a fact about one day, not a change to the week. See lib/cheat.ts.
+  await sql`create table if not exists cheat_meals (
+    id         serial primary key,
+    day        date not null unique,
+    meal_id    int references meals(id) on delete set null,
+    name       text not null default 'Cheat meal',
+    kcal       numeric not null default 0,
+    protein    numeric not null default 0,
+    carbs      numeric not null default 0,
+    fat        numeric not null default 0,
+    note       text,
+    created_at timestamptz not null default now()
+  )`;
+
+  await sql`create index if not exists pending_apply_idx on pending_portions(apply_on)`;
   await sql`create index if not exists log_entries_day_idx on log_entries(day)`;
   await sql`create index if not exists ingredients_meal_idx on ingredients(meal_id)`;
   await sql`

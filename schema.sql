@@ -2,6 +2,14 @@
 -- (lib/db.ts -> ensureSchema), including migrating an older database, so
 -- running this by hand is optional.
 
+-- Stamped with the migration version so a cold start costs one query
+-- instead of replaying every statement below.
+create table if not exists schema_meta (
+  key        text primary key,
+  value      text not null,
+  updated_at timestamptz not null default now()
+);
+
 create table if not exists profile (
   id                int primary key default 1,
   sex               text    not null default 'male',
@@ -38,6 +46,7 @@ create table if not exists profile (
   week_ids          jsonb,                           -- {"mon": 3, "tue": 4, ...} -> day_types.id
   shop_days         int     not null default 7,      -- days of food per shop
   shop_start_dow    int     not null default 6,      -- 0 = Sunday … 6 = Saturday
+  plan_roll_dow     int     not null default 1,      -- the plan rolls Monday, not on shopping day
   -- The figures this week's targets are built on, snapshotted on shopping day.
   -- Deliberately separate from weight_kg: the plan must not move under you
   -- every time you stand on the scale, only once a week, so that what you buy
@@ -198,6 +207,38 @@ create table if not exists shop_checks (
   updated_at timestamptz not null default now()
 );
 
+-- Portions that have been agreed but are not in force yet. Recalculate writes
+-- here rather than straight to `ingredients`, so the shopping list can buy for
+-- next week while the plan still describes the food in this week's containers.
+-- They swap in on the first page load on or after apply_on. See lib/pending.ts.
+create table if not exists pending_portions (
+  ingredient_id int primary key references ingredients(id) on delete cascade,
+  grams      numeric not null,
+  was_grams  numeric,                             -- for the "70 -> 56 g" line
+  staged_on  date not null default current_date,
+  apply_on   date not null,                       -- roll day, not shopping day
+  note       text,
+  created_at timestamptz not null default now()
+);
+
+-- One meal out a week, entered as macros because that is all a menu gives you.
+-- The optimiser never resizes it and it is never written back into the plan:
+-- it is a fact about one day. lib/cheat.ts works out what the rest of that day
+-- and the days after it should do about it.
+create table if not exists cheat_meals (
+  id         serial primary key,
+  day        date not null unique,
+  meal_id    int references meals(id) on delete set null,  -- the meal it swaps for
+  name       text not null default 'Cheat meal',
+  kcal       numeric not null default 0,
+  protein    numeric not null default 0,
+  carbs      numeric not null default 0,
+  fat        numeric not null default 0,
+  note       text,
+  created_at timestamptz not null default now()
+);
+
+create index if not exists pending_apply_idx on pending_portions(apply_on);
 create index if not exists log_entries_day_idx on log_entries(day);
 create index if not exists ingredients_meal_idx on ingredients(meal_id);
 

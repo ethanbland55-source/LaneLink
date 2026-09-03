@@ -14,6 +14,8 @@ import {
   type DayType,
   type Profile,
 } from "@/lib/nutrition";
+import { planDayForShop } from "@/lib/weekly";
+import { overlayPending, type PendingPortion } from "@/lib/pending";
 import { normaliseProfile, SHOP_DAY_OPTIONS } from "@/lib/profile";
 import { NumberField, scrollIntoViewSoon } from "../number-field";
 
@@ -30,20 +32,45 @@ export default function ShopPage() {
   const [loading, setLoading] = useState(true);
   const [flash, setFlash] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
+  /** Staged portions the list is buying for, so it can say that it is. */
+  const [pending, setPending] = useState<PendingPortion[]>([]);
 
   useEffect(() => {
     (async () => {
       try {
-        const [p, m, pan, ch, dt] = await Promise.all([
+        const [p, m, pan, ch, dt, pe] = await Promise.all([
           fetch("/api/profile").then((r) => r.json()),
           fetch("/api/meals").then((r) => r.json()),
           fetch("/api/pantry").then((r) => r.json()),
           fetch("/api/checks").then((r) => r.json()),
           fetch("/api/day-types").then((r) => r.json()),
+          fetch("/api/pending")
+            .then((r) => r.json())
+            .catch(() => ({ portions: [] })),
         ]);
         const prof = normaliseProfile(p);
         setProfile(prof);
-        setMeals(m);
+
+        /**
+         * The shop buys the *staged* plan, not the live one.
+         *
+         * This is the whole reason staging exists. On Saturday the live plan
+         * describes the containers you are still eating out of; the food you
+         * are about to buy is for the week that starts on Monday, and Monday's
+         * portions are the ones sitting in `pending_portions`. Overlaying them
+         * here is what keeps the trolley and the plan in agreement — a week
+         * apart, which is exactly right.
+         */
+        const staged: PendingPortion[] = pe.portions ?? [];
+        setPending(staged);
+        setMeals(
+          staged.length
+            ? (m as PlanMeal[]).map((meal) => ({
+                ...meal,
+                ingredients: overlayPending(meal.ingredients as any[], staged),
+              }))
+            : m
+        );
         setDayTypes((dt as any[]).map((x, i) => normaliseDayType(x, i)));
         setPantry(pan);
         setChecked(new Set(ch));
@@ -56,9 +83,22 @@ export default function ShopPage() {
     })();
   }, []);
 
+  /**
+   * The shop buys for the week the food is *for*, not the week you're in.
+   *
+   * You shop on Saturday and start eating it on Monday, so a list built
+   * against today's targets is built against a week that's nearly over. The
+   * plan itself doesn't move until roll day — that's the point — but the
+   * shopping list has to look across it.
+   */
+  const planDay = useMemo(
+    () => (profile ? planDayForShop(profile.plan_roll_dow, start) : start),
+    [profile, start]
+  );
+
   const plan = useMemo(
-    () => (profile ? buildWeekPlan(profile, dayTypes) : null),
-    [profile, dayTypes]
+    () => (profile ? buildWeekPlan(profile, dayTypes, { today: planDay }) : null),
+    [profile, dayTypes, planDay]
   );
 
   const list = useMemo(() => {
@@ -179,6 +219,15 @@ export default function ShopPage() {
             to {pretty(list.endDay)}
           </p>
         </div>
+
+        {pending.length > 0 && (
+          <p className="mt-3 rounded-lg bg-[var(--color-surface)] px-3 py-2.5 text-xs leading-relaxed text-[var(--color-mut)]">
+            Buying the <b className="text-[var(--color-fg)]">rebalanced</b> portions —{" "}
+            {pending.length} of them change on{" "}
+            {pretty(pending[0].apply_on)}, which is the week this food is for. The Plan page still
+            shows what&rsquo;s in the fridge until then.
+          </p>
+        )}
 
         <div className="no-print mt-4 flex flex-wrap gap-1.5">
           {SHOP_DAY_OPTIONS.map((n) => (

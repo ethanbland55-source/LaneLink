@@ -42,6 +42,36 @@ export function nextShopDay(shopDow: number, today: string = dayKey()): string {
   return addDays(today, ahead === 0 ? 7 : ahead);
 }
 
+/**
+ * Shopping day and roll day are not the same day.
+ *
+ * You shop on Saturday, but Saturday and Sunday are still being eaten off the
+ * *current* plan, and Sunday is when the next week gets cooked. If the plan
+ * rolled the moment you got back from the shop, the containers still in the
+ * fridge would be measured against numbers that had already moved on.
+ *
+ * So the shop looks forward — it buys for the week the food is for — and the
+ * plan itself changes on roll day, by default the Monday. Everything between
+ * the two days runs on the old numbers, which is what you're actually eating.
+ */
+export function lastRollDay(rollDow: number, today: string = dayKey()): string {
+  const back = (dowOf(today) - rollDow + 7) % 7;
+  return addDays(today, -back);
+}
+
+export function nextRollDay(rollDow: number, today: string = dayKey()): string {
+  const ahead = (rollDow - dowOf(today) + 7) % 7;
+  return addDays(today, ahead === 0 ? 7 : ahead);
+}
+
+/**
+ * The day whose targets a shop on `today` should be built against — the roll
+ * day the food will be eaten under, which is the next one unless today is it.
+ */
+export function planDayForShop(rollDow: number, today: string = dayKey()): string {
+  return dowOf(today) === rollDow ? today : nextRollDay(rollDow, today);
+}
+
 export type RollFigures = {
   /** Trend weight, corrected for weigh-in time and smoothed. */
   weightKg: number;
@@ -110,13 +140,16 @@ export function rollState(
   entries: WeighIn[],
   today: string = dayKey()
 ): RollState {
-  const dueOn = lastShopDay(profile.shop_start_dow, today);
+  // Roll day, not shopping day — see lastRollDay. Falls back to the shopping
+  // day for a profile written before the two were separated.
+  const rollDow = profile.plan_roll_dow ?? profile.shop_start_dow;
+  const dueOn = lastRollDay(rollDow, today);
   const figures = rollFigures(entries, today);
   const lastRolled = profile.plan_updated_on ?? null;
 
   return {
     dueOn,
-    nextOn: nextShopDay(profile.shop_start_dow, today),
+    nextOn: nextRollDay(rollDow, today),
     lastRolled,
     due: !!figures && (lastRolled == null || lastRolled < dueOn),
     figures,

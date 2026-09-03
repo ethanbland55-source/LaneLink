@@ -2,6 +2,7 @@ import { NextResponse } from "next/server";
 import { sql, ensureSchema } from "@/lib/db";
 import { normaliseProfile } from "@/lib/profile";
 import { applyRoll, rollState } from "@/lib/weekly";
+import { refitPlan } from "@/lib/refit";
 import type { WeighIn } from "@/lib/trend";
 import type { Profile } from "@/lib/nutrition";
 
@@ -40,6 +41,11 @@ async function rollIfDue(p: Profile): Promise<Profile> {
         plan_updated_on = ${next.plan_updated_on},
         updated_at = now()
       where id = 1`;
+
+    // Moving the targets without moving the plan leaves the two disagreeing,
+    // and the gap only grows — so the roll re-fits the portions too, with the
+    // same solver the Recalculate button uses.
+    await refitPlan(next, state.dueOn);
     return next;
   } catch (e) {
     // A failed roll must never take the page down — last week's numbers are a
@@ -105,6 +111,7 @@ export async function PUT(req: Request) {
       use_calibration = ${b.use_calibration},
       shop_days = ${b.shop_days},
       shop_start_dow = ${b.shop_start_dow},
+      plan_roll_dow = ${b.plan_roll_dow},
       plan_weight_kg = ${b.plan_weight_kg},
       plan_bf_pct = ${b.plan_bf_pct},
       plan_updated_on = ${b.plan_updated_on || null},

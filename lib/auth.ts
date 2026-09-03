@@ -17,8 +17,26 @@ const encoder = new TextEncoder();
 
 export const SESSION_COOKIE = "mealhub_session";
 
-/** A week. Long enough not to be a nuisance on a phone you own. */
-export const SESSION_MAX_AGE = 60 * 60 * 24 * 7;
+/**
+ * The outside limit on a session, in seconds.
+ *
+ * Twelve hours, and the cookie is written *without* a `Max-Age` on top of
+ * that, which makes it a session cookie — the browser drops it when the app is
+ * genuinely closed. This signed expiry is the backstop for the case a browser
+ * doesn't treat as a close: an iOS home-screen app that gets suspended rather
+ * than terminated can sit on a session cookie for days.
+ */
+export const SESSION_MAX_AGE = 60 * 60 * 12;
+
+/**
+ * How long the app may sit in the background before it re-locks, in seconds.
+ *
+ * The point is that coming back to it asks for the password again. The small
+ * grace is so that glancing at a notification and swiping straight back
+ * doesn't cost you a sign-in — set `NEXT_PUBLIC_LOCK_AFTER=0` if you'd rather
+ * it locked the instant you look away.
+ */
+export const LOCK_AFTER_SECONDS = Number(process.env.NEXT_PUBLIC_LOCK_AFTER ?? 15);
 
 export function expectedUser(): string {
   return process.env.AUTH_USER || "admin";

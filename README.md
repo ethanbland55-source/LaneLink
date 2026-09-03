@@ -38,6 +38,22 @@ AUTH_PASSWORD=…    # defaults to 1234
 AUTH_SECRET=…      # a long random string; this is what makes the cookie unforgeable
 ```
 
+**It re-locks when you come back to it.** The cookie is written without a
+`Max-Age`, which makes it a session cookie — closing the app signs you out. On
+a phone that isn't enough on its own, because a home-screen app is usually
+*suspended* rather than closed and the browser treats the next open as the same
+session. So the client also watches for the app being backgrounded and signs
+out on the way back in, and the signed cookie carries a twelve-hour expiry of
+its own as a third backstop.
+
+There's a short grace period so that glancing at a notification and swiping
+straight back doesn't cost you a sign-in. Set `NEXT_PUBLIC_LOCK_AFTER` to the
+number of seconds you want, or to `0` to lock the instant you look away.
+
+```
+NEXT_PUBLIC_LOCK_AFTER=15   # default
+```
+
 ## Deploy
 
 1. Push this folder to a GitHub repo.
@@ -54,6 +70,16 @@ AUTH_SECRET=…      # a long random string; this is what makes the cookie unfor
 4. Deploy. The tables create themselves on first page load (`lib/db.ts` →
    `ensureSchema`), and so do any new columns a later version adds. `schema.sql` is the
    same DDL if you'd rather run it by hand in the Neon SQL editor.
+
+**On load time.** That migration is 78 statements, and Neon's HTTP driver makes
+each one a separate round trip — so it used to run in full on every cold start,
+before the first page could render. It now sits behind a single version check
+against a `schema_meta` table: a database already on the current version costs
+one query instead of seventy-eight. Bump `SCHEMA_VERSION` in `lib/db.ts`
+whenever the DDL changes and the whole thing replays; every statement in it is
+`if not exists`, so replaying is harmless. The check fails open — if the stamp
+can't be read for any reason it migrates anyway, because a missing column is a
+much worse failure than a slow first load.
 
 Local dev: copy `.env.example` to `.env.local`, fill in `DATABASE_URL`, then
 `npm install && npm run dev`.
@@ -121,6 +147,53 @@ three or four weeks.
 An existing database keeps its old flat-multiplier numbers until you press
 **Switch to session-based energy** on the Plan page, so upgrading never silently moves
 your targets.
+
+## Shopping day and roll day are different days
+
+You shop on Saturday. You cook on Sunday. You start eating it on Monday. So the
+plan must not change when you get back from the shop — Saturday and Sunday are
+still being eaten off the old one, and the containers in the fridge were
+portioned against it.
+
+Two separate days, then:
+
+- **Shop day** (`shop_start_dow`, Saturday by default) is when the shopping list
+  is for. It looks *forward*: a list built on Saturday is built against the
+  targets that will apply on roll day, because that's the week the food is for.
+- **Roll day** (`plan_roll_dow`, Monday by default) is when the plan itself
+  changes — the weekly snapshot of trend weight and body fat is taken, and the
+  block's drift steps.
+
+The drift steps **once a week, on roll day**, rather than a little every
+morning. A target that slides daily means Sunday's containers are wrong by
+Wednesday and the shopping list disagrees with the plan it came from. Across the
+block the average adjustment is the same either way; holding it still for the
+week is simply easier to cook against.
+
+### Staged changes
+
+Rebalancing mid-week used to write straight to the plan, which had the same
+problem one level down: press it on a Wednesday and Wednesday's lunch changed
+size, except lunch was already cooked and in a box. The app was now describing
+food that did not exist.
+
+So a rebalance is **staged**. The new portions go to `pending_portions` with the
+day they come into force:
+
+- the **shopping list reads them immediately**, because the food it is buying is
+  for the week those portions belong to;
+- the **plan keeps showing the live portions**, because those are what is in the
+  fridge;
+- on the first page load on or after `apply_on` they swap in, in a single
+  statement on the `/api/meals` read. No scheduler, no moving parts.
+
+Shares are saved straight away either way. A share is an instruction to the
+solver, not a weight on a plate, so there is nothing about one that has to wait.
+
+The Plan page shows what is waiting and lets you throw it away; the footer of
+the rebalance dialog offers **Stage for Mon 7 Sep** as the primary action and
+**Now** as the deliberate override, for when you genuinely do want the plan to
+change under you today.
 
 ## Blocks, and toned maintenance
 
@@ -513,6 +586,97 @@ to answer "1.4 eggs". That's the trade, and it's the right one.)
 `bench/weekfit-check.ts` runs the whole-week fit against the real plan and prints both
 tables above; `bench/share-explain.ts` checks that a share it can't reach names the
 limit that's in the way.
+
+### How much it is allowed to change
+
+Two questions hide behind one button, and they want different answers:
+
+- *"What is the best plan for these targets?"* — right the first time you build
+  a plan.
+- *"These targets moved a little; what is the smallest change to the plan I
+  already have?"* — right every time after that.
+
+Answering the second with the first gives you a plan that is marginally better
+on paper and unrecognisable in the kitchen. The solver has no reason not to
+halve the rice cakes and make it up in rice, because to the arithmetic those are
+the same calories. They are not the same to you: you bought the rice cakes and
+you know what 70 g of them looks like.
+
+So **Keep it close** is the default. It weights movement away from the current
+portions heavily enough that a change gets spread over everything instead of
+being dumped on whichever ingredient is cheapest to sacrifice. **Best fit** is
+the old behaviour, kept for building a plan from scratch.
+
+`bench/anchor-sweep.ts` is why the weight is 0.3 and not something else — four
+sizes of change against seven weights:
+
+| change | free fit: worst move | at 0.3 | worst macro, free → 0.3 |
+| --- | --- | --- | --- |
+| 4 % | 20 % | 11 % | 4.5 % → 4.6 % |
+| 8 % | 50 % | 20 % | 5.7 % → **4.3 %** |
+
+On the change that actually matters it is both gentler *and* more accurate.
+Past about 0.6 the accuracy starts to go, which is the wrong trade — the point
+is to change the plan gently, not to refuse to change it.
+
+The dialog reports the movement directly: how many portions move, the biggest as
+a percentage, and the four largest with their before-and-after grams.
+
+The weekly automatic re-fit (`lib/refit.ts`) always uses **Keep it close**. A
+roll moves the targets by a percent or two, and a free fit is entitled to answer
+that by halving the banana — which you would find out about at 6 am on a Monday.
+
+## Cheat meals
+
+One a week, optional, and priced honestly.
+
+On a deficit a cheat meal is close to free: you are running 500 kcal under every
+day, so a 1200 kcal meal out spends two days of deficit and the week still ends
+where it was going. Most advice about cheat meals was written for that case.
+
+Toned maintenance has no deficit to spend. A meal that lands 900 kcal over the
+day is 900 kcal with nowhere to go, and at maintenance that means stored — about
+six kilos a year if it happens every week and nothing absorbs it.
+
+Enter it as **macros, not grams**. You are at a table with a menu; there is no
+scale and no ingredient list. Calories alone is a fine answer and the split gets
+estimated (a fifth protein, a third fat — what a meal out usually is). If the
+place publishes the full breakdown, type it in and the day is worked out
+properly rather than approximately.
+
+`lib/cheat.ts` then works down a ladder, each rung dearer than the last:
+
+1. **The meal it replaces comes off.** Usually most of the room, and it costs
+   nothing — you weren't going to eat dinner *and* a curry.
+2. **The rest of the day is re-fitted**, `protein_first` and `keep_close`, over
+   the portions that can still move.
+3. **Meals come off**, cheapest first — but only once the overshoot is bigger
+   than the rest of the week could absorb, because deleting your lunch to solve
+   a problem four other days could share is the blunt answer.
+4. **What's left is spread over the remaining days of the plan week**, no day
+   giving up more than 12 % of its own target, and stopping at roll day — next
+   week gets its targets from its own weigh-in and should not inherit a debt.
+5. **Anything still unplaced is reported in calories and in grams of fat.**
+
+**Protein is a filter, not a preference.** Left as a weighted term in the
+drop-scoring it lost: breakfast is 900 kcal of the 1200 you need to find, and
+"close to the size of the overshoot" outvoted "half the day's protein is in
+it" — a 2000 kcal meal came out costing 34 g of protein. Meals that would take
+the day below 90 % of its protein target are now removed from consideration
+entirely, and only come back if there is genuinely nothing else. When it happens
+anyway, the card says so and suggests a shake.
+
+The day's meal list on Today is rebuilt from the result, with the cheat meal in
+it as an ordinary row carrying its own macros. Working out that dinner comes off
+and lunch shrinks is worth nothing if the list you tap through still shows the
+plan you are no longer eating.
+
+Nothing here is written back to the plan. A cheat meal is a fact about one day;
+the portions in the fridge do not change because you went out on Friday.
+
+`bench/cheat.ts` runs it against the real plan — an ordinary meal out, a
+blowout, one with nothing swapped, and one on a Sunday with nowhere left to
+spread.
 
 ## Meal prep guide
 
