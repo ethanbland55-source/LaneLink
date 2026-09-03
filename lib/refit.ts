@@ -17,6 +17,7 @@
  */
 
 import { sql } from "./db";
+import { snapshot } from "./history";
 import { buildWeekPlan, normaliseDayType, type DayType, type Profile } from "./nutrition";
 import { fitWeek } from "./weekfit";
 import type { PlanMeal } from "./batch";
@@ -125,8 +126,21 @@ export async function refitPlan(profile: Profile, today?: string): Promise<Refit
       }
     }
 
-    for (const w of writes) {
-      await sql`update ingredients set grams = ${w.grams} where id = ${w.id}`;
+    if (writes.length) {
+      // What they were, before they stop being what they were. This runs
+      // without anyone pressing anything, so "put it back" has to be an option
+      // afterwards — otherwise you open the app on a Monday, find the numbers
+      // have moved, and have no way to say that was fine as it was.
+      await snapshot("weekly re-fit", today);
+
+      // One statement rather than one per portion: an automatic rewrite that
+      // can stop halfway leaves a plan that is half of each.
+      await sql`
+        update ingredients i
+           set grams = v.grams
+          from (select * from jsonb_to_recordset(${JSON.stringify(writes)}::jsonb)
+                       as t(id int, grams numeric)) v
+         where i.id = v.id`;
     }
 
     return { changed: writes.length, held };

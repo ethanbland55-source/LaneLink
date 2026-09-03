@@ -25,17 +25,31 @@
  * Nothing here needs a scheduler. The swap happens on the first read on or
  * after the day it is due, which on a phone that gets opened every morning is
  * as good as a cron job and has no moving parts.
+ *
+ * ## Why not key on the ingredient id
+ *
+ * Because there isn't one, not a lasting one. Saving a meal runs `delete from
+ * ingredients where meal_id = ...` and re-inserts the list, so every row gets a
+ * fresh serial id on every save. The first version of this keyed on that id and
+ * the button did nothing at all: staging saved the meals first, which changed
+ * every id, and then posted the old ones — which the foreign key refused.
+ *
+ * What does survive a save is the meal, the position within it, and the name.
+ * So that is the key. If a change falls due and the name at that position no
+ * longer matches, it is skipped: missing a change is a small problem, and
+ * resizing the wrong food is a much bigger one.
  */
 
 import { sql } from "./db";
 import { dayKey } from "./nutrition";
+import { snapshot } from "./history";
 import { dowOf, nextRollDay } from "./weekly";
 
 export type PendingPortion = {
-  ingredient_id: number;
   meal_id: number;
-  meal_name: string;
+  slot: number;
   name: string;
+  meal_name: string;
   /** What it will become. */
   grams: number;
   /** What it was when the change was staged, for the "70 → 56 g" line. */
@@ -59,28 +73,43 @@ export function applyDayFor(rollDow: number, today: string = dayKey()): string {
 /**
  * Swap in anything that has come due.
  *
- * One statement on purpose. This sits on the read path for every page that
- * shows a portion, so it has to cost one round trip whether there is anything
- * waiting or not — the `delete ... returning` feeding the `update` does the
- * whole job, and does nothing at all when the table is empty.
+ * Two statements, and only when there is something waiting — the count is the
+ * cheap query that keeps this off the critical path on every page load, and it
+ * is an index-only scan on a table that is almost always empty.
  *
  * Returns how many portions changed, which the caller may ignore.
  */
 export async function applyDuePortions(today?: string): Promise<number> {
   try {
     const day = today ?? dayKey();
+    const due = (await sql`
+      select meal_id, slot, name, grams
+        from pending_portions
+       where apply_on <= ${day}::date`) as any[];
+    if (!due.length) return 0;
+
+    // What they were, before they stop being what they were.
+    await snapshot("staged change", day);
+
     const rows = (await sql`
-      with due as (
-        delete from pending_portions
-        where apply_on <= ${day}::date
-        returning ingredient_id, grams
+      with moved as (
+        update ingredients i
+           set grams = v.grams
+          from (select * from jsonb_to_recordset(${JSON.stringify(
+            due.map((d) => ({
+              meal_id: Number(d.meal_id),
+              slot: Number(d.slot),
+              name: String(d.name),
+              grams: Number(d.grams),
+            }))
+          )}::jsonb) as t(meal_id int, slot int, name text, grams numeric)) v
+         where i.meal_id = v.meal_id and i.sort_order = v.slot and i.name = v.name
+        returning i.id
       )
-      update ingredients i
-         set grams = d.grams
-        from due d
-       where i.id = d.ingredient_id
-      returning i.id`) as any[];
-    return rows.length;
+      select count(*)::int as n from moved`) as any[];
+
+    await sql`delete from pending_portions where apply_on <= ${day}::date`;
+    return Number(rows[0]?.n ?? 0);
   } catch (e) {
     // A page that can't apply a staged change should still render the plan it
     // has. Silence here is much better than a blank screen.
@@ -89,28 +118,27 @@ export async function applyDuePortions(today?: string): Promise<number> {
   }
 }
 
-/** Everything still waiting, newest staging first, with the names to show it. */
+/** Everything still waiting, in plan order, with the names to show it. */
 export async function listPending(): Promise<PendingPortion[]> {
   const rows = (await sql`
-    select p.ingredient_id,
+    select p.meal_id,
+           p.slot,
+           p.name,
            p.grams,
            p.was_grams,
            p.note,
            to_char(p.apply_on, 'YYYY-MM-DD') as apply_on,
            to_char(p.staged_on, 'YYYY-MM-DD') as staged_on,
-           i.name,
-           i.meal_id,
            m.name as meal_name
       from pending_portions p
-      join ingredients i on i.id = p.ingredient_id
-      join meals m on m.id = i.meal_id
-     order by m.sort_order, m.id, i.sort_order, i.id`) as any[];
+      join meals m on m.id = p.meal_id
+     order by m.sort_order, m.id, p.slot`) as any[];
 
   return rows.map((r) => ({
-    ingredient_id: Number(r.ingredient_id),
     meal_id: Number(r.meal_id),
-    meal_name: String(r.meal_name),
+    slot: Number(r.slot),
     name: String(r.name),
+    meal_name: String(r.meal_name),
     grams: Number(r.grams),
     was_grams: r.was_grams == null ? null : Number(r.was_grams),
     apply_on: String(r.apply_on),
@@ -119,7 +147,7 @@ export async function listPending(): Promise<PendingPortion[]> {
   }));
 }
 
-export type StageRow = { ingredient_id: number; grams: number };
+export type StageRow = { meal_id: number; slot: number; name: string; grams: number };
 
 /**
  * Stage a set of portions.
@@ -136,38 +164,43 @@ export async function stagePortions(
 ): Promise<number> {
   await sql`delete from pending_portions`;
 
-  const wanted = rows.filter((r) => Number.isFinite(r.grams) && r.grams > 0);
+  const wanted = rows.filter(
+    (r) =>
+      Number.isFinite(r.grams) &&
+      r.grams > 0 &&
+      Number.isFinite(r.meal_id) &&
+      Number.isFinite(r.slot) &&
+      !!r.name
+  );
   if (!wanted.length) return 0;
 
-  const current = (await sql`
-    select id, grams from ingredients where id = any(${wanted.map((r) => r.ingredient_id)}::int[])
-  `) as any[];
-  const was = new Map(current.map((c) => [Number(c.id), Number(c.grams)]));
-
-  const real = wanted.filter((r) => {
-    const before = was.get(r.ingredient_id);
-    return before == null || Math.abs(before - r.grams) >= 0.5;
-  });
-  if (!real.length) return 0;
-
-  // One multi-row insert, not one per portion — this runs from a button press
-  // and the HTTP driver charges a round trip per statement.
-  await sql`
-    insert into pending_portions (ingredient_id, grams, was_grams, apply_on, note)
-    select * from unnest(
-      ${real.map((r) => r.ingredient_id)}::int[],
-      ${real.map((r) => Math.round(r.grams * 10) / 10)}::numeric[],
-      ${real.map((r) => was.get(r.ingredient_id) ?? null)}::numeric[],
-      ${real.map(() => applyOn)}::date[],
-      ${real.map(() => note ?? null)}::text[]
-    )
-    on conflict (ingredient_id) do update
-      set grams = excluded.grams,
+  // Only stage against portions that actually exist, and only where the value
+  // really moves. Both checks happen in the database rather than in JavaScript
+  // so that a stale tab cannot stage a change against a meal that has since
+  // been edited out from under it.
+  const inserted = (await sql`
+    insert into pending_portions (meal_id, slot, name, grams, was_grams, apply_on, note)
+    select v.meal_id, v.slot, v.name, v.grams, i.grams, ${applyOn}::date, ${note ?? null}
+      from (select * from jsonb_to_recordset(${JSON.stringify(
+        wanted.map((r) => ({
+          meal_id: Number(r.meal_id),
+          slot: Number(r.slot),
+          name: String(r.name),
+          grams: Math.round(Number(r.grams) * 10) / 10,
+        }))
+      )}::jsonb) as t(meal_id int, slot int, name text, grams numeric)) v
+      join ingredients i
+        on i.meal_id = v.meal_id and i.sort_order = v.slot and i.name = v.name
+     where abs(i.grams - v.grams) >= 0.5
+    on conflict (meal_id, slot) do update
+      set name      = excluded.name,
+          grams     = excluded.grams,
           was_grams = excluded.was_grams,
-          apply_on = excluded.apply_on,
-          note = excluded.note`;
+          apply_on  = excluded.apply_on,
+          note      = excluded.note
+    returning meal_id`) as any[];
 
-  return real.length;
+  return inserted.length;
 }
 
 /** Throw away what's staged, leaving the live plan alone. */
@@ -182,11 +215,18 @@ export async function discardPending(): Promise<void> {
  * rather than the week that is ending. Pure, so the same overlay works on the
  * client without a second fetch.
  */
-export function overlayPending<T extends { id: number; grams: number }>(
+export function overlayPending<T extends { name: string; grams: number }>(
+  mealId: number,
   items: T[],
-  pending: Pick<PendingPortion, "ingredient_id" | "grams">[]
+  pending: Pick<PendingPortion, "meal_id" | "slot" | "name" | "grams">[]
 ): T[] {
   if (!pending.length) return items;
-  const by = new Map(pending.map((p) => [p.ingredient_id, p.grams]));
-  return items.map((it) => (by.has(it.id) ? { ...it, grams: by.get(it.id) as number } : it));
+  const by = new Map(
+    pending.filter((p) => p.meal_id === mealId).map((p) => [`${p.slot}:${p.name}`, p.grams])
+  );
+  if (!by.size) return items;
+  return items.map((it, slot) => {
+    const g = by.get(`${slot}:${it.name}`);
+    return g == null ? it : { ...it, grams: g };
+  });
 }

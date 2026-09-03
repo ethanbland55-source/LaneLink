@@ -67,7 +67,7 @@ export default function ShopPage() {
           staged.length
             ? (m as PlanMeal[]).map((meal) => ({
                 ...meal,
-                ingredients: overlayPending(meal.ingredients as any[], staged),
+                ingredients: overlayPending(meal.id, meal.ingredients as any[], staged),
               }))
             : m
         );

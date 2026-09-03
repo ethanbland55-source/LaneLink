@@ -211,13 +211,33 @@ create table if not exists shop_checks (
 -- here rather than straight to `ingredients`, so the shopping list can buy for
 -- next week while the plan still describes the food in this week's containers.
 -- They swap in on the first page load on or after apply_on. See lib/pending.ts.
+--
+-- Keyed by (meal, position, name) and deliberately NOT by ingredient id:
+-- saving a meal deletes its ingredient rows and re-inserts them, so ids change
+-- on every save. Position and name survive that; if they don't match when the
+-- change falls due it is skipped, which is the right failure -- better to miss
+-- a change than to resize the wrong food.
 create table if not exists pending_portions (
-  ingredient_id int primary key references ingredients(id) on delete cascade,
+  meal_id    int  not null references meals(id) on delete cascade,
+  slot       int  not null,                       -- sort_order within the meal
+  name       text not null,                       -- re-checked before applying
   grams      numeric not null,
   was_grams  numeric,                             -- for the "70 -> 56 g" line
   staged_on  date not null default current_date,
   apply_on   date not null,                       -- roll day, not shopping day
   note       text,
+  created_at timestamptz not null default now(),
+  primary key (meal_id, slot)
+);
+
+-- What the portions were before the last bulk change. Every automatic rewrite
+-- takes a snapshot here first, so "put it back to how it was" is always an
+-- option rather than something you have to remember by hand.
+create table if not exists portion_history (
+  id         serial primary key,
+  changed_on date not null default current_date,
+  reason     text not null,                       -- weekly re-fit | staged | recalculate
+  rows       jsonb not null,                      -- [{meal_id, slot, name, grams}]
   created_at timestamptz not null default now()
 );
 
@@ -239,6 +259,7 @@ create table if not exists cheat_meals (
 );
 
 create index if not exists pending_apply_idx on pending_portions(apply_on);
+create index if not exists portion_history_idx on portion_history(changed_on desc);
 create index if not exists log_entries_day_idx on log_entries(day);
 create index if not exists ingredients_meal_idx on ingredients(meal_id);
 

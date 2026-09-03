@@ -8,7 +8,24 @@ if (!url) {
   console.warn("DATABASE_URL is not set — every query will throw.");
 }
 
-export const sql = neon(url ?? "postgresql://user:pass@localhost/db");
+export let sql = neon(url ?? "postgresql://user:pass@localhost/db");
+
+/**
+ * Point the queries at a different driver. Tests only.
+ *
+ * The staging bug that shipped was a fact about the database — ingredient ids
+ * do not survive a save — and no amount of reading the TypeScript was going to
+ * find it. Anything holding SQL has to be testable against a real Postgres,
+ * and Neon's driver only speaks to Neon.
+ *
+ * `export let` rather than a config flag on purpose: it keeps node-postgres out
+ * of the import graph entirely, so nothing about this reaches the bundle. ESM
+ * live bindings mean every module that imported `sql` sees the swap.
+ */
+export function __setSql(next: typeof sql): void {
+  sql = next;
+  schemaReady = null;
+}
 
 let schemaReady: Promise<void> | null = null;
 
@@ -17,7 +34,7 @@ let schemaReady: Promise<void> | null = null;
  * a database stamped with an older number runs the whole migration again, and
  * every statement in it is `if not exists`, so running it again is harmless.
  */
-const SCHEMA_VERSION = "2026-09-03.2";
+const SCHEMA_VERSION = "2026-09-03.3";
 
 /**
  * Creates the tables if they don't exist, adds any columns a newer version
@@ -274,15 +291,42 @@ async function createSchema() {
     updated_at timestamptz not null default now()
   )`;
 
-  // Portions agreed but not yet in force. Keyed by ingredient because that is
-  // what a staged change is: one number, waiting for a date. See lib/pending.ts.
+  // Portions agreed but not yet in force.
+  //
+  // Keyed by (meal, position, name) and NOT by ingredient id, because
+  // ingredient ids are not stable: saving a meal deletes its ingredient rows
+  // and inserts fresh ones, so every id changes. Keying on the id meant a
+  // staged change was dead the moment anything touched that meal — which
+  // included the save the staging flow itself did one line earlier.
+  // Only the old id-keyed table goes; a correctly-shaped one keeps whatever is
+  // staged in it, because dropping that on every migration would silently
+  // throw away a change someone was relying on.
+  await sql`do $$ begin
+    if exists (select 1 from information_schema.columns
+               where table_name = 'pending_portions' and column_name = 'ingredient_id')
+    then drop table pending_portions; end if;
+  end $$`;
   await sql`create table if not exists pending_portions (
-    ingredient_id int primary key references ingredients(id) on delete cascade,
+    meal_id    int  not null references meals(id) on delete cascade,
+    slot       int  not null,
+    name       text not null,
     grams      numeric not null,
     was_grams  numeric,
     staged_on  date not null default current_date,
     apply_on   date not null,
     note       text,
+    created_at timestamptz not null default now(),
+    primary key (meal_id, slot)
+  )`;
+
+  // What the portions were before the last bulk change, so any of them can be
+  // undone. Written by the weekly re-fit, by a staged change coming into
+  // force, and by Recalculate. See lib/history.ts.
+  await sql`create table if not exists portion_history (
+    id         serial primary key,
+    changed_on date not null default current_date,
+    reason     text not null,
+    rows       jsonb not null,
     created_at timestamptz not null default now()
   )`;
 
@@ -303,6 +347,7 @@ async function createSchema() {
   )`;
 
   await sql`create index if not exists pending_apply_idx on pending_portions(apply_on)`;
+  await sql`create index if not exists portion_history_idx on portion_history(changed_on desc)`;
   await sql`create index if not exists log_entries_day_idx on log_entries(day)`;
   await sql`create index if not exists ingredients_meal_idx on ingredients(meal_id)`;
   await sql`

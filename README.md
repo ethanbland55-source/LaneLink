@@ -195,6 +195,50 @@ the rebalance dialog offers **Stage for Mon 7 Sep** as the primary action and
 **Now** as the deliberate override, for when you genuinely do want the plan to
 change under you today.
 
+#### Ingredient ids are not stable, and staging learned that the hard way
+
+`PUT /api/meals` does `delete from ingredients where meal_id = ...` and
+re-inserts the list, so **every ingredient gets a new id on every save**. The
+first version of staging keyed on that id — and the staging flow saves the
+meals one line before it posts the portions, so it posted ids that had ceased
+to exist a fraction of a second earlier. The foreign key refused them, the 500
+was swallowed, and the button did nothing while saying nothing.
+
+Staged portions are keyed on **(meal, position, name)**, which is what actually
+survives a save. If the name at that position no longer matches when the change
+falls due, it is skipped — missing a change is a small problem and resizing the
+wrong food is a much bigger one.
+
+This is also why `bench/db-harness.ts` exists. The bug was a fact about the
+database, not about the TypeScript, and no amount of reading the code was going
+to find it. `lib/db.ts` exports `__setSql` so a test can point the real query
+code at an ordinary Postgres; `bench/staging-db.ts` then runs the migration and
+the whole staging flow against it, including the exact save-then-stage sequence
+that broke.
+
+```
+createdb mealhub
+PGTEST=postgres://localhost/mealhub npx tsx bench/staging-db.ts
+```
+
+### Putting the portions back
+
+Three things rewrite every portion at once — the weekly re-fit, a staged change
+falling due, and Recalculate — and two of those happen without anyone pressing
+anything. That is right; a plan that needs you to remember to press a button is
+a plan that drifts. But it means you can open the app on a Monday, find the
+numbers have moved, and have no way to say *that was fine as it was*.
+
+So each of them writes a snapshot to `portion_history` first, and the Plan page
+offers to restore it. Restoring is itself snapshotted, so the undo is undoable.
+
+There is a second route for a change that happened before any history existed:
+**rebuild this week's portions from the log**. Every logged meal stores its
+items exactly as they were when you tapped it, so the most recent entry for
+each meal in a window gives back the portions that were in force then. It only
+covers meals you actually logged — it restores what you ate, not what you meant
+to.
+
 ## Blocks, and toned maintenance
 
 A goal isn't a percentage, it's a shape over time. A **block** has a name, a start, a

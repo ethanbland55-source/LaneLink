@@ -4,6 +4,7 @@ import { useEffect, useMemo, useState } from "react";
 import Link from "next/link";
 import { RecalculateDialog } from "../recalculate";
 import { applyDayFor, type PendingPortion } from "@/lib/pending";
+import { lastRollDay, nextRollDay } from "@/lib/weekly";
 import { Bar, MACRO_COLOR, MACRO_LABEL, Segmented, Stat, type MacroKey } from "../macro-ui";
 import { type BoundedItem } from "@/lib/optimise";
 import { appliesOn, mealGroups, weekStanding, weeklyAverage, type PlanMeal } from "@/lib/weekfit";
@@ -90,10 +91,15 @@ export default function PlanPage() {
   const [advanced, setAdvanced] = useState(false);
   /** Portions agreed but waiting for roll day. See lib/pending.ts. */
   const [pending, setPending] = useState<PendingPortion[]>([]);
+  /** Snapshots taken before each bulk rewrite, newest first. */
+  const [snapshots, setSnapshots] = useState<{ id: number; changed_on: string; reason: string }[]>(
+    []
+  );
+  const [restoring, setRestoring] = useState(false);
 
   useEffect(() => {
     (async () => {
-      const [p, m, dt, su, pe] = await Promise.all([
+      const [p, m, dt, su, pe, hi] = await Promise.all([
         fetch("/api/profile").then((r) => r.json()),
         fetch("/api/meals").then((r) => r.json()),
         fetch("/api/day-types").then((r) => r.json()),
@@ -101,8 +107,12 @@ export default function PlanPage() {
         fetch("/api/pending")
           .then((r) => r.json())
           .catch(() => ({ portions: [] })),
+        fetch("/api/history")
+          .then((r) => r.json())
+          .catch(() => ({ snapshots: [] })),
       ]);
       setPending(pe.portions ?? []);
+      setSnapshots(hi.snapshots ?? []);
       setProfile(normaliseProfile(p));
       setMeals(
         (m as any[]).map((x) => ({
@@ -424,14 +434,28 @@ export default function PlanPage() {
       } as Meal);
     }
 
+    // Keyed by meal, position and name — never by ingredient id. Saving a
+    // meal above just deleted and re-inserted every ingredient row, so the ids
+    // these objects are carrying are already stale. Position and name are what
+    // survive that, on both sides.
     const portions = merged.flatMap((m) =>
-      m.ingredients.map((it: any) => ({ ingredient_id: Number(it.id), grams: Number(it.grams) }))
+      m.ingredients.map((it: any, slot: number) => ({
+        meal_id: m.id,
+        slot,
+        name: it.name,
+        grams: Number(it.grams),
+      }))
     );
     const res = await fetch("/api/pending", {
       method: "POST",
       headers: { "content-type": "application/json" },
       body: JSON.stringify({ portions, note: "Rebalanced" }),
     }).then((r) => r.json());
+
+    if (res?.error) {
+      flash("Couldn't stage that — nothing changed");
+      return;
+    }
 
     await loadPending();
     setShowRecalc(false);
@@ -455,6 +479,48 @@ export default function PlanPage() {
     await fetch("/api/pending", { method: "DELETE" });
     setPending([]);
     flash("Staged changes discarded");
+  }
+
+  /**
+   * Put the portions back — either to a snapshot, or to what the log says.
+   *
+   * The log route exists because the first automatic re-fit happened before
+   * there was any history to undo it with. Every logged meal stores its items
+   * exactly as they were when it was tapped, so the log is a record of what
+   * the plan said on the day. It only covers meals actually logged, which is
+   * the honest limit of it.
+   */
+  async function undo(body: object, what: string) {
+    setRestoring(true);
+    const res = await fetch("/api/history", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify(body),
+    }).then((r) => r.json());
+    setRestoring(false);
+
+    if (res?.error || (res.restored === 0 && res.reason)) {
+      flash(res.reason ?? "Couldn't restore");
+      return;
+    }
+
+    const m = await fetch("/api/meals").then((r) => r.json());
+    setMeals(
+      (m as any[]).map((x) => ({
+        ...x,
+        times_per_day: Number(x.times_per_day ?? 1),
+        day_type_ids: x.day_type_ids ?? null,
+        batch: !!x.batch,
+        share_pct: x.share_pct ?? null,
+      }))
+    );
+    const hi = await fetch("/api/history").then((r) => r.json());
+    setSnapshots(hi.snapshots ?? []);
+    flash(
+      res.restored > 0
+        ? `${what} — ${res.restored} portion${res.restored === 1 ? "" : "s"} put back`
+        : "Nothing needed putting back"
+    );
   }
 
   async function deleteMeal(id: number) {
@@ -567,7 +633,7 @@ export default function PlanPage() {
           <ul className="mt-2.5 space-y-0.5">
             {pending.slice(0, 6).map((c) => (
               <li
-                key={c.ingredient_id}
+                key={`${c.meal_id}:${c.slot}`}
                 className="flex items-baseline gap-2 text-xs text-[var(--color-mut)]"
               >
                 <span className="truncate">
@@ -585,6 +651,82 @@ export default function PlanPage() {
               and {pending.length - 6} more
             </p>
           )}
+        </section>
+      )}
+
+      {/* Putting the portions back.
+          The weekly re-fit runs without anyone pressing anything, which is the
+          right behaviour and also the reason this has to exist: you can open
+          the app on a Monday, find the numbers have moved, and want to say
+          that was fine as it was. */}
+      {(snapshots.length > 0 || meals.length > 0) && (
+        <section className="card px-5 py-4">
+          <p className="text-sm font-bold">Put the portions back</p>
+          {snapshots.length > 0 ? (
+            <>
+              <p className="mt-0.5 text-xs leading-relaxed text-[var(--color-mut)]">
+                Every automatic rewrite takes a copy first.
+              </p>
+              <div className="mt-2.5 space-y-1.5">
+                {snapshots.slice(0, 3).map((sn) => (
+                  <div key={sn.id} className="flex items-center gap-3">
+                    <span className="mr-auto min-w-0 truncate text-xs text-[var(--color-mut)]">
+                      Before the {sn.reason} on{" "}
+                      {new Date(sn.changed_on + "T12:00:00").toLocaleDateString(undefined, {
+                        weekday: "short",
+                        day: "numeric",
+                        month: "short",
+                      })}
+                    </span>
+                    <button
+                      className="btn btn-sm shrink-0"
+                      disabled={restoring}
+                      onClick={() => undo({ id: sn.id }, "Restored")}
+                    >
+                      Restore
+                    </button>
+                  </div>
+                ))}
+              </div>
+            </>
+          ) : (
+            <p className="mt-0.5 text-xs leading-relaxed text-[var(--color-mut)]">
+              Nothing has been rewritten since copies started being kept. If the portions changed
+              before that, the log still remembers them — every meal you tapped stored its
+              amounts as they were that day.
+            </p>
+          )}
+
+          <div className="mt-3 border-t border-[#1c1f25] pt-3">
+            <div className="flex items-center gap-3">
+              <span className="mr-auto min-w-0 text-xs text-[var(--color-mut)]">
+                Rebuild this week&rsquo;s portions from what you logged
+              </span>
+              <button
+                className="btn btn-sm shrink-0"
+                disabled={restoring || !profile}
+                onClick={() =>
+                  profile &&
+                  undo(
+                    {
+                      from: lastRollDay(
+                        profile.plan_roll_dow ?? profile.shop_start_dow,
+                        todayKey
+                      ),
+                      to: todayKey,
+                    },
+                    "Rebuilt from your log"
+                  )
+                }
+              >
+                {restoring ? "Working…" : "From log"}
+              </button>
+            </div>
+            <p className="mt-1 text-[0.7rem] leading-relaxed text-[var(--color-mut)]">
+              Only covers meals you actually logged this week — it restores what you ate, not what
+              you meant to.
+            </p>
+          </div>
         </section>
       )}
 
