@@ -56,11 +56,32 @@ export function ensureSchema(): Promise<void> {
   return schemaReady;
 }
 
+/**
+ * A failed migration must not become a permanently broken instance.
+ *
+ * Two things went wrong here at once and they compounded. The memoised promise
+ * is what makes this free on a warm instance — but memoise a *rejected* one and
+ * every later request on that instance gets the same instant rejection, for as
+ * long as the instance lives. And because every route awaits this before it
+ * answers, a single slow or failed migration turned into every page saying
+ * "Can't reach the database", indefinitely, with a database that was fine.
+ *
+ * So: a failure clears the memo, and the next request tries again. And a
+ * failure does not fail the request. The migration is maintenance, not a
+ * precondition — the tables are almost certainly already there, and if they
+ * genuinely are not then the query that follows will say so with a real error
+ * instead of this one standing in front of it.
+ */
 async function run(): Promise<void> {
-  if (await alreadyCurrent()) return;
-  await createSchema();
-  await backfill();
-  await stamp();
+  try {
+    if (await alreadyCurrent()) return;
+    await createSchema();
+    await backfill();
+    await stamp();
+  } catch (e) {
+    schemaReady = null;
+    console.error("schema migration failed — carrying on with the schema as it is:", e);
+  }
 }
 
 async function alreadyCurrent(): Promise<boolean> {
@@ -85,7 +106,53 @@ async function stamp(): Promise<void> {
   }
 }
 
+/**
+ * Collects the statements instead of running them one at a time.
+ *
+ * `createSchema` is 75-odd `await sql\`...\`` lines of pure DDL, and Neon's
+ * HTTP driver makes every one of them a separate round trip. Measured, that is
+ * 87 requests for a full migration — a quarter of a second against a local
+ * socket, but five to ten seconds from a Vercel function to a Neon compute, and
+ * every route in the app awaits `ensureSchema()` before it answers. Bump
+ * SCHEMA_VERSION and the next cold start runs all 87 again; do it while seven
+ * page fetches are in flight and seven cold functions each start their own.
+ * That is a schema bump taking the site down, which is what happened.
+ *
+ * The driver can send a whole array in one request (`sql.transaction`), so the
+ * statements are gathered and flushed in batches. The shape of the collector is
+ * the point: it is itself a tagged template, so `createSchema` shadows `sql`
+ * with it and not one of those 75 lines has to change. Awaiting a collected
+ * query resolves immediately, because nothing has run yet.
+ */
+function collector() {
+  const queued: unknown[] = [];
+  const tag = (strings: TemplateStringsArray, ...vals: unknown[]) => {
+    queued.push((sql as any)(strings, ...vals));
+    return Promise.resolve([] as any[]);
+  };
+  return {
+    tag: tag as unknown as typeof sql,
+    /**
+     * Flushed in chunks rather than as one giant transaction. A chunk that
+     * fails rolls back only itself, which keeps the blast radius of a bad
+     * statement where it was before — and Neon has a limit on how much it will
+     * take in a single request anyway.
+     */
+    async flush(size = 25) {
+      for (let i = 0; i < queued.length; i += size) {
+        await (sql as any).transaction(queued.slice(i, i + size));
+      }
+      return queued.length;
+    },
+  };
+}
+
 async function createSchema() {
+  // Every statement below is collected, then sent in a handful of requests
+  // rather than 87. See collector().
+  const batch = collector();
+  const sql = batch.tag;
+
   // Created first so the version stamp has somewhere to live.
   await sql`create table if not exists schema_meta (
     key        text primary key,
@@ -354,6 +421,8 @@ async function createSchema() {
     insert into profile (id, energy_model, cycling)
     values (1, 'sessions', true)
     on conflict (id) do nothing`;
+
+  await batch.flush();
 }
 
 /**

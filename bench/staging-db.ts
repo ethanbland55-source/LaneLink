@@ -225,6 +225,74 @@ async function main() {
     `${restored[0].grams} / ${restored[1].grams}`
   );
 
+  console.log("\n=== 8b. Consensus across the week, not just the last day ===\n");
+  const { consensus } = await import("../lib/history");
+  check("four 70s and one 63 gives 70", consensus([70, 70, 63, 70, 70]) === 70);
+  check("a single stray gram loses", consensus([20, 20, 19, 20]) === 20);
+  check("one reading is taken at face value", consensus([43]) === 43);
+  check("two readings that disagree keep the earlier", consensus([70, 80]) === 70);
+  check("no readings is zero, not a crash", consensus([]) === 0);
+  // The case the mode gets wrong: a re-fit partway through the week.
+  check("a re-fit on Tuesday does not win on volume", consensus([70, 70, 43, 43, 43]) === 70);
+  check("nor one on Monday night", consensus([70, 43, 43, 43, 43]) === 70);
+  check("and a typo still loses", consensus([20, 19, 20, 20]) === 20);
+
+  // The real shape of it: a week where honey was mistyped once and the plan
+  // has since been rewritten under him.
+  await sql`delete from log_entries`;
+  await saveMeal(sql, 1, [
+    { name: "Rice Cakes", grams: 70 },
+    { name: "Honey", grams: 20 },
+  ]);
+  await sql`update ingredients set locked = true where meal_id = 1 and sort_order = 1`;
+  const days = [
+    ["2026-08-31", 70, 20],
+    ["2026-09-01", 70, 19], // the mistyped morning
+    ["2026-09-02", 70, 20],
+    ["2026-09-03", 70, 20],
+  ] as const;
+  for (const [day, rice, honey] of days) {
+    await sql`
+      insert into log_entries (day, meal_id, meal_name, confirmed, items)
+      values (${day}::date, 1, 'Breakfast', true,
+              ${JSON.stringify([
+                { name: "Rice Cakes", grams: rice },
+                { name: "Honey", grams: honey },
+              ])}::jsonb)`;
+  }
+  // Now the automatic re-fit guts it, the way it did on the live database.
+  await sql`update ingredients set grams = 43 where meal_id = 1 and sort_order = 0`;
+
+  const week = await portionsFromLog("2026-08-31", "2026-09-06");
+  const riceRow = week.find((r) => r.name === "Rice Cakes");
+  check("rice cakes are recovered", riceRow?.grams === 70, `${riceRow?.grams} g`);
+  check("on the strength of four logged days", riceRow?.votes === 4, `${riceRow?.votes} votes`);
+  check(
+    "the locked honey is left out of it entirely",
+    !week.some((r) => r.name === "Honey"),
+    week.map((r) => r.name).join(", ")
+  );
+
+  await applyPortions(week);
+  const fixed = (await sql`
+    select name, grams, locked from ingredients where meal_id = 1 order by sort_order`) as any[];
+  check("the plan is put back to 70 g", Number(fixed[0].grams) === 70, `${fixed[0].grams} g`);
+  check("and honey is still 20, untouched", Number(fixed[1].grams) === 20, `${fixed[1].grams} g`);
+
+  console.log("\n=== 8c. A renamed food is not restored onto ===\n");
+  await sql`update ingredients set name = 'Corn Cakes' where meal_id = 1 and sort_order = 0`;
+  const after8c = await portionsFromLog("2026-08-31", "2026-09-06");
+  check(
+    "the log says nothing about a food that has been renamed",
+    !after8c.some((r) => r.name === "Corn Cakes")
+  );
+  await sql`update ingredients set name = 'Rice Cakes' where meal_id = 1 and sort_order = 0`;
+  await sql`update ingredients set locked = false where meal_id = 1 and sort_order = 1`;
+  await saveMeal(sql, 1, [
+    { name: "Rice Cakes", grams: 70 },
+    { name: "Banana", grams: 210 },
+  ]);
+
   console.log("\n=== 9. The shop overlay ===\n");
   await stagePortions([{ meal_id: 1, slot: 0, name: "Rice Cakes", grams: 56 }], "2099-01-01");
   const pend = await listPending();

@@ -138,41 +138,148 @@ export async function restore(id: number): Promise<{ restored: number; skipped: 
  * The portions as your own log remembers them.
  *
  * This is the escape hatch for a change that happened before there was any
- * history to undo. Every logged meal stores the items exactly as they were
- * when you tapped it, so the log is a record of what the plan said on the day
- * — the most recent entry for each meal in a window gives back the portions
- * that were in force then.
+ * history to undo. Every logged meal stores its items exactly as they were
+ * when you tapped it, so the log is a record of what the plan said on the day.
  *
- * It only covers meals you actually logged, which is the honest limit of it:
- * this restores what you ate, not what you meant to.
+ * ## Why it reads every day and not just the last one
+ *
+ * Because a log entry is what you *ate*, and what you ate is the plan plus
+ * whatever happened. You weigh 19 g of honey when the plan said 20 and tap it
+ * anyway; the jar runs out and you have 15. Take the most recent entry and one
+ * bad morning becomes the plan.
+ *
+ * So every entry in the window votes, and the winner is the value that comes up
+ * most often. Four days at 70 g and one at 63 g gives 70 g, which is right. A
+ * genuine tie falls back to the median, which for two readings is their
+ * midpoint and for one is simply that one — the honest answer when the log has
+ * nothing more to say.
+ *
+ * ## Locked portions are left alone
+ *
+ * A locked portion is one the optimiser is not allowed to touch, so no re-fit
+ * ever moved it and the live value is already correct. It is also the most
+ * reliable thing in the plan, which makes it the wrong thing to overwrite with
+ * an estimate from a week of tapping.
  */
-export async function portionsFromLog(from: string, to: string): Promise<PortionRow[]> {
+export type LogPortion = PortionRow & {
+  /** How many logged days agreed on this. */
+  votes: number;
+  /** How many days had an opinion at all. */
+  seen: number;
+  /** Everything the log said, so a wide spread can be shown rather than hidden. */
+  values: number[];
+  locked: boolean;
+};
+
+/**
+ * What the plan said, out of a week of what you actually ate.
+ *
+ * The obvious answer is the most common value, and it is wrong. Consider a
+ * re-fit that ran on the Tuesday: the log then holds 70, 70, 43, 43, 43 and the
+ * most common value is 43 — the number you are trying to get rid of. The more
+ * days pass before you notice, the more confidently it gives you the wrong one.
+ *
+ * What is actually wanted is the value in force *before* things moved, with
+ * typing mistakes filtered out. Those are different jobs and need two steps:
+ *
+ *  1. **Keep only what is near the earliest reading.** Within 8 %, or a gram,
+ *     whichever is larger. A rewrite moves a portion by a fifth or more, so
+ *     this drops everything from after it — that is the point. Weighing 19 g
+ *     instead of 20 stays, because that is the same portion, badly weighed.
+ *  2. **Take the most common of what's left**, earliest winning a tie. One bad
+ *     morning cannot outvote four good ones.
+ *
+ * Values must arrive in the order they were logged; the first one carries the
+ * whole method.
+ */
+export function consensus(values: number[]): number {
+  if (!values.length) return 0;
+
+  const first = values[0];
+  const tolerance = Math.max(1, Math.abs(first) * 0.08);
+  const pool = values.filter((v) => Math.abs(v - first) <= tolerance);
+  if (!pool.length) return Math.round(first * 10) / 10;
+
+  const counts = new Map<number, number>();
+  for (const v of pool) {
+    const k = Math.round(v * 10) / 10;
+    counts.set(k, (counts.get(k) ?? 0) + 1);
+  }
+
+  let best = pool[0];
+  let bestCount = -1;
+  // Walked in logged order, so an equal count keeps the earlier value.
+  for (const v of pool) {
+    const k = Math.round(v * 10) / 10;
+    const n = counts.get(k) ?? 0;
+    if (n > bestCount) {
+      bestCount = n;
+      best = k;
+    }
+  }
+  return best;
+}
+
+export async function portionsFromLog(from: string, to: string): Promise<LogPortion[]> {
   const rows = (await sql`
-    select distinct on (meal_id) meal_id, items
+    select meal_id, items
       from log_entries
      where day between ${from}::date and ${to}::date
        and meal_id is not null
        and meal_id > 0
-     order by meal_id, day desc, id desc`) as any[];
+     order by day, id`) as any[];
 
-  const live = await currentPortions();
-  const nameAt = new Map(live.map((r) => [`${r.meal_id}:${r.slot}`, r.name]));
+  const live = (await sql`
+    select meal_id, sort_order as slot, name, grams, locked
+      from ingredients
+     order by meal_id, sort_order`) as any[];
 
-  const out: PortionRow[] = [];
+  const liveBy = new Map(
+    live.map((r) => [
+      `${Number(r.meal_id)}:${Number(r.slot)}`,
+      { name: String(r.name), grams: Number(r.grams), locked: !!r.locked },
+    ])
+  );
+
+  // Every value the log has for each position, in the order they were logged.
+  const seen = new Map<string, number[]>();
   for (const r of rows) {
     const items = Array.isArray(r.items) ? r.items : [];
+    const mealId = Number(r.meal_id);
     items.forEach((it: any, slot: number) => {
       const grams = Number(it?.grams);
       if (!Number.isFinite(grams) || grams <= 0) return;
-      const mealId = Number(r.meal_id);
-      // Trust the live name over the logged one: the log is the source for the
-      // gram amount, not for what the food is called now.
-      const name = nameAt.get(`${mealId}:${slot}`);
-      if (!name) return;
-      out.push({ meal_id: mealId, slot, name, grams });
+      const key = `${mealId}:${slot}`;
+      const now = liveBy.get(key);
+      // Only where the food still matches. A log entry for an ingredient that
+      // has since been renamed or replaced says nothing about the one there
+      // now, and applying it would be worse than doing nothing.
+      if (!now || String(it?.name ?? "") !== now.name) return;
+      const list = seen.get(key) ?? [];
+      list.push(grams);
+      seen.set(key, list);
     });
   }
-  return out;
+
+  const out: LogPortion[] = [];
+  for (const [key, values] of seen) {
+    const now = liveBy.get(key);
+    if (!now || now.locked) continue; // locked portions never moved; leave them
+    const [mealId, slot] = key.split(":").map(Number);
+    const grams = consensus(values);
+    const votes = values.filter((v) => Math.abs(v - grams) < 0.05).length;
+    out.push({
+      meal_id: mealId,
+      slot,
+      name: now.name,
+      grams,
+      votes,
+      seen: values.length,
+      values,
+      locked: false,
+    });
+  }
+  return out.sort((a, b) => a.meal_id - b.meal_id || a.slot - b.slot);
 }
 
 /** Apply a set of portions read back out of the log. */

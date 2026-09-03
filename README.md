@@ -71,15 +71,50 @@ NEXT_PUBLIC_LOCK_AFTER=15   # default
    `ensureSchema`), and so do any new columns a later version adds. `schema.sql` is the
    same DDL if you'd rather run it by hand in the Neon SQL editor.
 
-**On load time.** That migration is 78 statements, and Neon's HTTP driver makes
-each one a separate round trip — so it used to run in full on every cold start,
-before the first page could render. It now sits behind a single version check
-against a `schema_meta` table: a database already on the current version costs
-one query instead of seventy-eight. Bump `SCHEMA_VERSION` in `lib/db.ts`
-whenever the DDL changes and the whole thing replays; every statement in it is
-`if not exists`, so replaying is harmless. The check fails open — if the stamp
-can't be read for any reason it migrates anyway, because a missing column is a
-much worse failure than a slow first load.
+**On load time.** The migration is 88 statements, and Neon's HTTP driver makes
+each one a separate round trip. Two things keep that off the critical path.
+
+First, a version check: a `schema_meta` table holds the current
+`SCHEMA_VERSION`, and a database already on it costs **one** query instead of
+eighty-eight. Bump `SCHEMA_VERSION` in `lib/db.ts` whenever the DDL changes and
+the whole thing replays; every statement is `if not exists`, so replaying is
+harmless. The check fails open — if the stamp can't be read it migrates anyway,
+because a missing column is a much worse failure than a slow first load.
+
+Second, the replay itself is **batched**. `createSchema` is pure DDL, so its
+statements are collected and sent in chunks with `sql.transaction` — measured,
+87 HTTP requests down to 17. That matters because every route awaits
+`ensureSchema()` before it answers: at 90 ms from a Vercel function to a Neon
+compute, 87 sequential requests is ~8 seconds, comfortably past the function
+timeout, and a page fires seven fetches at once so seven cold functions each
+start their own. A schema bump could take the site down. It did.
+
+The collector is worth a look (`lib/db.ts`): it is itself a tagged template, so
+`createSchema` shadows `sql` with it and not one of the 75 statement lines has
+to change.
+
+**And a failed migration is not fatal.** `ensureSchema` memoises its promise,
+which is what makes it free when warm — but memoising a *rejected* one meant a
+single failure poisoned the instance, and every request on it failed instantly
+for as long as it lived. A failure now clears the memo so the next request
+retries, and does not fail the request: the migration is maintenance, not a
+precondition. The tables are almost certainly already there, and if they are
+not, the query that follows says so with a real error instead of this one
+standing in front of it.
+
+**Testing SQL.** Two harnesses, because there are two ways to be wrong.
+`bench/db-harness.ts` points the real query code at an ordinary Postgres
+(`lib/db.ts` exports `__setSql`), which proves the SQL is right.
+`bench/neon-proxy.ts` goes further and impersonates Neon's HTTP endpoint —
+same protocol, same one-statement-per-request rule, forwarding to that
+Postgres — which proves the SQL survives the driver that actually runs it.
+`bench/migration-http.ts` runs the whole migration through it.
+
+```
+createdb mealhub
+PGTEST=postgres://localhost/mealhub npx tsx bench/staging-db.ts
+PGTEST=postgres://localhost/mealhub npx tsx bench/migration-http.ts
+```
 
 Local dev: copy `.env.example` to `.env.local`, fill in `DATABASE_URL`, then
 `npm install && npm run dev`.
@@ -234,10 +269,30 @@ offers to restore it. Restoring is itself snapshotted, so the undo is undoable.
 
 There is a second route for a change that happened before any history existed:
 **rebuild this week's portions from the log**. Every logged meal stores its
-items exactly as they were when you tapped it, so the most recent entry for
-each meal in a window gives back the portions that were in force then. It only
-covers meals you actually logged — it restores what you ate, not what you meant
-to.
+items exactly as they were when you tapped it, so the log is a record of what
+the plan said on the day.
+
+Reading it back is less obvious than it looks. The natural answer — take the
+most common value across the week — is wrong. A re-fit that ran on the Tuesday
+leaves a log of 70, 70, 43, 43, 43, and the most common value is 43: the number
+you are trying to get rid of, winning by sitting there longest. So it goes in
+two steps instead:
+
+1. **Keep only what is near the earliest reading** — within 8 %, or a gram,
+   whichever is larger. A rewrite moves a portion by a fifth or more, so this
+   drops everything from after it. Weighing 19 g of honey instead of 20 stays,
+   because that is the same portion badly weighed rather than a different plan.
+2. **Take the most common of what's left**, earliest winning a tie. One bad
+   morning cannot outvote four good ones.
+
+**Locked portions are skipped entirely.** A locked portion is one the optimiser
+may not touch, so no re-fit ever moved it and the live value is already right —
+which makes it the wrong thing to overwrite with an estimate. Same for anything
+whose name has changed since it was logged: the log says nothing about the food
+that is there now.
+
+It only covers meals you actually logged — it restores what you ate, not what
+you meant to.
 
 ## Blocks, and toned maintenance
 
