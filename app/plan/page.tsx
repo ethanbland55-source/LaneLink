@@ -27,6 +27,7 @@ import {
   ACTIVITY_LEVELS,
   GOALS,
   WEEKDAYS,
+  addDays,
   WEEKDAY_LABEL,
   ageFromDob,
   buildWeekPlan,
@@ -96,6 +97,10 @@ export default function PlanPage() {
     []
   );
   const [restoring, setRestoring] = useState(false);
+  /** What restoring from the log would change, so it can be seen first. */
+  const [preview, setPreview] = useState<
+    { meal_id: number; slot: number; name: string; grams: number; from: number | null }[]
+  >([]);
 
   useEffect(() => {
     (async () => {
@@ -111,6 +116,7 @@ export default function PlanPage() {
           .then((r) => r.json())
           .catch(() => ({ snapshots: [] })),
       ]);
+      setPreview([]);
       setPending(pe.portions ?? []);
       setSnapshots(hi.snapshots ?? []);
       setProfile(normaliseProfile(p));
@@ -135,6 +141,20 @@ export default function PlanPage() {
   );
 
   const todayKey = useMemo(() => dayKey(), []);
+
+  /**
+   * How far back the log has to be read to find the portions before they moved.
+   *
+   * Not this week. The weekly re-fit runs *on* roll day, so every entry since
+   * then already carries the new numbers — reading only this week would anchor
+   * on exactly the values you are trying to get rid of. The previous plan week
+   * is where the old ones live.
+   */
+  const logWindow = useMemo(() => {
+    if (!profile) return null;
+    const dow = profile.plan_roll_dow ?? profile.shop_start_dow;
+    return { from: addDays(lastRollDay(dow, todayKey), -7), to: todayKey };
+  }, [profile, todayKey]);
   /** The day a change made now would come into force. */
   const rollDay = useMemo(
     () =>
@@ -466,6 +486,24 @@ export default function PlanPage() {
     );
   }
 
+  // The preview needs the window, which needs the profile, so it comes after
+  // the first load rather than as part of it.
+  useEffect(() => {
+    if (!logWindow) return;
+    let live = true;
+    fetch(`/api/history?from=${logWindow.from}&to=${logWindow.to}`)
+      .then((r) => r.json())
+      .then((r) => {
+        if (!live) return;
+        setSnapshots(r.snapshots ?? []);
+        setPreview(r.preview ?? []);
+      })
+      .catch(() => {});
+    return () => {
+      live = false;
+    };
+  }, [logWindow]);
+
   async function loadPending() {
     try {
       const r = await fetch("/api/pending").then((x) => x.json());
@@ -514,8 +552,11 @@ export default function PlanPage() {
         share_pct: x.share_pct ?? null,
       }))
     );
-    const hi = await fetch("/api/history").then((r) => r.json());
+    const hi = await fetch(
+      logWindow ? `/api/history?from=${logWindow.from}&to=${logWindow.to}` : "/api/history"
+    ).then((r) => r.json());
     setSnapshots(hi.snapshots ?? []);
+    setPreview(hi.preview ?? []);
     flash(
       res.restored > 0
         ? `${what} — ${res.restored} portion${res.restored === 1 ? "" : "s"} put back`
@@ -699,32 +740,42 @@ export default function PlanPage() {
 
           <div className="mt-3 border-t border-[#1c1f25] pt-3">
             <div className="flex items-center gap-3">
-              <span className="mr-auto min-w-0 text-xs text-[var(--color-mut)]">
-                Rebuild this week&rsquo;s portions from what you logged
+              <span className="mr-auto min-w-0 text-xs font-semibold">
+                {preview.length > 0
+                  ? `${preview.length} portion${preview.length === 1 ? "" : "s"} disagree with your log`
+                  : "Rebuild the portions from what you logged"}
               </span>
               <button
-                className="btn btn-sm shrink-0"
-                disabled={restoring || !profile}
+                className={`btn btn-sm shrink-0 ${preview.length > 0 ? "btn-accent" : ""}`}
+                disabled={restoring || !logWindow || preview.length === 0}
                 onClick={() =>
-                  profile &&
-                  undo(
-                    {
-                      from: lastRollDay(
-                        profile.plan_roll_dow ?? profile.shop_start_dow,
-                        todayKey
-                      ),
-                      to: todayKey,
-                    },
-                    "Rebuilt from your log"
-                  )
+                  logWindow && undo({ ...logWindow }, "Rebuilt from your log")
                 }
               >
-                {restoring ? "Working…" : "From log"}
+                {restoring ? "Working…" : preview.length > 0 ? "Put them back" : "Nothing to do"}
               </button>
             </div>
-            <p className="mt-1 text-[0.7rem] leading-relaxed text-[var(--color-mut)]">
-              Only covers meals you actually logged this week — it restores what you ate, not what
-              you meant to.
+
+            {preview.length > 0 && (
+              <ul className="mt-2 space-y-0.5">
+                {preview.slice(0, 8).map((c) => (
+                  <li
+                    key={`${c.meal_id}:${c.slot}`}
+                    className="flex items-baseline gap-2 text-xs text-[var(--color-mut)]"
+                  >
+                    <span className="truncate">{c.name}</span>
+                    <span className="ml-auto shrink-0 tabular-nums">
+                      {Math.round(c.from ?? 0)} &rarr;{" "}
+                      <b className="text-[var(--color-fg)]">{Math.round(c.grams)}</b> g
+                    </span>
+                  </li>
+                ))}
+              </ul>
+            )}
+
+            <p className="mt-1.5 text-[0.7rem] leading-relaxed text-[var(--color-mut)]">
+              Read from the last fortnight, so the days before the plan moved are included. Every
+              logged day votes, a one-off mis-weigh loses, and locked portions are left alone.
             </p>
           </div>
         </section>
