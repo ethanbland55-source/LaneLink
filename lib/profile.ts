@@ -87,7 +87,7 @@ export function normaliseProfile(p: any): Profile {
     // A body fat figure typed in by hand wins; otherwise the tape estimate is
     // used if there's a neck measurement to go with the waist.
     bf_source:
-      p?.bf_source === "manual" || p?.bf_source === "tape"
+      p?.bf_source === "manual" || p?.bf_source === "tape" || p?.bf_source === "skinfold"
         ? p.bf_source
         : optionalNum(p?.body_fat_pct) != null
           ? "manual"

@@ -95,6 +95,33 @@ export type DayEnergy = {
 };
 
 /**
+ * Whether the week is restricting, in balance, or in surplus.
+ *
+ * This turns out to matter more than the EA number itself, and getting it
+ * wrong makes the warning actively misleading. At true energy balance,
+ *
+ *     EA = BMR × base_activity / FFM
+ *
+ * — the session cost cancels out, because you ate it. So a lean athlete whose
+ * non-training activity is modest lands somewhere in the low thirties *at
+ * maintenance*, and no amount of eating "enough" moves it without eating into
+ * a surplus. That is arithmetic, not under-fuelling.
+ *
+ * The thresholds in the literature come from restriction studies. A day at 33
+ * while in energy balance is a different animal from a day at 33 while 500
+ * kcal down, and telling someone in balance that they are under-fuelled is
+ * how you get an athlete eating past maintenance to satisfy a number.
+ */
+export type EnergyContext = "restricting" | "balanced" | "surplus";
+
+export function contextOf(plan: WeekPlan): EnergyContext {
+  const gap = (actualWeeklyAverage(plan) - plan.maintenance) / (plan.maintenance || 1);
+  if (gap < -0.02) return "restricting";
+  if (gap > 0.02) return "surplus";
+  return "balanced";
+}
+
+/**
  * Fat-free mass, or nothing.
  *
  * Deliberately returns null rather than guessing from bodyweight. An EA figure
@@ -111,6 +138,18 @@ export function bandOf(ea: number | null): EaBand {
   if (ea >= EA_OPTIMAL) return "optimal";
   if (ea >= EA_FLOOR) return "reduced";
   return "low";
+}
+
+/**
+ * The lowest EA the arithmetic allows at true energy balance.
+ *
+ * Useful because it says whether a "reduced" reading can be fixed by eating
+ * more at all, or whether it is simply what this body composition and this
+ * activity level come to when intake equals expenditure.
+ */
+export function balancedEa(p: Profile, plan: WeekPlan): number | null {
+  const ffm = fatFreeMass(p);
+  return ffm ? Math.round((plan.baseline / ffm) * 10) / 10 : null;
 }
 
 /** What each kind of day leaves you to live on. */
@@ -364,6 +403,64 @@ export function proteinVerdict(grams: number, weightKg: number): ProteinVerdict 
     verdict: "very_high",
     note: "Past 2.4 g/kg. This is crowding out the carbohydrate the swimming runs on for a gain the evidence does not really show.",
   };
+}
+
+/* ------------------------------------------------------------------ */
+/* Fat, and the floor under it                                         */
+/* ------------------------------------------------------------------ */
+
+/**
+ * Dietary fat is the one macro with a floor that isn't about performance.
+ *
+ * Carbohydrate runs the session and protein holds the muscle on, and both show
+ * their shortfall in a week. Fat is slower and quieter: the position stands
+ * put athletes at 20–35% of energy from fat and say plainly that going under
+ * 20% buys no performance, and low-fat intakes in men are associated with
+ * lower testosterone — which is the hormone doing the work on the side of this
+ * that is about staying lean *and* muscular rather than just light.
+ *
+ * So the check here is on the share of calories as well as the grams. A
+ * swimmer's plate is carbohydrate-heavy by necessity, so the share drifts down
+ * on its own as training goes up; that is fine and expected. What is not fine
+ * is setting the per-kg figure so low that every day of the week lands in the
+ * teens.
+ *
+ *   Thomas, Erdman & Burke, ACSM/AND/DC position stand, JAND 2016;116(3):501.
+ */
+export const FAT_MIN_PCT = 0.2;
+export const FAT_MIN_PER_KG = 0.5;
+
+export type FatCheck = {
+  dayTypeId: number;
+  name: string;
+  days: number;
+  grams: number;
+  perKg: number;
+  pctKcal: number;
+  verdict: "low" | "lean" | "ok";
+};
+
+export function fatCheck(plan: WeekPlan, weightKg: number): FatCheck[] {
+  const daysUsing = new Map<number, number>();
+  for (const d of WEEKDAYS) {
+    const id = plan.week[d];
+    daysUsing.set(id, (daysUsing.get(id) ?? 0) + 1);
+  }
+  return plan.order.map((id) => {
+    const t = targetsFor(plan, id);
+    const perKg = weightKg > 0 ? t.fat / weightKg : 0;
+    const pctKcal = t.kcal > 0 ? (t.fat * 9) / t.kcal : 0;
+    return {
+      dayTypeId: id,
+      name: t.name,
+      days: daysUsing.get(id) ?? 0,
+      grams: t.fat,
+      perKg: Math.round(perKg * 100) / 100,
+      pctKcal,
+      verdict:
+        perKg < FAT_MIN_PER_KG || pctKcal < 0.15 ? "low" : pctKcal < FAT_MIN_PCT ? "lean" : "ok",
+    };
+  });
 }
 
 /**

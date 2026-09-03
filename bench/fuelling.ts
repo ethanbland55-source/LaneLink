@@ -17,7 +17,16 @@
  */
 
 import { buildWeekPlan, targetsFor, EA_FLOOR, type Profile } from "../lib/nutrition";
-import { weekEnergy, lossRate, proteinVerdict, carbBandFor, CARB_BANDS } from "../lib/fuelling";
+import {
+  weekEnergy,
+  lossRate,
+  proteinVerdict,
+  carbBandFor,
+  CARB_BANDS,
+  contextOf,
+  balancedEa,
+  fatCheck,
+} from "../lib/fuelling";
 import { trainingLoad } from "../lib/nutrition";
 import { REAL_DAY_TYPES, REAL_PROFILE } from "./real-plan";
 
@@ -167,6 +176,51 @@ for (const dt of REAL_DAY_TYPES) {
   );
 }
 check("every band is reachable", CARB_BANDS.length === 4);
+
+/* ---- 6. balance context, and the fat floor ----------------------------- */
+
+console.log("\n=== Reduced EA at maintenance is arithmetic, not restriction ===\n");
+const balanced = profileWith({ phase_start_adjust: 0, phase_end_adjust: 0 });
+const balancedPlan = buildWeekPlan(balanced, REAL_DAY_TYPES, { today: MONDAY });
+console.log(`  at maintenance: context ${contextOf(balancedPlan)}, EA floor of the arithmetic ${balancedEa(balanced, balancedPlan)}`);
+check("a maintenance week reads as balanced", contextOf(balancedPlan) === "balanced");
+const cutting = profileWith({ phase_start_adjust: -0.08, phase_end_adjust: -0.08 });
+check(
+  "an 8% deficit reads as restricting",
+  contextOf(buildWeekPlan(cutting, REAL_DAY_TYPES, { today: MONDAY })) === "restricting"
+);
+check(
+  "the balanced EA matches what the days actually come to",
+  Math.abs((balancedEa(balanced, balancedPlan) ?? 0) -
+    (weekEnergy(balanced, balancedPlan).find((d) => d.days > 0)?.ea ?? 0)) < 1.5
+);
+
+console.log("\n=== Fat, by setting ===\n");
+console.log("fat/kg".padEnd(8) + "lightest day".padStart(14) + "% kcal".padStart(9) + "  verdict");
+for (const f of [0.55, 0.65, 0.75, 0.85]) {
+  const p2 = profileWith({ fat_per_kg: f });
+  const pl = buildWeekPlan(p2, REAL_DAY_TYPES, { today: MONDAY });
+  const rows = fatCheck(pl, 78.35).filter((r) => r.days > 0);
+  const worst = rows.reduce((a, b) => (a.pctKcal < b.pctKcal ? a : b));
+  console.log(
+    `${f}`.padEnd(8) +
+      `${worst.grams} g`.padStart(14) +
+      `${(worst.pctKcal * 100).toFixed(0)}%`.padStart(9) +
+      `  ${worst.verdict}`
+  );
+}
+check(
+  "0.65 g/kg is flagged",
+  fatCheck(buildWeekPlan(profileWith({ fat_per_kg: 0.65 }), REAL_DAY_TYPES, { today: MONDAY }), 78.35)
+    .filter((r) => r.days > 0)
+    .some((r) => r.verdict !== "ok")
+);
+check(
+  "0.85 g/kg still reads lean but not low",
+  !fatCheck(buildWeekPlan(profileWith({ fat_per_kg: 0.85 }), REAL_DAY_TYPES, { today: MONDAY }), 78.35)
+    .filter((r) => r.days > 0)
+    .some((r) => r.verdict === "low")
+);
 
 console.log(
   failures === 0 ? "\nPASS — every check held." : `\nFAIL — ${failures} check(s) did not hold.`

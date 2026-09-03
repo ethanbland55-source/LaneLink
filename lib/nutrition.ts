@@ -102,7 +102,13 @@ export type Profile = {
   weight_kg: number;
   body_fat_pct: number | null;
   /** Where the body fat figure comes from: typed in, from the tape, or nowhere. */
-  bf_source: "none" | "manual" | "tape";
+  /**
+   * Where the body fat figure came from. "skinfold" belongs here as much as
+   * "tape" does — the app offers calipers as a method, and a profile that
+   * cannot record having used them makes the setting and the measurement
+   * disagree about what is being measured.
+   */
+  bf_source: "none" | "manual" | "tape" | "skinfold";
   /** One-off tape measurements for the Navy estimate. */
   neck_cm: number | null;
   hip_cm: number | null;
@@ -360,6 +366,15 @@ export function estimatedBodyFat(p: Profile): BfEstimate | null {
       label: "measured",
     };
   }
+  /**
+   * Calipers are recorded on the weigh-in, not the profile, so there is
+   * nothing to recompute here — the snapshot above has already used it. This
+   * branch exists so that choosing calipers does not silently fall through to
+   * the tape estimate, which reads high on a lean athlete and would quietly
+   * disagree with the figure the weigh-in produced.
+   */
+  if (p.bf_source === "skinfold") return null;
+
   if (p.bf_source === "tape" && p.neck_cm && p.waist_cm) {
     return navyBodyFat({
       sex: p.sex,

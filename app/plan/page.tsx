@@ -5,7 +5,14 @@ import Link from "next/link";
 import { RecalculateDialog } from "../recalculate";
 import { applyDayFor, type PendingPortion } from "@/lib/pending";
 import { EA_FLOOR, EA_OPTIMAL } from "@/lib/nutrition";
-import { lossRate, proteinVerdict, weekEnergy } from "@/lib/fuelling";
+import {
+  balancedEa,
+  contextOf,
+  fatCheck,
+  lossRate,
+  proteinVerdict,
+  weekEnergy,
+} from "@/lib/fuelling";
 import { lastRollDay, nextRollDay } from "@/lib/weekly";
 import { Bar, MACRO_COLOR, MACRO_LABEL, Segmented, Stat, type MacroKey } from "../macro-ui";
 import { type BoundedItem } from "@/lib/optimise";
@@ -157,6 +164,18 @@ export default function PlanPage() {
         : { pctPerWeek: 0, kgPerWeek: 0, verdict: "maintaining" as const, note: "" },
     [profile, plan]
   );
+  /** Restricting, in balance, or in surplus — it changes what EA means. */
+  const balance = useMemo(() => (plan ? contextOf(plan) : "balanced"), [plan]);
+  const eaAtBalance = useMemo(
+    () => (profile && plan ? balancedEa(profile, plan) : null),
+    [profile, plan]
+  );
+  const fats = useMemo(
+    () => (plan && profile ? fatCheck(plan, planWeight(profile)) : []),
+    [plan, profile]
+  );
+  const lowFat = fats.filter((f) => f.days > 0 && f.verdict !== "ok");
+
   const proteinCheck = useMemo(() => {
     if (!plan || !profile) return proteinVerdict(0, 1);
     return proteinVerdict(targetsFor(plan, plan.order[0]).protein, planWeight(profile));
@@ -780,9 +799,21 @@ export default function PlanPage() {
 
           {energy.some((d) => d.days > 0 && d.band === "reduced") && (
             <p className="mt-2.5 text-xs leading-relaxed text-[var(--color-mut)]">
-              Sitting between {EA_FLOOR} and {EA_OPTIMAL} is fine for a short, deliberate block.
-              It is not where to spend a season — {EA_OPTIMAL} and up is what to plan for once the
-              lean phase is done.
+              {balance === "restricting" ? (
+                <>
+                  Between {EA_FLOOR} and {EA_OPTIMAL} while eating under maintenance. Fine for a
+                  short, deliberate block; not where to spend a season.
+                </>
+              ) : (
+                <>
+                  These read between {EA_FLOOR} and {EA_OPTIMAL}, but you are eating at
+                  maintenance, so this is arithmetic rather than under-fuelling — at energy balance
+                  the figure is just your resting cost times your daily activity, divided by lean
+                  mass{eaAtBalance ? `, which comes to ${eaAtBalance}` : ""}. Eating more would not
+                  raise it without putting you in surplus. If it looks low, the number to question
+                  is your everyday activity setting, not your plate.
+                </>
+              )}
             </p>
           )}
           {plan.order.some((id) => targetsFor(plan, id).eaFloored) && (
@@ -790,6 +821,19 @@ export default function PlanPage() {
               Some days have been raised above what your deficit asked for, to keep them above the
               floor. That is deliberate: the fat can come off next month and the season can&rsquo;t
               be got back.
+            </p>
+          )}
+
+          {lowFat.length > 0 && (
+            <p
+              className="mt-2.5 text-xs leading-relaxed"
+              style={{ color: lowFat.some((f) => f.verdict === "low") ? "var(--color-fat)" : "var(--color-carbs)" }}
+            >
+              Fat is down to {Math.min(...lowFat.map((f) => f.grams))} g on your lightest day —{" "}
+              {(Math.min(...lowFat.map((f) => f.pctKcal)) * 100).toFixed(0)}% of calories. The
+              guidance for athletes is 20–35%, and going under 20% buys no performance while
+              low-fat intakes in men track with lower testosterone — which is the side of this
+              doing the muscle-keeping. Worth a look at your fat per kg.
             </p>
           )}
 
