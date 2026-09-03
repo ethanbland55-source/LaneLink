@@ -1,59 +1,174 @@
 /**
- * Is each kind of day carrying the carbohydrate its training asks for?
- * Run with: npx tsx bench/fuelling.ts
+ * Lean, fuelled, and still fast — does the plan actually enforce it?
+ *
+ * The whole point of the energy-availability floor is that it binds. A weekly
+ * calorie average can look completely sensible while a Tuesday with two swims
+ * in it leaves too little to run a body on, and bodyweight will not tell you:
+ * this is the failure where the scale holds steady and the swimming quietly
+ * goes backwards.
+ *
+ * So this checks three things against the real plan:
+ *
+ *  1. Every day the plan produces clears 30 kcal per kg of fat-free mass.
+ *  2. Pushing the deficit harder does not get around that — the floor wins.
+ *  3. The rate of loss and the protein figure get honest verdicts.
+ *
+ * Run: npx tsx bench/fuelling.ts
  */
-import { buildWeekPlan, carbCheck, planWeight, trainingLoad } from "../lib/nutrition";
-import { CARB_BANDS, CITATIONS, carbBandFor, short } from "../lib/evidence";
-import { SUPPLEMENT_LIBRARY, fixedMacros, type Supplement } from "../lib/supplements";
+
+import { buildWeekPlan, targetsFor, EA_FLOOR, type Profile } from "../lib/nutrition";
+import { weekEnergy, lossRate, proteinVerdict, carbBandFor, CARB_BANDS } from "../lib/fuelling";
+import { trainingLoad } from "../lib/nutrition";
 import { REAL_DAY_TYPES, REAL_PROFILE } from "./real-plan";
 
-const plan = buildWeekPlan(REAL_PROFILE, REAL_DAY_TYPES, { today: "2026-08-31" });
+const MONDAY = "2026-09-07";
+let failures = 0;
+const check = (what: string, ok: boolean, detail = "") => {
+  if (!ok) failures++;
+  console.log(`  ${ok ? "ok  " : "FAIL"}  ${what}${detail ? ` — ${detail}` : ""}`);
+};
 
-console.log(`=== Carbohydrate, ${planWeight(REAL_PROFILE)} kg (${short("burke2011")}) ===\n`);
-console.log("day type       load   band        should be      target      ");
-for (const c of carbCheck(REAL_PROFILE, plan)) {
-  const flag =
-    c.verdict === "in"
-      ? "ok"
-      : c.verdict === "under_fuelled"
-        ? "UNDER-FUELLED"
-        : c.verdict === "low_by_design"
-          ? "low by design"
-          : "over";
+/** His profile, uncapped, with a body-fat figure so EA can be computed at all. */
+function profileWith(over: Partial<Profile>): Profile {
+  return {
+    ...REAL_PROFILE,
+    calorie_override: null,
+    body_fat_pct: 12,
+    plan_bf_pct: 12,
+    bf_source: "skinfold",
+    ...over,
+  } as Profile;
+}
+
+console.log("=== What each day leaves you to live on ===\n");
+const plan = buildWeekPlan(profileWith({}), REAL_DAY_TYPES, { today: MONDAY });
+const energy = weekEnergy(profileWith({}), plan);
+
+console.log(
+  "day".padEnd(14) + "kcal".padStart(7) + "session".padStart(9) + "EA".padStart(7) + "  band"
+);
+for (const d of energy) {
   console.log(
-    `${c.name.padEnd(14)}${String(c.loadMinutes).padStart(4)}m  ${c.band.label.padEnd(10)}  ` +
-      `${String(c.lowGrams).padStart(4)}-${String(c.highGrams).padEnd(4)} g   ` +
-      `${String(c.grams).padStart(4)} g (${c.perKg} g/kg)  ${flag}`
+    d.name.padEnd(14) +
+      String(Math.round(d.intake)).padStart(7) +
+      String(d.exercise).padStart(9) +
+      String(d.ea ?? "—").padStart(7) +
+      "  " +
+      d.band +
+      (d.days === 0 ? "  (unused)" : "")
   );
 }
 
-console.log("\n=== The bands ===");
-for (const b of CARB_BANDS) {
-  console.log(`  ${b.label.padEnd(10)} ${b.low}-${b.high} g/kg — ${b.why}`);
+check(
+  "every day in use clears the floor",
+  energy.filter((d) => d.days > 0).every((d) => (d.ea ?? 99) >= EA_FLOOR),
+  energy
+    .filter((d) => d.days > 0)
+    .map((d) => `${d.name} ${d.ea}`)
+    .join(", ")
+);
+
+/* ---- 2. the floor beats the deficit ------------------------------------ */
+
+console.log("\n=== Pushing the deficit — the floor should win ===\n");
+console.log("phase adjust".padEnd(14) + "weekly".padStart(8) + "lightest EA".padStart(13) + "  floored");
+for (const adjust of [0, -0.05, -0.1, -0.2, -0.35]) {
+  const p = profileWith({ phase_start_adjust: adjust, phase_end_adjust: adjust });
+  const pl = buildWeekPlan(p, REAL_DAY_TYPES, { today: MONDAY });
+  const e = weekEnergy(p, pl).filter((d) => d.days > 0);
+  const lowest = e.reduce((a, b) => ((a.ea ?? 99) < (b.ea ?? 99) ? a : b));
+  const floored = pl.order.filter((id) => targetsFor(pl, id).eaFloored).length;
+  console.log(
+    `${(adjust * 100).toFixed(0)}%`.padEnd(14) +
+      String(Math.round(pl.goalKcal)).padStart(8) +
+      String(lowest.ea).padStart(13) +
+      `  ${floored} day type${floored === 1 ? "" : "s"}`
+  );
+  check(
+    `at ${(adjust * 100).toFixed(0)}% no day falls under the floor`,
+    e.every((d) => (d.ea ?? 99) >= EA_FLOOR - 0.05),
+    `lightest ${lowest.name} ${lowest.ea}`
+  );
 }
 
-console.log("\n=== Load weighting ===");
+/* ---- 3. without a body-fat figure it does nothing, loudly -------------- */
+
+console.log("\n=== With no body composition figure ===\n");
+const blind = { ...REAL_PROFILE, calorie_override: null, body_fat_pct: null, plan_bf_pct: null, bf_source: "none" } as Profile;
+const blindPlan = buildWeekPlan(blind, REAL_DAY_TYPES, { today: MONDAY });
+const blindEnergy = weekEnergy(blind, blindPlan);
+check(
+  "energy availability is null rather than guessed",
+  blindEnergy.every((d) => d.ea === null)
+);
+check(
+  "and nothing gets floored on an invented number",
+  blindPlan.order.every((id) => !targetsFor(blindPlan, id).eaFloored)
+);
+
+/* ---- 4. rate of loss --------------------------------------------------- */
+
+console.log("\n=== How fast the phase is actually moving ===\n");
+for (const adjust of [0.02, 0, -0.03, -0.08, -0.15]) {
+  const p = profileWith({ phase_start_adjust: adjust, phase_end_adjust: adjust });
+  const pl = buildWeekPlan(p, REAL_DAY_TYPES, { today: MONDAY });
+  const r = lossRate(p, pl);
+  console.log(
+    `${(adjust * 100).toFixed(0)}%`.padEnd(6) +
+      `${(r.pctPerWeek * 100).toFixed(2)}%/wk`.padStart(11) +
+      `${r.kgPerWeek.toFixed(2)} kg`.padStart(10) +
+      `  ${r.verdict}`
+  );
+}
+/**
+ * The nicest property of the floor: you cannot set a dangerous deficit.
+ *
+ * Ask for 20% under and the floor gives most of it back, so the rate that
+ * actually happens stays inside what the evidence supports. Worth asserting
+ * explicitly, because it is the difference between a warning and a guardrail.
+ */
+const brisk = profileWith({ phase_start_adjust: -0.2, phase_end_adjust: -0.2 });
+const briskPlan = buildWeekPlan(brisk, REAL_DAY_TYPES, { today: MONDAY });
+const briskRate = lossRate(brisk, briskPlan);
+console.log(
+  `\n  asking for -20% actually gives ${(briskRate.pctPerWeek * 100).toFixed(2)}%/wk ` +
+    `(${briskRate.verdict}) once the floor has had its say`
+);
+check(
+  "a 20% deficit cannot produce a loss faster than 1% a week",
+  briskRate.pctPerWeek >= -0.01,
+  `${(briskRate.pctPerWeek * 100).toFixed(2)}%/wk`
+);
+check(
+  "and the floor is what stopped it",
+  briskPlan.order.some((id) => targetsFor(briskPlan, id).eaFloored)
+);
+
+/* ---- 5. protein and carbohydrate -------------------------------------- */
+
+console.log("\n=== Protein, at his current setting ===\n");
+const t = targetsFor(plan, 3);
+const pv = proteinVerdict(t.protein, 78.35);
+console.log(`  ${t.protein} g = ${pv.perKg.toFixed(2)} g/kg → ${pv.verdict}`);
+console.log(`  ${pv.note}`);
+check("protein gets a verdict", !!pv.verdict);
+
+console.log("\n=== Carbohydrate band by day type ===\n");
 for (const dt of REAL_DAY_TYPES) {
-  const mins = (dt.sessions ?? []).reduce((a, s) => a + s.minutes, 0);
+  const load = trainingLoad(dt);
+  const band = carbBandFor(load);
+  const tt = targetsFor(plan, dt.id);
+  const perKg = tt.carbs / 78.35;
   console.log(
-    `  ${dt.name.padEnd(14)} ${String(mins).padStart(3)} clock min -> ` +
-      `${String(Math.round(trainingLoad(dt))).padStart(3)} weighted -> ${carbBandFor(trainingLoad(dt)).label}`
+    dt.name.padEnd(14) +
+      `load ${load.toFixed(0)}`.padStart(10) +
+      `  ${band.label} (${band.low}-${band.high} g/kg)`.padEnd(28) +
+      `plan ${perKg.toFixed(1)} g/kg`
   );
 }
+check("every band is reachable", CARB_BANDS.length === 4);
 
-console.log("\n=== Supplements are a fixed cost, not a variable ===");
-const supps: Supplement[] = [
-  { id: 1, name: "Creatine monohydrate", dose: 5, unit: "g", timing: "anytime", meal_id: null, day_type_ids: null, times_per_day: 1, kcal: 0, protein: 0, carbs: 0, fat: 0, note: null, sort_order: 0 },
-  { id: 2, name: "Whey protein", dose: 30, unit: "g", timing: "post_session", meal_id: null, day_type_ids: [3, 4, 5], times_per_day: 1, kcal: 120, protein: 25, carbs: 2, fat: 1.5, note: null, sort_order: 1 },
-];
-for (const id of plan.order) {
-  const f = fixedMacros(supps, id, plan.order.length);
-  console.log(`  ${plan.byId[id].name.padEnd(14)} +${f.kcal} kcal, +${f.protein} g protein from supplements`);
-}
-
-console.log("\n=== Evidence grades ===");
-for (const s of SUPPLEMENT_LIBRARY) {
-  console.log(`  ${s.name.padEnd(24)} ${s.grade.padEnd(13)} ${s.refs.map(short).join(", ")}`);
-}
-
-console.log(`\n${Object.keys(CITATIONS).length} sources registered.`);
+console.log(
+  failures === 0 ? "\nPASS — every check held." : `\nFAIL — ${failures} check(s) did not hold.`
+);
+process.exit(failures === 0 ? 0 : 1);

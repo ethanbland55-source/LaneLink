@@ -80,6 +80,10 @@ export async function PUT(req: Request) {
   await ensureSchema();
   // Normalise on the way in too, so a stale client can't write nonsense.
   const b = normaliseProfile(await req.json());
+  const prev = (await sql`
+    select to_char(plan_updated_on, 'YYYY-MM-DD') as plan_updated_on
+      from profile where id = 1`) as any[];
+  const before: string | null = prev[0]?.plan_updated_on ?? null;
   const rows = await sql`
     update profile set
       sex = ${b.sex},
@@ -123,5 +127,20 @@ export async function PUT(req: Request) {
               to_char(phase_start, 'YYYY-MM-DD') as phase_start,
               to_char(plan_updated_on, 'YYYY-MM-DD') as plan_updated_on,
               to_char(dob, 'YYYY-MM-DD') as dob`;
-  return NextResponse.json(normaliseProfile(rows[0]));
+  const next = normaliseProfile(rows[0]);
+
+  /**
+   * Rolling by hand has to do what rolling by itself does.
+   *
+   * The Progress page's Roll button writes the new snapshot straight through
+   * this route, and because that stamps `plan_updated_on`, the automatic path
+   * then sees nothing due and returns early forever after. The targets moved
+   * and the portions never followed — the exact drift lib/refit.ts exists to
+   * stop, reachable only by pressing the button that says it is rolling.
+   */
+  if (before && next.plan_updated_on && next.plan_updated_on !== before) {
+    await refitPlan(next, next.plan_updated_on);
+  }
+
+  return NextResponse.json(next);
 }

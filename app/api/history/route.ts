@@ -4,10 +4,15 @@ import {
   applyPortions,
   currentPortions,
   listSnapshots,
+  logWindowFor,
   portionsFromLog,
   restore,
   snapshot,
 } from "@/lib/history";
+import { normaliseProfile } from "@/lib/profile";
+import { sql } from "@/lib/db";
+import { dayKey } from "@/lib/nutrition";
+import { lastRollDay } from "@/lib/weekly";
 
 export const dynamic = "force-dynamic";
 
@@ -27,10 +32,22 @@ export async function GET(req: Request) {
   const to = url.searchParams.get("to");
 
   const snapshots = await listSnapshots();
-  if (!from || !to) return NextResponse.json({ snapshots });
+
+  /**
+   * The client no longer has to know how far back to look. It used to pass a
+   * window, and got it wrong: the weekly re-fit runs *on* roll day, so a window
+   * starting there contains only post-change days and the restore anchors on
+   * the very values it is meant to undo.
+   */
+  const prof = (await sql`select * from profile where id = 1`) as any[];
+  const profile = normaliseProfile(prof[0] ?? {});
+  const today = dayKey();
+  const dow = profile.plan_roll_dow ?? profile.shop_start_dow;
+  const auto = await logWindowFor(lastRollDay(dow, today), today);
+  const window = from && to ? { from: from.slice(0, 10), to: to.slice(0, 10), because: "" } : auto;
 
   try {
-    const rows = await portionsFromLog(from.slice(0, 10), to.slice(0, 10));
+    const rows = await portionsFromLog(window.from, window.to);
     const live = await currentPortions();
     const liveBy = new Map(live.map((r) => [`${r.meal_id}:${r.slot}:${r.name}`, r.grams]));
     const changes = rows
@@ -40,10 +57,15 @@ export async function GET(req: Request) {
       }))
       .filter((r) => r.from != null && Math.abs((r.from as number) - r.grams) >= 0.5);
 
-    return NextResponse.json({ snapshots, preview: changes, considered: rows.length });
+    return NextResponse.json({
+      snapshots,
+      preview: changes,
+      considered: rows.length,
+      window: { ...window, because: window.because || auto.because },
+    });
   } catch (e) {
     console.warn("log preview failed:", e);
-    return NextResponse.json({ snapshots, preview: [], considered: 0 });
+    return NextResponse.json({ snapshots, preview: [], considered: 0, window });
   }
 }
 

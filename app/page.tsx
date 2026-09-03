@@ -214,6 +214,31 @@ export default function TodayPage() {
    * can move after the meal was entered. A stored absorption would go stale
    * silently; a recomputed one is always about the plan you actually have.
    */
+  /**
+   * Keyed on what the answer actually depends on, not on object identity.
+   *
+   * Absorbing a cheat meal runs the solver once, then again for every meal it
+   * considers dropping — up to nine full fits. That is fine once; it is not
+   * fine on every render, and every one of the dependencies here is a fresh
+   * array or object after each fetch, so it was re-running for no reason and
+   * locking the page while it did. The signature is the content that changes
+   * the result, so the work happens once per real change.
+   */
+  const cheatKey = useMemo(() => {
+    if (!todayCheat || !plan) return null;
+    return JSON.stringify([
+      todayCheat.day,
+      todayCheat.meal_id,
+      todayCheat.kcal,
+      todayCheat.protein,
+      todayCheat.carbs,
+      todayCheat.fat,
+      dayTypeId,
+      day,
+      meals.map((m) => [m.id, m.day_type_ids, m.times_per_day, m.ingredients.map((i) => i.grams)]),
+    ]);
+  }, [todayCheat, plan, dayTypeId, day, meals]);
+
   const absorption = useMemo(() => {
     if (!todayCheat || !plan || !profile) return null;
     return absorbCheat({
@@ -225,7 +250,8 @@ export default function TodayPage() {
       supplements,
       rest: daysAfter(day, plan, planWeek?.dow ?? 1),
     });
-  }, [todayCheat, plan, profile, meals, dayTypes, dayTypeId, supplements, day, planWeek]);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [cheatKey]);
 
   async function saveCheat(c: Omit<CheatMeal, "id">) {
     const saved = await fetch("/api/cheat", {

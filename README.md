@@ -294,6 +294,86 @@ that is there now.
 It only covers meals you actually logged — it restores what you ate, not what
 you meant to.
 
+## Lean, fuelled, and still fast
+
+Everything else in this app is about the size of a day. Energy availability is
+about what's left of it once the training has been paid for, and it is the
+difference between an athlete who gets lean and one who gets slow.
+
+    EA (kcal per kg fat-free mass per day) = (intake − session cost) / FFM
+
+The session term is the cost *above* rest, which is what `sessionKcal` already
+computes. That distinction is the commonest error in the literature and it
+inflates the answer by hundreds of calories.
+
+**Why a calorie target isn't enough.** A weekly average can look perfectly
+sensible while a Tuesday with two swims in it leaves too little to run a body
+on, and the scale will not tell you. In junior swimmers, those in low energy
+availability lost about 10% of their swimming speed over twelve weeks *at
+stable body mass*, while adequately fuelled team-mates improved by about 8%
+(Shaw et al., IJSNEM 2014). Weight stability is not evidence of being fuelled.
+
+So `buildWeekPlan` applies an **EA floor**: every day is lifted, if needed, to
+keep at least 30 kcal/kg FFM after the session cost. When the deficit and
+energy availability disagree, availability wins — the fat can come off next
+month, the season can't be got back. `bench/fuelling.ts` proves it binds: ask
+for a 20% deficit and the floor gives most of it back, so the loss that
+actually happens stays inside 1%/week no matter what you set.
+
+It does nothing without a body-composition figure, on purpose. A floor built on
+an invented fat-free mass would look like a safeguard while being a guess.
+
+**On the thresholds.** For males the honest answer is that nobody is sure. The
+2023 IOC consensus on REDs deliberately declines to set a clinical cut-off and
+puts the male figure "even less understood, but appears to be lower (eg, ~9 to
+25)". The 30/40 scheme came from female reproductive physiology. They are aims
+and warnings here, never a diagnosis — see `lib/fuelling.ts` for the full
+caveats.
+
+**Rate of loss.** 0.7%/week is the target, 1.0% the ceiling. In 24 elite
+athletes over 11 weeks, the group losing 0.7%/week gained 2.1% lean mass, lost
+31% of their fat and put 7% on their jump; the group losing 1.0–1.4% lost *less*
+fat, gained no lean mass and no performance (Garthe et al., IJSNEM 2011). Faster
+was worse at the thing it was supposed to be better at.
+
+**Protein.** 1.6–2.0 g/kg is the range the evidence supports in-season. Higher
+is safe but not free: on a heavy day, 8–10 g/kg of carbohydrate plus 2.4 g/kg of
+protein is near 4,000 kcal before a gram of fat, so every extra gram of protein
+is carbohydrate you don't eat. The benefit above ~1.8 g/kg in a *modest* deficit
+is genuinely contested — a 2025 RCT at 1.2 vs 1.6 vs 2.2 g/kg found no
+difference. In-season, carbohydrate should generally win that argument.
+
+## Body composition: track the millimetres
+
+The strongest recommendation in the current literature is one this app used to
+ignore — **don't convert skinfolds to a percentage at all**. There are over a
+hundred published equations and on identical measurements they disagree wildly;
+one worked example put the same athlete anywhere between 4% and 8%. Skinfolds
+are already indirect, and running them through a population regression to reach
+a criterion that was itself an estimate makes the answer doubly indirect. The
+equations were validated for saying where someone *is*, not for tracking where
+an individual is *going* (Kasper et al., Nutrients 2021).
+
+So `sumOfSites` is the metric to watch: the raw sum in millimetres, with a
+noise gate. ISAK's repeat-measure tolerance for the same tester is 7.5%, so on
+a sum of 55 mm anything under about 4 mm is not a change and the app says so
+rather than drawing a trend through it. Same person, same calipers, same sites —
+between two testers the comparison isn't valid at all.
+
+Two changes to the estimates themselves:
+
+- **Men now use Evans, not Jackson–Pollock + Siri.** Siri assumes fat-free
+  tissue has a density of 1.100 g/cm³, which a young high-bone-mineral athlete
+  does not, and that bias doesn't wash out over repeated measures. Evans was
+  built on 132 collegiate athletes against a four-component model, and beat both
+  Jackson–Pollock and Lohman in an independent head-to-head in young athletes.
+  Its published race coefficient is deliberately omitted — see `lib/bodyfat.ts`.
+- **The Navy tape is demoted to a rough fallback.** Validated against DXA on
+  1,407 recruits it over-reads at the lean end and tracked change *worse* over
+  eight weeks of training. It has no term that can tell a lost centimetre of
+  waist from a gained centimetre of shoulder, so a swimmer building a back and
+  losing belly fat can watch it move the wrong way while everything goes right.
+
 ## Blocks, and toned maintenance
 
 A goal isn't a percentage, it's a shape over time. A **block** has a name, a start, a

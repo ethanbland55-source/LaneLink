@@ -376,11 +376,13 @@ export function absorbCheat(input: AbsorbInput): Absorption {
   /* --- 3. drop meals, cheapest first ----------------------------------- */
 
   const dropped: PlanMeal[] = [];
+  // Each pass through this loop is a full solve, and a day that needs five
+  // meals removed is not a day this feature can rescue anyway.
   let guard = 0;
   while (
     fit.totals.kcal - target.kcal > tolerance + spreadCapacity &&
     live.length > 1 &&
-    guard++ < 8
+    guard++ < 4
   ) {
     const over = fit.totals.kcal - target.kcal;
 

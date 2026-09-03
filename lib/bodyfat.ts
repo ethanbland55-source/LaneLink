@@ -66,8 +66,16 @@ export function sitesFor(method: BfMethod, sex: Sex): string[] {
 }
 
 export const BF_METHODS: { value: BfMethod; label: string; blurb: string }[] = [
-  { value: "tape", label: "Tape measure", blurb: "Neck and waist. No kit needed." },
-  { value: "skinfold", label: "Calipers", blurb: "Three pinches. More accurate if you have them." },
+  {
+    value: "tape",
+    label: "Tape measure",
+    blurb: "Neck and waist. No kit needed, but it over-reads when you're lean and can't tell a smaller waist from a bigger back — a fallback, not something to track.",
+  },
+  {
+    value: "skinfold",
+    label: "Calipers",
+    blurb: "Three pinches. Better for an athlete, and the sum in mm is the bit worth watching.",
+  },
   { value: "manual", label: "Type it in", blurb: "You've had a DEXA or InBody scan." },
 ];
 
@@ -115,7 +123,25 @@ export function navyBodyFat(input: {
     pct = 495 / (1.0324 - 0.19077 * Math.log10(inner) + 0.15456 * Math.log10(heightCm)) - 450;
   }
 
-  return finish(pct, weightKg, "tape", 3.5, "Navy tape");
+  /**
+   * Four points of error, not three and a half — and it is the wrong shape of
+   * error for a lean swimmer.
+   *
+   * The best modern validation against DXA (1,407 army recruits) put the
+   * standard error at 3.42 %BF but found something worse than the size of it:
+   * the equation over-reads at the lean end, and its agreement got *worse*
+   * over eight weeks of training. It has no term that can tell a lost
+   * centimetre of waist from a gained centimetre of shoulder, so an athlete
+   * who is building a back and losing belly fat can watch the number go the
+   * wrong way while everything is going right.
+   *
+   *   Foulis, Friedl, Spiering, et al., Front Physiol 2023;14:1183836.
+   *
+   * So it stays as a fallback, and the app should not treat it as a progress
+   * metric. Calipers, and better still the raw sum of pinches, are what to
+   * watch. See `sumOfSites`.
+   */
+  return finish(pct, weightKg, "tape", 4.0, "Navy tape (rough)");
 }
 
 /**
@@ -142,15 +168,141 @@ export function skinfoldBodyFat(input: {
   if (!(ageYears > 0 && ageYears < 120 && weightKg > 20)) return null;
 
   const sum = sites.reduce((a, b) => a + b, 0);
-  const density =
-    sex === "female"
-      ? 1.0994921 - 0.0009929 * sum + 0.0000023 * sum * sum - 0.0001392 * ageYears
-      : 1.10938 - 0.0008267 * sum + 0.0000016 * sum * sum - 0.0002574 * ageYears;
 
-  if (!(density > 0.9 && density < 1.15)) return null;
-  const pct = 495 / density - 450; // Siri
+  /**
+   * For men, Evans rather than Jackson–Pollock.
+   *
+   * Jackson–Pollock predicts body *density* on a general-population sample and
+   * then Siri converts that to a percentage — and Siri assumes fat-free tissue
+   * has a density of 1.100 g/cm³, which a young, well-trained, high-bone-mineral
+   * athlete does not. That assumption biases the answer systematically, so it
+   * does not wash out over repeated measures.
+   *
+   * Evans skips the density step. It was built on 132 collegiate athletes
+   * against a four-component model — deuterium dilution plus DXA plus
+   * underwater weighing — which is the right criterion precisely because it
+   * removes the fixed-density assumption. In an independent head-to-head in 91
+   * young athletes it was the best performer for males, beating both
+   * Jackson–Pollock and the Lohman equation that is often the default.
+   *
+   *   Evans, Rowe, Misic, Prior & Arngrímsson, MSSE 2005;37(11):2006.
+   *   Jones et al., Front Sports Act Living 2023;5:1240252.
+   *
+   * The published equation carries a dichotomous race coefficient. It is
+   * omitted here deliberately: it is a 2005 modelling convention standing in
+   * for population differences in fat-free mass density, it is not something
+   * this app is going to ask anyone, and shipping it would mean shipping a
+   * worse idea than the accuracy is worth. Dropping it costs about 2 %BF of
+   * offset for one group, which is inside the equation's own error band and
+   * cancels out of every change over time — which is what actually gets used.
+   *
+   * Women keep Jackson–Pollock: Evans's female sites do not match the three
+   * this app collects, and a mismatched equation is worse than a dated one.
+   */
+  let pct: number;
+  let error: number;
+  let label: string;
 
-  return finish(pct, weightKg, "skinfold", 3.0, "Calipers, 3-site");
+  if (sex === "male") {
+    // Evans 3-site: abdomen, thigh, triceps. This app collects chest, abdomen,
+    // thigh — chest stands in for triceps, which is a real approximation and
+    // is why the error band below is not smaller.
+    pct = 8.997 + 0.24658 * sum - 6.343;
+    error = 3.7;
+    label = "Calipers, 3-site (Evans)";
+  } else {
+    const density = 1.0994921 - 0.0009929 * sum + 0.0000023 * sum * sum - 0.0001392 * ageYears;
+    if (!(density > 0.9 && density < 1.15)) return null;
+    pct = 495 / density - 450; // Siri
+    error = 3.5;
+    label = "Calipers, 3-site";
+  }
+
+  if (!(pct > 2 && pct < 60)) return null;
+  return finish(pct, weightKg, "skinfold", error, label);
+}
+
+/* ------------------------------------------------------------------ */
+/* The number worth actually tracking                                  */
+/* ------------------------------------------------------------------ */
+
+/**
+ * The sum of the pinches, in millimetres, with no percentage anywhere near it.
+ *
+ * This is the metric to watch, and the reason is worth stating plainly. There
+ * are over a hundred published equations for turning skinfolds into a body fat
+ * percentage, and on identical raw measurements they disagree wildly — one
+ * worked example put the same athlete anywhere between 4% and 8%. Skinfolds
+ * are already an indirect measure; running them through a population
+ * regression to reach a criterion that was itself an estimate makes the answer
+ * doubly indirect. And the equations were validated for telling you where
+ * someone *is*, not for tracking where an individual is *going*, which is the
+ * only thing this app needs.
+ *
+ * The millimetres, meanwhile, are a real measurement of the actual tissue.
+ * They move when fat moves. They are also the measure least disturbed by the
+ * things a swimmer cannot control — a DXA scan shifts by up to 2.6% fat mass
+ * after a single meal and 2.5% lean mass after carb loading, which makes it
+ * useless the week of a meet.
+ *
+ *   Kasper, Langan-Evans, Hudson, et al., "Come Back Skinfolds, All Is
+ *   Forgiven", Nutrients 2021;13(4):1075.
+ *   Ackland et al., IOC position statement, Sports Med 2012;42(3):227.
+ */
+export type SumOfSites = {
+  sum: number;
+  sites: number;
+  /** Change since the comparison reading, in mm. Null when there isn't one. */
+  change: number | null;
+  /** True when the change is smaller than measurement error can distinguish. */
+  withinNoise: boolean;
+  note: string;
+};
+
+/**
+ * Measurement noise, as a fraction of the sum.
+ *
+ * ISAK's accreditation tolerance for repeat skinfolds by the same tester is
+ * 7.5% at Level 1 and 5% above it. Someone pinching themselves at home is not
+ * accredited, so 7.5% is the generous reading and this uses it: on a sum of
+ * 55 mm that is about 4 mm, and a change smaller than that is not a change.
+ *
+ * The same-tester part is not a detail. Between two different people the
+ * tolerance is far wider and comparison is simply not valid, which for this
+ * app means: always you, always the same calipers, always the same sites.
+ */
+export const SKINFOLD_NOISE = 0.075;
+
+export function sumOfSites(now: number[], before?: number[]): SumOfSites | null {
+  const usable = now.filter((v) => Number.isFinite(v) && v > 0);
+  if (usable.length < 2) return null;
+  const sum = Math.round(usable.reduce((a, b) => a + b, 0) * 10) / 10;
+
+  const prior = (before ?? []).filter((v) => Number.isFinite(v) && v > 0);
+  if (prior.length !== usable.length) {
+    return {
+      sum,
+      sites: usable.length,
+      change: null,
+      withinNoise: false,
+      note: `${sum} mm across ${usable.length} sites. This is the number to watch — it measures the tissue rather than estimating a percentage from it.`,
+    };
+  }
+
+  const was = prior.reduce((a, b) => a + b, 0);
+  const change = Math.round((sum - was) * 10) / 10;
+  const noise = Math.max(2, was * SKINFOLD_NOISE);
+  const withinNoise = Math.abs(change) < noise;
+
+  return {
+    sum,
+    sites: usable.length,
+    change,
+    withinNoise,
+    note: withinNoise
+      ? `${change >= 0 ? "+" : ""}${change} mm, which is inside what a repeat pinch can tell apart (±${Math.round(noise)} mm). Not yet a trend.`
+      : `${change >= 0 ? "+" : ""}${change} mm since last time — past measurement noise, so this one is real.`,
+  };
 }
 
 /**

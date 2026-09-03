@@ -417,6 +417,15 @@ export function dayTypeCost(p: Profile, dt: DayType): number {
   return baseline(p) * (1 + (dt.percent ?? 0));
 }
 
+/**
+ * Energy availability: what a day leaves you once the training is paid for,
+ * per kg of fat-free mass. Defined and discussed in lib/fuelling.ts; the two
+ * numbers live here so the plan can enforce them without importing that
+ * module back the other way.
+ */
+export const EA_OPTIMAL = 40;
+export const EA_FLOOR = 30;
+
 export type Targets = Macros & {
   dayTypeId: number;
   name: string;
@@ -432,6 +441,10 @@ export type Targets = Macros & {
   /** Raw energy cost of this kind of day, before balancing. */
   cost: number;
   sessionKcal: number;
+  /** kcal per kg fat-free mass left after the session. Null without a body composition figure. */
+  ea: number | null;
+  /** True when the energy-availability floor raised this day above what the deficit asked for. */
+  eaFloored: boolean;
   /** This day's calories relative to the weekly average. */
   multiplier: number;
   sessions: Session[];
@@ -604,6 +617,27 @@ export function buildWeekPlan(
 
   const floor = bmr(p) * 1.05;
 
+  /**
+   * The energy-availability floor.
+   *
+   * A weekly average can look perfectly sensible while a day with two sessions
+   * in it leaves too little to run a body on, and the scale will not tell you:
+   * this is the failure where bodyweight holds steady and the swimming quietly
+   * goes backwards. So each day's calories are lifted, if needed, to keep at
+   * least 30 kcal per kg of fat-free mass after the session cost.
+   *
+   * When the deficit and energy availability disagree, availability wins. The
+   * fat can come off next month; a season cannot be got back. See
+   * lib/fuelling.ts for the evidence and the caveats — the male thresholds in
+   * particular are far less settled than the female ones.
+   *
+   * It does nothing at all without a body composition figure, because an
+   * energy-availability floor built on an invented fat-free mass is worse than
+   * none: it would look like a safeguard while being a guess.
+   */
+  const ffm = leanMass(p);
+  const eaFloored = new Set<number>();
+
   // Calories first, because fat is a share of them.
   const kcalById = new Map<number, number>();
   for (const t of types) {
@@ -612,7 +646,16 @@ export function buildWeekPlan(
     if (!p.cycling) kcal = goalKcal;
     else if (t.fixed_kcal != null && t.fixed_kcal > 0) kcal = t.fixed_kcal;
     else kcal = raw * balance;
-    kcalById.set(t.id, Math.max(floor, kcal));
+    kcal = Math.max(floor, kcal);
+
+    if (ffm != null && ffm > 20) {
+      const need = EA_FLOOR * ffm + sessionsKcal(planWeight(p), t.sessions ?? []);
+      if (need > kcal + 1) {
+        eaFloored.add(t.id);
+        kcal = need;
+      }
+    }
+    kcalById.set(t.id, kcal);
   }
 
   // Protein and fat lean toward the days that earn them, averaging out across
@@ -633,6 +676,11 @@ export function buildWeekPlan(
       fatPerKg: planWeight(p) > 0 ? m.fat / planWeight(p) : 0,
       cost: Math.round(raw),
       sessionKcal: Math.round(sessionsKcal(planWeight(p), t.sessions)),
+      ea:
+        ffm != null && ffm > 20
+          ? Math.round(((kcal - sessionsKcal(planWeight(p), t.sessions)) / ffm) * 10) / 10
+          : null,
+      eaFloored: eaFloored.has(t.id),
       multiplier: goalKcal > 0 ? kcal / goalKcal : 1,
       sessions: t.sessions,
     };
@@ -676,6 +724,8 @@ export function targetsFor(plan: WeekPlan, dayTypeId: number): Targets {
       fatPerKg: 0,
       cost: 0,
       sessionKcal: 0,
+      ea: null,
+      eaFloored: false,
       multiplier: 1,
       sessions: [],
     }

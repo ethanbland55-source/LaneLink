@@ -4,6 +4,8 @@ import { useEffect, useMemo, useState } from "react";
 import Link from "next/link";
 import { RecalculateDialog } from "../recalculate";
 import { applyDayFor, type PendingPortion } from "@/lib/pending";
+import { EA_FLOOR, EA_OPTIMAL } from "@/lib/nutrition";
+import { lossRate, proteinVerdict, weekEnergy } from "@/lib/fuelling";
 import { lastRollDay, nextRollDay } from "@/lib/weekly";
 import { Bar, MACRO_COLOR, MACRO_LABEL, Segmented, Stat, type MacroKey } from "../macro-ui";
 import { type BoundedItem } from "@/lib/optimise";
@@ -42,6 +44,7 @@ import {
   normaliseDayType,
   sumMacros,
   ZERO_MACROS,
+  planWeight,
   targetsFor,
   totalFor,
   type DayType,
@@ -142,6 +145,23 @@ export default function PlanPage() {
 
   const todayKey = useMemo(() => dayKey(), []);
 
+  /** Energy availability, rate of loss and protein — the fuelling picture. */
+  const energy = useMemo(
+    () => (profile && plan ? weekEnergy(profile, plan) : []),
+    [profile, plan]
+  );
+  const rate = useMemo(
+    () =>
+      profile && plan
+        ? lossRate(profile, plan)
+        : { pctPerWeek: 0, kgPerWeek: 0, verdict: "maintaining" as const, note: "" },
+    [profile, plan]
+  );
+  const proteinCheck = useMemo(() => {
+    if (!plan || !profile) return proteinVerdict(0, 1);
+    return proteinVerdict(targetsFor(plan, plan.order[0]).protein, planWeight(profile));
+  }, [plan, profile]);
+
   /**
    * How far back the log has to be read to find the portions before they moved.
    *
@@ -150,11 +170,11 @@ export default function PlanPage() {
    * on exactly the values you are trying to get rid of. The previous plan week
    * is where the old ones live.
    */
-  const logWindow = useMemo(() => {
-    if (!profile) return null;
-    const dow = profile.plan_roll_dow ?? profile.shop_start_dow;
-    return { from: addDays(lastRollDay(dow, todayKey), -7), to: todayKey };
-  }, [profile, todayKey]);
+  const [logWindow, setLogWindow] = useState<{
+    from: string;
+    to: string;
+    because: string;
+  } | null>(null);
   /** The day a change made now would come into force. */
   const rollDay = useMemo(
     () =>
@@ -432,7 +452,7 @@ export default function PlanPage() {
     });
 
     if (when === "now") {
-      for (const m of merged) await persist(m);
+      await Promise.all(merged.map(persist));
       setMeals(merged);
       setPending([]);
       setShowRecalc(false);
@@ -440,19 +460,36 @@ export default function PlanPage() {
       return;
     }
 
-    // Shares now, portions later.
-    for (const m of merged) {
+    /**
+     * Shares now, portions later — and only the meals whose shares moved.
+     *
+     * Saving all of them was most of the several seconds this button used to
+     * freeze for: one request each, serially, and each of those rewriting
+     * every ingredient row one insert at a time. Almost every staging changes
+     * no shares at all, so the honest number of saves here is usually zero.
+     */
+    const shareChanged = merged.filter((m) => {
       const live = meals.find((x) => x.id === m.id);
-      if (!live) continue;
-      await persist({
-        ...live,
-        share_pct: m.share_pct ?? null,
-        ingredients: live.ingredients.map((it, i) => ({
-          ...it,
-          share_pct: m.ingredients[i]?.share_pct ?? null,
-        })),
-      } as Meal);
-    }
+      if (!live) return false;
+      if ((live.share_pct ?? null) !== (m.share_pct ?? null)) return true;
+      return live.ingredients.some(
+        (it, i) => (it.share_pct ?? null) !== (m.ingredients[i]?.share_pct ?? null)
+      );
+    });
+
+    await Promise.all(
+      shareChanged.map((m) => {
+        const live = meals.find((x) => x.id === m.id) as Meal;
+        return persist({
+          ...live,
+          share_pct: m.share_pct ?? null,
+          ingredients: live.ingredients.map((it, i) => ({
+            ...it,
+            share_pct: m.ingredients[i]?.share_pct ?? null,
+          })),
+        } as Meal);
+      })
+    );
 
     // Keyed by meal, position and name — never by ingredient id. Saving a
     // meal above just deleted and re-inserted every ingredient row, so the ids
@@ -489,20 +526,23 @@ export default function PlanPage() {
   // The preview needs the window, which needs the profile, so it comes after
   // the first load rather than as part of it.
   useEffect(() => {
-    if (!logWindow) return;
+    if (!profile) return;
     let live = true;
-    fetch(`/api/history?from=${logWindow.from}&to=${logWindow.to}`)
+    // No window passed: the server works out how far back to read from when
+    // the plan actually last changed, which the client has no way to know.
+    fetch("/api/history")
       .then((r) => r.json())
       .then((r) => {
         if (!live) return;
         setSnapshots(r.snapshots ?? []);
         setPreview(r.preview ?? []);
+        setLogWindow(r.window ?? null);
       })
       .catch(() => {});
     return () => {
       live = false;
     };
-  }, [logWindow]);
+  }, [profile]);
 
   async function loadPending() {
     try {
@@ -552,11 +592,10 @@ export default function PlanPage() {
         share_pct: x.share_pct ?? null,
       }))
     );
-    const hi = await fetch(
-      logWindow ? `/api/history?from=${logWindow.from}&to=${logWindow.to}` : "/api/history"
-    ).then((r) => r.json());
+    const hi = await fetch("/api/history").then((r) => r.json());
     setSnapshots(hi.snapshots ?? []);
     setPreview(hi.preview ?? []);
+    setLogWindow(hi.window ?? null);
     flash(
       res.restored > 0
         ? `${what} — ${res.restored} portion${res.restored === 1 ? "" : "s"} put back`
@@ -695,6 +734,89 @@ export default function PlanPage() {
         </section>
       )}
 
+      {/* Lean, fuelled, fast — the three numbers that decide whether getting
+          leaner is costing you the swimming. Placed above the week because a
+          calorie average that looks fine can hide a day that isn't. */}
+      {plan && profile && energy.length > 0 && (
+        <section className="card px-5 py-5">
+          <p className="label">Fuelled enough to train</p>
+          <p className="mt-1 text-xs leading-relaxed text-[var(--color-mut)]">
+            What each day leaves you once the session is paid for, per kg of lean mass. Under{" "}
+            {EA_FLOOR} is where training and recovery start to go, and the scale won&rsquo;t warn
+            you — swimmers in that state have lost speed at perfectly steady bodyweight. The plan
+            holds every day above it.
+          </p>
+
+          <div className="mt-3 space-y-1.5">
+            {energy
+              .filter((d) => d.days > 0)
+              .map((d) => {
+                const pctOf = Math.min(1, (d.ea ?? 0) / (EA_OPTIMAL * 1.25));
+                const colour =
+                  d.band === "low"
+                    ? "var(--color-fat)"
+                    : d.band === "reduced"
+                      ? "var(--color-carbs)"
+                      : "var(--color-accent)";
+                return (
+                  <div key={d.dayTypeId} className="flex items-center gap-3">
+                    <span className="w-24 shrink-0 truncate text-xs">{d.name}</span>
+                    <span className="h-1.5 flex-1 overflow-hidden rounded-full bg-[var(--color-surface)]">
+                      <span
+                        className="block h-full rounded-full"
+                        style={{ width: `${pctOf * 100}%`, background: colour }}
+                      />
+                    </span>
+                    <span
+                      className="w-10 shrink-0 text-right text-xs font-semibold tabular-nums"
+                      style={{ color: colour }}
+                    >
+                      {d.ea ?? "—"}
+                    </span>
+                  </div>
+                );
+              })}
+          </div>
+
+          {energy.some((d) => d.days > 0 && d.band === "reduced") && (
+            <p className="mt-2.5 text-xs leading-relaxed text-[var(--color-mut)]">
+              Sitting between {EA_FLOOR} and {EA_OPTIMAL} is fine for a short, deliberate block.
+              It is not where to spend a season — {EA_OPTIMAL} and up is what to plan for once the
+              lean phase is done.
+            </p>
+          )}
+          {plan.order.some((id) => targetsFor(plan, id).eaFloored) && (
+            <p className="mt-2 text-xs leading-relaxed" style={{ color: "var(--color-carbs)" }}>
+              Some days have been raised above what your deficit asked for, to keep them above the
+              floor. That is deliberate: the fat can come off next month and the season can&rsquo;t
+              be got back.
+            </p>
+          )}
+
+          <div className="mt-3 flex flex-wrap gap-x-5 gap-y-1 border-t border-[#1c1f25] pt-3 text-xs">
+            <span className="text-[var(--color-mut)]">
+              Rate{" "}
+              <b className="text-[var(--color-fg)]">
+                {(rate.pctPerWeek * 100).toFixed(2)}%/wk
+              </b>{" "}
+              · {rate.verdict.replace("_", " ")}
+            </span>
+            <span className="text-[var(--color-mut)]">
+              Protein <b className="text-[var(--color-fg)]">{proteinCheck.perKg.toFixed(2)} g/kg</b>{" "}
+              · {proteinCheck.verdict.replace("_", " ")}
+            </span>
+          </div>
+          <p className="mt-1.5 text-[0.7rem] leading-relaxed text-[var(--color-mut)]">
+            {rate.note}
+          </p>
+          {proteinCheck.verdict !== "in_range" && (
+            <p className="mt-1 text-[0.7rem] leading-relaxed text-[var(--color-mut)]">
+              {proteinCheck.note}
+            </p>
+          )}
+        </section>
+      )}
+
       {/* Putting the portions back.
           The weekly re-fit runs without anyone pressing anything, which is the
           right behaviour and also the reason this has to exist: you can open
@@ -774,8 +896,10 @@ export default function PlanPage() {
             )}
 
             <p className="mt-1.5 text-[0.7rem] leading-relaxed text-[var(--color-mut)]">
-              Read from the last fortnight, so the days before the plan moved are included. Every
-              logged day votes, a one-off mis-weigh loses, and locked portions are left alone.
+              {logWindow?.because
+                ? `${logWindow.because[0].toUpperCase()}${logWindow.because.slice(1)}, back to ${logWindow.from}. `
+                : ""}
+              Every logged day votes, a one-off mis-weigh loses, and locked portions are left alone.
             </p>
           </div>
         </section>

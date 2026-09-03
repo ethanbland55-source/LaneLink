@@ -282,6 +282,58 @@ export async function portionsFromLog(from: string, to: string): Promise<LogPort
   return out.sort((a, b) => a.meal_id - b.meal_id || a.slot - b.slot);
 }
 
+/**
+ * How far back the log has to be read to find the portions before they moved.
+ *
+ * Not a fixed window. The right answer depends on when the plan last changed,
+ * and the app now records that — so use it. Reading from a couple of days
+ * before the most recent rewrite guarantees the earliest readings in the
+ * window are pre-change, which is exactly what the anchor in `consensus`
+ * needs. With nothing recorded, fall back to reaching past the last roll day
+ * into the week before it, because the weekly re-fit runs *on* roll day and a
+ * window starting there is entirely post-change.
+ *
+ * Never less than a fortnight, so there is always more than one logged day to
+ * take a view from.
+ */
+export async function logWindowFor(
+  lastRollDay: string,
+  today: string
+): Promise<{ from: string; to: string; because: string }> {
+  const back = (day: string, n: number) => {
+    const d = new Date(day + "T12:00:00");
+    d.setDate(d.getDate() - n);
+    return d.toISOString().slice(0, 10);
+  };
+  const fortnight = back(lastRollDay, 7);
+
+  try {
+    const rows = (await sql`
+      select to_char(changed_on, 'YYYY-MM-DD') as changed_on, reason
+        from portion_history
+       order by changed_on desc, id desc
+       limit 1`) as any[];
+    const last = rows[0];
+    if (last?.changed_on) {
+      const from = back(String(last.changed_on), 3);
+      return {
+        from: from < fortnight ? from : fortnight,
+        to: today,
+        because: `reading from before the ${last.reason} on ${last.changed_on}`,
+      };
+    }
+  } catch {
+    // Fall through to the fixed window; a missing history table is not a
+    // reason to refuse to restore.
+  }
+
+  return {
+    from: fortnight,
+    to: today,
+    because: "reading back past the last roll day, since the re-fit runs on it",
+  };
+}
+
 /** Apply a set of portions read back out of the log. */
 export async function applyPortions(rows: PortionRow[]): Promise<number> {
   if (!rows.length) return 0;

@@ -96,7 +96,17 @@ export async function PUT(req: Request) {
     where id = ${id}`;
 
   await sql`delete from ingredients where meal_id = ${id}`;
-  for (const [n, i] of (ingredients ?? []).entries()) {
+
+  /**
+   * One insert, not one per ingredient.
+   *
+   * This route is called once per meal when a plan is saved, and it used to
+   * issue a separate `insert` for every ingredient. Neon's HTTP driver makes
+   * each of those a round trip, so saving eight meals of five ingredients was
+   * sixty-odd sequential requests — which is what the Stage button spent its
+   * several frozen seconds doing.
+   */
+  const rows = (ingredients ?? []).map((i: any, n: number) => {
     // Classify on write so the shopping list never has to guess later.
     const cls = profileFor(i.name ?? "", {
       kcal_100: num(i.kcal_100),
@@ -104,17 +114,40 @@ export async function PUT(req: Request) {
       carbs_100: num(i.carbs_100),
       fat_100: num(i.fat_100),
     });
+    return {
+      meal_id: id,
+      name: i.name || "Ingredient",
+      grams: num(i.grams),
+      kcal_100: num(i.kcal_100),
+      protein_100: num(i.protein_100),
+      carbs_100: num(i.carbs_100),
+      fat_100: num(i.fat_100),
+      food_class: cls.cls,
+      aisle: cls.aisle,
+      pack_grams: cls.packGrams,
+      min_grams: i.min_grams == null ? null : num(i.min_grams),
+      max_grams: i.max_grams == null ? null : num(i.max_grams),
+      locked: !!i.locked,
+      share_pct: sharePct(i.share_pct),
+      sort_order: n,
+    };
+  });
+
+  if (rows.length) {
     await sql`
       insert into ingredients
         (meal_id, name, grams, kcal_100, protein_100, carbs_100, fat_100,
-         food_class, aisle, pack_grams,
-         min_grams, max_grams, locked, share_pct, sort_order)
-      values (${id}, ${i.name || "Ingredient"}, ${num(i.grams)}, ${num(i.kcal_100)},
-              ${num(i.protein_100)}, ${num(i.carbs_100)}, ${num(i.fat_100)},
-              ${cls.cls}, ${cls.aisle}, ${cls.packGrams},
-              ${i.min_grams == null ? null : num(i.min_grams)},
-              ${i.max_grams == null ? null : num(i.max_grams)},
-              ${!!i.locked}, ${sharePct(i.share_pct)}, ${n})`;
+         food_class, aisle, pack_grams, min_grams, max_grams, locked,
+         share_pct, sort_order)
+      select meal_id, name, grams, kcal_100, protein_100, carbs_100, fat_100,
+             food_class, aisle, pack_grams, min_grams, max_grams, locked,
+             share_pct, sort_order
+        from jsonb_to_recordset(${JSON.stringify(rows)}::jsonb)
+          as t(meal_id int, name text, grams numeric, kcal_100 numeric,
+               protein_100 numeric, carbs_100 numeric, fat_100 numeric,
+               food_class text, aisle text, pack_grams numeric,
+               min_grams numeric, max_grams numeric, locked boolean,
+               share_pct numeric, sort_order int)`;
   }
   return NextResponse.json({ ok: true });
 }

@@ -22,24 +22,67 @@ import { __setSql } from "../lib/db";
 
 export type Sql = ((strings: TemplateStringsArray, ...vals: unknown[]) => Promise<any[]>) & {
   client: Client;
+  transaction: (queries: any[]) => Promise<any[]>;
 };
 
 /**
- * Neon's driver returns rows as a plain array. node-postgres returns a result
- * object. Everything in lib/ treats the return value as an array, so the shim
- * has to as well or half the code silently sees `undefined`.
+ * A faithful stand-in for Neon's tagged template, including its laziness.
+ *
+ * Two details matter and both were wrong at first, which quietly invalidated
+ * every test that used this:
+ *
+ *  - **Neon returns rows as a plain array**, not node-postgres's result object.
+ *    Everything in lib/ treats the return value as an array, so a shim that
+ *    hands back the result object makes half the code see `undefined`.
+ *
+ *  - **A Neon query does not run until it is awaited.** `lib/db.ts` relies on
+ *    that: its collector builds `sql`...`` values and hands the array to
+ *    `sql.transaction`, so an eager shim fires all 77 DDL statements
+ *    unawaited, `createSchema` throws on the missing `.transaction`, `run()`
+ *    swallows it, and the suite ends up testing an unmigrated database while
+ *    reporting that everything passed. Which is exactly what happened.
  */
+type Lazy = PromiseLike<any[]> & { __q: { text: string; values: unknown[] } };
+
 function makeSql(client: Client): Sql {
-  const fn = async (strings: TemplateStringsArray, ...vals: unknown[]) => {
+  const build = (strings: TemplateStringsArray, vals: unknown[]) => {
     let text = "";
     strings.forEach((part, i) => {
       text += part;
       if (i < vals.length) text += `$${i + 1}`;
     });
-    const res = await client.query(text, vals as any[]);
-    return res.rows;
+    return { text, values: vals };
   };
-  (fn as Sql).client = client;
+
+  const run = (q: { text: string; values: unknown[] }) =>
+    client.query(q.text, q.values as any[]).then((r) => r.rows);
+
+  const fn: any = (strings: TemplateStringsArray, ...vals: unknown[]) => {
+    const q = build(strings, vals);
+    const lazy: Lazy = {
+      __q: q,
+      then: (res: any, rej: any) => run(q).then(res, rej),
+    } as Lazy;
+    (lazy as any).catch = (rej: any) => run(q).catch(rej);
+    (lazy as any).finally = (f: any) => run(q).finally(f);
+    return lazy;
+  };
+
+  /** What `sql.transaction([...])` does: one round trip, all or nothing. */
+  fn.transaction = async (queries: Lazy[]) => {
+    const out: any[] = [];
+    await client.query("begin");
+    try {
+      for (const q of queries) out.push(await run(q.__q));
+      await client.query("commit");
+    } catch (e) {
+      await client.query("rollback").catch(() => {});
+      throw e;
+    }
+    return out;
+  };
+
+  fn.client = client;
   return fn as Sql;
 }
 

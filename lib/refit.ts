@@ -18,6 +18,7 @@
 
 import { sql } from "./db";
 import { snapshot } from "./history";
+import { applyDuePortions } from "./pending";
 import { buildWeekPlan, normaliseDayType, type DayType, type Profile } from "./nutrition";
 import { fitWeek } from "./weekfit";
 import type { PlanMeal } from "./batch";
@@ -72,6 +73,30 @@ export type RefitResult = {
  */
 export async function refitPlan(profile: Profile, today?: string): Promise<RefitResult | null> {
   try {
+    /**
+     * A staged change beats a re-fit, and they land on the same day.
+     *
+     * Both of these fire on the first page load on or after roll day, and the
+     * page fetches `/api/profile` and `/api/meals` in the same `Promise.all` —
+     * so they run concurrently, and whichever finishes last wins. When the
+     * re-fit won it silently overwrote the portions the staged change had just
+     * applied, using grams it had read before they moved. That is the plan you
+     * looked at, approved and pressed a button for, gone, with nothing to say
+     * it ever happened.
+     *
+     * So the staged change goes first here, and if one came into force today —
+     * whether this call applied it or the other request did a moment ago — the
+     * re-fit stands down. It has nothing to add: a staged plan was already
+     * fitted to these targets, by you, on purpose.
+     */
+    const day = today ?? new Date().toISOString().slice(0, 10);
+    await applyDuePortions(day);
+    const staged = (await sql`
+      select 1 from portion_history
+       where reason = 'staged change' and changed_on = ${day}::date
+       limit 1`) as any[];
+    if (staged.length) return null;
+
     const [dtRows, mealRows, ingRows, supRows] = await Promise.all([
       sql`select * from day_types order by sort_order, id`,
       sql`select * from meals order by sort_order, id`,
