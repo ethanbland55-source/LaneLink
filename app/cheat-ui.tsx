@@ -3,6 +3,7 @@
 import { useMemo, useState } from "react";
 import { Sheet } from "./sheet";
 import { NumberField } from "./number-field";
+import { Note } from "./explain";
 import { MACRO_COLOR } from "./macro-ui";
 import { completeCheat, type Absorption, type CheatMeal } from "@/lib/cheat";
 import type { PlanMeal } from "@/lib/batch";
@@ -44,7 +45,7 @@ export function CheatCard({
           <p className="mt-0.5 text-xs text-[var(--color-mut)]">
             {used
               ? "One a week. It's on another day this week — nothing to do here."
-              : "Swap any meal for whatever you're actually eating. The rest of the day makes room."}
+              : "Swap a meal for what you're actually eating. The day makes room."}
           </p>
         </div>
         {!used && (
@@ -149,28 +150,24 @@ function AbsorptionReport({ a }: { a: Absorption }) {
         </span>
       </div>
 
+      {/* One line, not a list. Four weekdays each with their own row was half
+          the height of the card for a number you read once and act on never —
+          the week does this by itself. */}
       {a.spread.length > 0 && (
-        <div>
-          <p className="text-xs font-semibold">Spread over the rest of the week</p>
-          <ul className="mt-1 space-y-0.5">
-            {a.spread.map((s) => (
-              <li
-                key={s.day}
-                className="flex items-baseline gap-2 text-xs text-[var(--color-mut)]"
-              >
-                <span className="capitalize">{s.weekday}</span>
-                <span className="ml-auto tabular-nums">&minus;{s.kcal} kcal</span>
-              </li>
-            ))}
-          </ul>
-        </div>
+        <p className="text-xs text-[var(--color-mut)]">
+          {a.spread.reduce((n, s) => n + s.kcal, 0)} kcal spread over{" "}
+          {a.spread.map((s) => s.weekday).join(", ")}
+        </p>
       )}
 
-      {a.notes.map((n, i) => (
-        <p key={i} className="text-xs leading-relaxed text-[var(--color-mut)]">
-          {n}
+      {a.leftover > 0 && (
+        <p className="text-xs" style={{ color: "var(--color-carbs)" }}>
+          {a.leftover} kcal with nowhere to go — about {a.leftoverFatGrams} g.
         </p>
-      ))}
+      )}
+
+      {/* The reasoning is worth keeping and is not worth reading twice. */}
+      {a.notes.length > 0 && <Note label="Why it did that">{a.notes.join(" ")}</Note>}
     </div>
   );
 }

@@ -123,4 +123,4 @@ for (const g of list.byAisle) {
 const bagel = list.lines.find((l) => l.name === "Bagel");
 console.log("\nbagels — 5 swim days x 85 g =", bagel?.needGrams.toFixed(0), "g (expect 425)");
 console.log("warnings:");
-for (const w of list.warnings) console.log("  -", w);
+for (const w of list.warnings) console.log("  -", w.title + (w.detail ? ` — ${w.detail}` : ""));

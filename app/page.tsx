@@ -35,6 +35,7 @@ import { hasPrepped, servingGrams } from "@/lib/batch";
 
 import { normaliseProfile } from "@/lib/profile";
 import { CheatCard, CheatSheet } from "./cheat-ui";
+import { Flag } from "./flag";
 import { absorbCheat, cheatForWeek, daysAfter, type CheatMeal } from "@/lib/cheat";
 import { lastRollDay, nextRollDay } from "@/lib/weekly";
 
@@ -163,26 +164,26 @@ export default function TodayPage() {
     [supplements, dayTypeId, dayTypes.length]
   );
 
-  /**
-   * What's gone in. Supplements count only once actually ticked off, the same
-   * as a meal counts only once confirmed — a plan is not a record.
-   */
-  const eaten = useMemo(() => {
-    const food = sumMacros(entries.filter((e) => e.confirmed).map((e) => totalFor(e.items)));
-    for (const s of todaysSupps) {
-      const n = takenMap.get(s.id) ?? 0;
-      if (!n) continue;
-      food.kcal += (Number(s.kcal) || 0) * n;
-      food.protein += (Number(s.protein) || 0) * n;
-      food.carbs += (Number(s.carbs) || 0) * n;
-      food.fat += (Number(s.fat) || 0) * n;
-    }
-    return food;
-  }, [entries, todaysSupps, takenMap]);
 
   const suggested = useMemo(
     () => meals.filter((m) => appliesOn(m, dayTypeId, dayTypes.length)),
     [meals, dayTypeId, dayTypes.length]
+  );
+
+  /**
+   * Meals already confirmed today. These are facts, and the absorber may not
+   * plan around changing them — see `AbsorbInput.eaten`.
+   */
+  const eatenMealIds = useMemo(
+    () =>
+      [
+        ...new Set(
+          entries
+            .filter((e) => e.confirmed && e.meal_id != null)
+            .map((e) => Number(e.meal_id))
+        ),
+      ],
+    [entries]
   );
 
   /* --- the cheat meal, and what the week does about it ----------------- */
@@ -206,6 +207,39 @@ export default function TodayPage() {
     [cheats, planWeek]
   );
   const todayCheat = weekCheat && weekCheat.day === day ? weekCheat : null;
+
+  /**
+   * What's gone in. Supplements count only once actually ticked off, the same
+   * as a meal counts only once confirmed — a plan is not a record.
+   */
+  const eaten = useMemo(() => {
+    const food = sumMacros(entries.filter((e) => e.confirmed).map((e) => totalFor(e.items)));
+    for (const s of todaysSupps) {
+      const n = takenMap.get(s.id) ?? 0;
+      if (!n) continue;
+      food.kcal += (Number(s.kcal) || 0) * n;
+      food.protein += (Number(s.protein) || 0) * n;
+      food.carbs += (Number(s.carbs) || 0) * n;
+      food.fat += (Number(s.fat) || 0) * n;
+    }
+    /**
+     * A cheat meal counts from the moment you enter it.
+     *
+     * It used to appear in the list as an ordinary row you then had to tap, on
+     * the theory that logging is logging. In practice that is two actions for
+     * one meal, and the gap between them is a day whose numbers are wrong —
+     * every other meal has already been resized around a meal the totals say
+     * you haven't eaten. You do not enter a meal out speculatively. Entering it
+     * *is* the record.
+     */
+    if (todayCheat) {
+      food.kcal += Number(todayCheat.kcal) || 0;
+      food.protein += Number(todayCheat.protein) || 0;
+      food.carbs += Number(todayCheat.carbs) || 0;
+      food.fat += Number(todayCheat.fat) || 0;
+    }
+    return food;
+  }, [entries, todaysSupps, takenMap, todayCheat]);
 
   /**
    * Worked out here rather than stored, on purpose.
@@ -235,9 +269,10 @@ export default function TodayPage() {
       todayCheat.fat,
       dayTypeId,
       day,
+      eatenMealIds,
       meals.map((m) => [m.id, m.day_type_ids, m.times_per_day, m.ingredients.map((i) => i.grams)]),
     ]);
-  }, [todayCheat, plan, dayTypeId, day, meals]);
+  }, [todayCheat, plan, dayTypeId, day, meals, eatenMealIds]);
 
   const absorption = useMemo(() => {
     if (!todayCheat || !plan || !profile) return null;
@@ -249,6 +284,7 @@ export default function TodayPage() {
       dayTypeId,
       supplements,
       rest: daysAfter(day, plan, planWeek?.dow ?? 1),
+      eaten: eatenMealIds,
     });
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [cheatKey]);
@@ -277,9 +313,9 @@ export default function TodayPage() {
    * out of habit and the day would be wrong by exactly the amount the whole
    * mechanism was there to handle.
    *
-   * The cheat meal itself is in the list too, as an ordinary row carrying its
-   * own macros. That way logging it is the same gesture as logging anything
-   * else, and `eaten` adds up without knowing anything about cheat meals.
+   * The cheat meal itself is deliberately *not* in this list. It is already in
+   * today's totals from the moment you entered it, and offering it as a row to
+   * tap invites you to count it twice.
    */
   const menu = useMemo<Meal[]>(() => {
     if (!absorption || !todayCheat) return suggested;
@@ -303,27 +339,6 @@ export default function TodayPage() {
         ),
       });
     }
-
-    // One synthetic row for the meal out. Grams of 100 with the macros stated
-    // per 100 g means the existing arithmetic gives its real totals, with no
-    // special case anywhere downstream.
-    kept.push({
-      id: -1,
-      name: todayCheat.name,
-      times_per_day: 1,
-      day_type_ids: null,
-      batch: false,
-      ingredients: [
-        {
-          name: todayCheat.name,
-          grams: 100,
-          kcal_100: todayCheat.kcal,
-          protein_100: todayCheat.protein,
-          carbs_100: todayCheat.carbs,
-          fat_100: todayCheat.fat,
-        } as Item,
-      ],
-    });
 
     return kept;
   }, [absorption, todayCheat, suggested]);
@@ -607,6 +622,23 @@ export default function TodayPage() {
               </button>
             )}
           </div>
+
+          {/* Said here, where you are about to tap something, rather than only
+              in the card further up. The list below has already been resized
+              around the meal out, and without a line saying so the portions
+              look like they changed for no reason. */}
+          {todayCheat && (
+            <Flag
+              tone="info"
+              className="mb-3"
+              title={`${todayCheat.name} is counted — ${Math.round(todayCheat.kcal)} kcal`}
+              detail={
+                absorption && absorption.meals.some((m) => m.action !== "kept")
+                  ? "The meals below are what's left of the day."
+                  : "No need to add it as a meal."
+              }
+            />
+          )}
 
           {/* A list, not a wrapped row of pills. Full-width rows give a thumb
               something to aim at and leave room to say what each meal is. */}

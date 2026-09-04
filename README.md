@@ -20,23 +20,68 @@ toward the day you'd call it.
 
 ## Signing in
 
-There's a door on the front: `admin` / `1234` by default. It is a **doorstop, not
-a lock** — it keeps the page away from someone who stumbles on the address and
-that is all it does.
+Everyone gets their own account, and every account gets its own everything:
+meals, week, weigh-ins, log, shopping list, history. Nobody sees anyone else's,
+and nothing you change touches theirs. New people set themselves up from the
+sign-in page — **Set up a new plan**.
 
-It is at least an honest one. The check runs on the server and sets a signed
-cookie, so it can't be stepped over in devtools the way a password compared in
-the browser can, and the middleware covers `/api/*` as well as the pages — a
-login that only hides the screens leaves the data sitting open behind them.
+The first account is made for you on the first page load, from `AUTH_USER` and
+`AUTH_PASSWORD` if they are set and `admin` / `1234` if they aren't, so an
+install that predates accounts still has someone to sign in as. **Change that
+password** from the Plan page before you give anyone the address.
 
-Set these three in the environment and it becomes real security, with no code
-change:
+Passwords are stored as PBKDF2-HMAC-SHA256 with a per-account salt at 210,000
+iterations and compared in constant time. The check runs on the server and sets
+a signed cookie, so it can't be stepped over in devtools the way a password
+compared in the browser can, and the middleware covers `/api/*` as well as the
+pages — a login that only hides the screens leaves the data sitting open behind
+them.
+
+### AUTH_SECRET — set this one
 
 ```
-AUTH_USER=…        # defaults to admin
-AUTH_PASSWORD=…    # defaults to 1234
-AUTH_SECRET=…      # a long random string; this is what makes the cookie unforgeable
+AUTH_SECRET=…    # a long random string
 ```
+
+**What it is.** The key the server signs session cookies with. When you sign
+in, the server hands your browser a cookie saying "this is account 3, valid
+until 9pm", plus a signature proving the server wrote it. `AUTH_SECRET` is what
+makes that signature checkable — and unforgeable.
+
+**Why it matters now.** Without it the app falls back to a constant that is
+printed in `lib/auth.ts`, in a public repo. Anyone who reads that file can mint
+a valid cookie for any account, and passwords stop being the thing that keeps
+accounts apart. That was survivable when there was one account and one person;
+it isn't once other people have their own data in here.
+
+**Make one.** Any long random string will do. In a terminal:
+
+```bash
+node -e "console.log(require('crypto').randomBytes(32).toString('hex'))"
+```
+
+**Set it on Vercel.** Project → **Settings** → **Environment Variables** → Add
+new. Key `AUTH_SECRET`, paste the value, tick **Production**, **Preview** and
+**Development**, save. Then **Deployments** → the latest one → **⋯** →
+**Redeploy** — environment variables are read at boot, so an existing
+deployment won't pick it up on its own.
+
+Everyone gets signed out once when it changes, because every cookie issued
+under the old value stops verifying. That is the correct behaviour and it only
+happens once.
+
+For local development put the same line in `.env.local`.
+
+### The other two
+
+```
+AUTH_USER=…      # username for the first account only; defaults to admin
+AUTH_PASSWORD=…  # its password; defaults to 1234
+```
+
+Both are only read when account 1 is created. Changing them later does nothing
+— accounts live in the database by then, and the Plan page is where you change
+a password.
 
 **It re-locks when you come back to it.** The cookie is written without a
 `Max-Age`, which makes it a session cookie — closing the app signs you out. On
@@ -58,11 +103,12 @@ NEXT_PUBLIC_LOCK_AFTER=15   # default
 
 1. Push this folder to a GitHub repo.
 2. Import it in Vercel (framework auto-detects as Next.js).
-3. Add one environment variable, for **Production, Preview and Development**:
+3. Add two environment variables, for **Production, Preview and Development**:
 
    | Key | Value |
    | --- | --- |
    | `DATABASE_URL` | your Neon **pooled** connection string |
+   | `AUTH_SECRET` | a long random string — see [Signing in](#authsecret--set-this-one) |
 
    That's the string in Neon's "Connect to your database" dialog with
    *Connection pooling* toggled on — click **Show password** first so you copy the

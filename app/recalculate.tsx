@@ -17,6 +17,7 @@ import { smartBounds, VOLUME_FOODS } from "@/lib/foods";
 import { dayVolume, fillerSuggestions, volumeHeadline } from "@/lib/prep";
 import { servingGrams, type PlanMeal } from "@/lib/batch";
 import { Note } from "./explain";
+import { Flag } from "./flag";
 import { appliesOn, fitWeek, mealGroups, repsOf } from "@/lib/weekfit";
 import type { WeekPlan } from "@/lib/nutrition";
 import type { Supplement } from "@/lib/supplements";
@@ -441,21 +442,23 @@ export function RecalculateDialog({
               )}
 
               {offDays.length > 0 && result.suggestions.length > 0 && (
-                <div className="mt-3 rounded-xl bg-[#2a2416] px-3.5 py-3 text-xs text-[#ffd08a]">
-                  <p className="leading-relaxed">
-                    The portion limits are what&rsquo;s holding{" "}
-                    {offDays.map((d) => d.name.toLowerCase()).join(" and ")} back. Any of these
-                    would help:
-                  </p>
-                  <div className="mt-2.5 flex flex-wrap gap-1.5">
-                    {result.suggestions.map((s, i) => (
-                      <button key={i} className="btn btn-sm" onClick={() => applySuggestion(s)}>
-                        {s.direction === "up" ? "Allow up to" : "Allow down to"} {s.to} g of{" "}
-                        {s.name.toLowerCase()}
-                      </button>
-                    ))}
-                  </div>
-                </div>
+                <Flag
+                  className="mt-3"
+                  title={`Portion limits are holding ${offDays
+                    .map((d) => d.name.toLowerCase())
+                    .join(" and ")} back`}
+                  detail="Any one of these would help."
+                  action={
+                    <div className="flex flex-wrap gap-1.5">
+                      {result.suggestions.map((s, i) => (
+                        <button key={i} className="btn btn-sm" onClick={() => applySuggestion(s)}>
+                          {s.direction === "up" ? "Allow up to" : "Allow down to"} {s.to} g of{" "}
+                          {s.name.toLowerCase()}
+                        </button>
+                      ))}
+                    </div>
+                  }
+                />
               )}
 
               <div className="pt-2">

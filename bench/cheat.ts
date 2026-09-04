@@ -210,7 +210,54 @@ check(
   lunch?.portions.map((p) => p.name).join(", ") || "lunch untouched"
 );
 
-/* ---- 6. the weekly cost, stated plainly -------------------------------- */
+/* ---- 6. what you have already eaten cannot change ----------------------- */
+
+console.log("\n=== Case 6: half the day is already gone ===");
+
+// Breakfast and lunch eaten; a 1200 kcal dinner out on a swim day.
+const late = absorbCheat({
+  cheat: { day: FRIDAY, meal_id: 6, name: "Dinner out", ...completeCheat({ kcal: 1200 }) },
+  meals: structuredClone(REAL_MEALS),
+  plan,
+  dayTypes: REAL_DAY_TYPES,
+  dayTypeId: dayTypeOn(FRIDAY),
+  rest: daysAfter(FRIDAY, plan, ROLL_DOW),
+  eaten: [1, 2], // Breakfast, Lunch
+});
+report("entered at six in the evening", late);
+
+const touched = late.meals.filter(
+  (m) => (m.mealId === 1 || m.mealId === 2) && m.action !== "kept"
+);
+check(
+  "breakfast and lunch are left exactly as eaten",
+  touched.length === 0,
+  touched.length ? touched.map((m) => `${m.name} ${m.action}`).join(", ") : "both untouched"
+);
+check(
+  "and the day still adds up with them counted in full",
+  late.after.kcal > late.target.kcal * 0.9,
+  `${Math.round(late.after.kcal)} vs ${Math.round(late.target.kcal)}`
+);
+
+// The one you swapped for is the one you already had.
+const tooLate = absorbCheat({
+  cheat: { day: FRIDAY, meal_id: 1, name: "Big brunch", ...completeCheat({ kcal: 900 }) },
+  meals: structuredClone(REAL_MEALS),
+  plan,
+  dayTypes: REAL_DAY_TYPES,
+  dayTypeId: dayTypeOn(FRIDAY),
+  rest: daysAfter(FRIDAY, plan, ROLL_DOW),
+  eaten: [1],
+});
+report("swapped for a meal already eaten", tooLate);
+check(
+  "it goes on top rather than pretending breakfast didn't happen",
+  tooLate.meals.find((m) => m.mealId === 1)?.action !== "replaced",
+  tooLate.meals.find((m) => m.mealId === 1)?.action ?? "?"
+);
+
+/* ---- 7. the weekly cost, stated plainly -------------------------------- */
 
 console.log("\n=== What one a week actually costs ===\n");
 for (const kcal of [800, 1100, 1500, 2000]) {

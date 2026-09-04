@@ -81,6 +81,20 @@ export type ShopLine = {
   meals: string[];
 };
 
+/**
+ * Something about this list you should know before you set off.
+ *
+ * Split into a headline and the rest on purpose: the title is what gets read
+ * in a supermarket doorway, and everything that justifies it can wait until
+ * someone taps for it.
+ */
+export type ShopWarning = {
+  title: string;
+  detail?: string;
+  /** The reasoning, behind a disclosure. */
+  more?: string;
+};
+
 export type ShopList = {
   days: number;
   startDay: string;
@@ -97,7 +111,7 @@ export type ShopList = {
   totals: Macros;
   perDay: Macros;
   totalKg: number;
-  warnings: string[];
+  warnings: ShopWarning[];
 };
 
 /** Does this meal appear on this kind of day? */
@@ -256,7 +270,7 @@ export function buildShoppingList(
       target: targetsFor(plan, id).kcal,
     }));
 
-  const warnings: string[] = [];
+  const warnings: ShopWarning[] = [];
 
   const mismatched = dayMix.filter(
     (d) => d.planned > 0 && Math.abs(d.planned - d.target) > Math.max(120, d.target * 0.06)
@@ -272,29 +286,35 @@ export function buildShoppingList(
         : mismatched.length === 1
           ? `${worst.name.toLowerCase()} days`
           : `${mismatched.length} of your day types`;
-    warnings.push(
-      `This list buys the plan exactly as written, and the plan is off target on ${scope} — ` +
-        `worst is ${worst.name.toLowerCase()}, ${Math.abs(gap).toLocaleString()} kcal ` +
-        `${gap > 0 ? "over" : "under"} (${worst.planned.toLocaleString()} vs ${worst.target.toLocaleString()}). ` +
-        `Rebalance the week on the Plan page first, or add a meal that only appears on those days.`
-    );
+    warnings.push({
+      title:
+        `The plan is off target on ${scope} — ${worst.name.toLowerCase()} by ` +
+        `${Math.abs(gap).toLocaleString()} kcal ${gap > 0 ? "over" : "under"}`,
+      detail: "This list buys it exactly as written.",
+      more:
+        `${worst.planned.toLocaleString()} against ${worst.target.toLocaleString()}. ` +
+        `Rebalance the week on the Plan page first, or add a meal that only appears on those days.`,
+    });
   }
   const fresh = lines.filter((l) => l.trips > 1);
   if (fresh.length) {
-    warnings.push(
-      `${fresh.length} fresh item${fresh.length === 1 ? "" : "s"} won't keep for ${days} days — freeze the surplus or split the shop: ${fresh
+    warnings.push({
+      title: `${fresh.length} item${fresh.length === 1 ? "" : "s"} won't keep for ${days} days`,
+      detail: fresh
         .slice(0, 4)
         .map((l) => l.name.toLowerCase())
-        .join(", ")}${fresh.length > 4 ? "…" : ""}.`
-    );
+        .join(", ") + (fresh.length > 4 ? "…" : ""),
+      more: "Freeze the surplus, or split the shop into two trips.",
+    });
   }
   const heavy = totalKg / days;
   if (heavy > 3.5) {
-    warnings.push(
-      `That's ${heavy.toFixed(1)} kg of food a day. Worth checking the plan isn't double-counting a meal.`
-    );
+    warnings.push({
+      title: `That's ${heavy.toFixed(1)} kg of food a day`,
+      detail: "Worth checking the plan isn't double-counting a meal.",
+    });
   }
-  if (!meals.length) warnings.push("No meals in the plan yet, so there's nothing to buy.");
+  if (!meals.length) warnings.push({ title: "No meals in the plan yet, so there's nothing to buy." });
 
   return {
     days,
@@ -332,7 +352,9 @@ export function shopListText(list: ShopList): string {
   }
   if (list.warnings.length) {
     out.push("NOTES");
-    for (const w of list.warnings) out.push(`  - ${w}`);
+    for (const w of list.warnings) {
+      out.push(`  - ${w.title}${w.detail ? ` — ${w.detail}` : ""}`);
+    }
   }
   return out.join("\n");
 }

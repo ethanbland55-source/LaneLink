@@ -314,6 +314,22 @@ export type AbsorbInput = {
   supplements?: Supplement[];
   /** The days after this one that can share the spill, in order. */
   rest?: { day: string; dayTypeId: number }[];
+  /**
+   * Meals you have already eaten today.
+   *
+   * The absorber works out what the day *should* look like, and until now it
+   * did that as though the day hadn't started. Enter a meal out at six in the
+   * evening and it would cheerfully shrink your breakfast by 80 g — breakfast,
+   * which you ate nine hours ago. The number was right and the instruction was
+   * impossible, which makes the whole report untrustworthy: if it is willing to
+   * tell you to un-eat something, you have to check every line it prints.
+   *
+   * So what's eaten is a fact, not a variable. These meals count toward the day
+   * in full and are never resized or dropped; the room has to come from what is
+   * still ahead of you. That is also why a cheat meal entered early absorbs
+   * more gracefully than one entered late, which is true of the actual day too.
+   */
+  eaten?: number[];
 };
 
 /**
@@ -329,6 +345,7 @@ export function absorbCheat(input: AbsorbInput): Absorption {
   const target = targetsFor(plan, dayTypeId);
   const macros = cheatMacros(cheat);
   const notes: string[] = [];
+  const alreadyEaten = new Set(input.eaten ?? []);
 
   const onMenu = input.meals.filter((m) => appliesOn(m, dayTypeId, total));
   const outcomes = new Map<number, MealOutcome>();
@@ -349,7 +366,13 @@ export function absorbCheat(input: AbsorbInput): Absorption {
   let remaining = onMenu;
   if (cheat.meal_id != null) {
     const swapped = onMenu.find((m) => m.id === cheat.meal_id);
-    if (swapped) {
+    if (swapped && alreadyEaten.has(swapped.id)) {
+      // You can't swap out something you have already had. Treat it as an
+      // extra, which is what it now is.
+      notes.push(
+        `You'd already eaten ${swapped.name.toLowerCase()}, so this goes on top of it rather than instead of it.`
+      );
+    } else if (swapped) {
       const o = outcomes.get(swapped.id);
       if (o) {
         o.action = "replaced";
@@ -377,7 +400,8 @@ export function absorbCheat(input: AbsorbInput): Absorption {
    */
   const fixedNames = new Set<number>();
   for (const m of remaining) {
-    if (m.ingredients.every((i) => i.locked)) fixedNames.add(m.id);
+    // Eaten is the third kind, and the least negotiable of the three.
+    if (alreadyEaten.has(m.id) || m.ingredients.every((i) => i.locked)) fixedNames.add(m.id);
   }
 
   let live = remaining.filter((m) => !fixedNames.has(m.id));
@@ -520,7 +544,15 @@ export function absorbCheat(input: AbsorbInput): Absorption {
   }
   for (const m of held) {
     const o = outcomes.get(m.id);
-    if (o) o.why = "locked, so left alone";
+    if (o) o.why = alreadyEaten.has(m.id) ? "already eaten" : "locked, so left alone";
+  }
+
+  const eatenNames = held.filter((m) => alreadyEaten.has(m.id)).map((m) => m.name.toLowerCase());
+  if (eatenNames.length) {
+    notes.push(
+      `${eatenNames.join(" and ")} ${eatenNames.length === 1 ? "was" : "were"} already eaten, ` +
+        `so the room comes out of what's left.`
+    );
   }
   for (const m of live) {
     const o = outcomes.get(m.id);

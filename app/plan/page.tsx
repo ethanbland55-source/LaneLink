@@ -62,6 +62,7 @@ import {
 } from "@/lib/nutrition";
 import { DOW_LABELS, SHOP_DAY_OPTIONS, normaliseProfile } from "@/lib/profile";
 import { Note, SectionLabel } from "../explain";
+import { Flag } from "../flag";
 import { AccountCard } from "../account-ui";
 import { lastShopDay } from "@/lib/weekly";
 
@@ -835,24 +836,34 @@ export default function PlanPage() {
             </Note>
           )}
           {plan.order.some((id) => targetsFor(plan, id).eaFloored) && (
-            <p className="mt-2 text-xs leading-relaxed" style={{ color: "var(--color-carbs)" }}>
-              Some days have been raised above what your deficit asked for, to keep them above the
-              floor. That is deliberate: the fat can come off next month and the season can&rsquo;t
-              be got back.
-            </p>
+            <Flag
+              className="mt-3"
+              title="Some days lifted above your deficit"
+              detail="Held at the energy floor on purpose."
+            >
+              <Note label="Why">
+                A weekly average can look sensible while a day with two sessions in it leaves too
+                little to run a body on, and the scale will not tell you. The fat can come off next
+                month; a season cannot be got back.
+              </Note>
+            </Flag>
           )}
 
           {lowFat.length > 0 && (
-            <p
-              className="mt-2.5 text-xs leading-relaxed"
-              style={{ color: lowFat.some((f) => f.verdict === "low") ? "var(--color-fat)" : "var(--color-carbs)" }}
+            <Flag
+              className="mt-3"
+              tone={lowFat.some((f) => f.verdict === "low") ? "bad" : "warn"}
+              title={`Fat is low on your lightest day`}
+              detail={`${Math.min(...lowFat.map((f) => f.grams))} g — ${(
+                Math.min(...lowFat.map((f) => f.pctKcal)) * 100
+              ).toFixed(0)}% of calories. Athletes want 20–35%.`}
             >
-              Fat is down to {Math.min(...lowFat.map((f) => f.grams))} g on your lightest day —{" "}
-              {(Math.min(...lowFat.map((f) => f.pctKcal)) * 100).toFixed(0)}% of calories. The
-              guidance for athletes is 20–35%, and going under 20% buys no performance while
-              low-fat intakes in men track with lower testosterone — which is the side of this
-              doing the muscle-keeping. Worth a look at your fat per kg.
-            </p>
+              <Note label="Why it matters">
+                Under 20% buys no performance, and low-fat intakes in men track with lower
+                testosterone — which is the side of this doing the muscle-keeping. Raise fat per kg
+                on the block below.
+              </Note>
+            </Flag>
           )}
 
           <div className="mt-3 flex flex-wrap gap-x-5 gap-y-1 border-t border-[#1c1f25] pt-3 text-xs">
@@ -868,13 +879,28 @@ export default function PlanPage() {
               · {proteinCheck.verdict.replace("_", " ")}
             </span>
           </div>
-          <p className="mt-1.5 text-[0.7rem] leading-relaxed text-[var(--color-mut)]">
+          <Note label="What these mean">
             {rate.note}
-          </p>
-          {proteinCheck.verdict !== "in_range" && (
-            <p className="mt-1 text-[0.7rem] leading-relaxed text-[var(--color-mut)]">
-              {proteinCheck.note}
-            </p>
+            {proteinCheck.verdict === "in_range" ? "" : ` ${proteinCheck.note}`}
+          </Note>
+
+          {/* Out-of-range protein is a finding, not a footnote — the verdict
+              word above tells you it is off, this tells you which way. */}
+          {(proteinCheck.verdict === "low" || proteinCheck.verdict === "very_high") && (
+            <Flag
+              className="mt-3"
+              tone={proteinCheck.verdict === "low" ? "bad" : "warn"}
+              title={
+                proteinCheck.verdict === "low"
+                  ? `Protein is low at ${proteinCheck.perKg.toFixed(2)} g/kg`
+                  : `Protein is high at ${proteinCheck.perKg.toFixed(2)} g/kg`
+              }
+              detail={
+                proteinCheck.verdict === "low"
+                  ? "Thin for holding lean mass at maintenance."
+                  : "It is carbohydrate you aren't eating."
+              }
+            />
           )}
         </section>
       )}
@@ -1329,20 +1355,20 @@ export default function PlanPage() {
         </div>
 
         {underFuelled.length > 0 && (
-          <div className="mt-3 rounded-xl bg-[#2a2416] px-3.5 py-3 text-xs text-[#ffd08a]">
-            <p>
-              {underFuelled
-                .map((c) => `${c.name.toLowerCase()} is ${c.lowGrams - c.grams} g short`)
-                .join(", ")}
-              .
-            </p>
+          <Flag
+            className="mt-3"
+            title={`${underFuelled
+              .map((c) => `${c.name} is ${c.lowGrams - c.grams} g short`)
+              .join(", ")}`}
+            detail="Carbohydrate, against what the training asks for."
+          >
             <Note label="What to do about it">
               The bands assume energy balance, so in a deficit you can&rsquo;t clear them and
               shouldn&rsquo;t try. What you can do is put the carbohydrate you do have around the
-              session rather than spreading it flat: a pre-swim top-up and a post-swim refill buy
-              more training quality than the same grams at breakfast.
+              session rather than spreading it flat: a top-up before and a refill after buy more
+              training quality than the same grams at breakfast.
             </Note>
-          </div>
+          </Flag>
         )}
 
         <details className="mt-3">
@@ -1387,23 +1413,28 @@ export default function PlanPage() {
         {profile.cycling && (
           <>
             {profile.energy_model === "flat" && (
-              <div className="mt-4 rounded-xl bg-[#2a2416] px-4 py-3 text-xs leading-relaxed text-[#ffd08a]">
-                <p>
-                  You're still on the old model — one activity multiplier, adjusted by percentages.
-                  Switching to sessions works out each day from what you actually did, which is
-                  more accurate and is what the day types below are for. Your targets will change.
-                </p>
-                <button
-                  className="btn btn-sm mt-2.5"
-                  onClick={() => {
-                    const next: Profile = { ...profile, energy_model: "sessions" as const };
-                    setProfile(next);
-                    saveProfile(next);
-                  }}
-                >
-                  Switch to session-based energy
-                </button>
-              </div>
+              <Flag
+                className="mt-4"
+                title="You're on the old energy model"
+                detail="One multiplier, nudged by percentages."
+                action={
+                  <button
+                    className="btn btn-sm"
+                    onClick={() => {
+                      const next: Profile = { ...profile, energy_model: "sessions" as const };
+                      setProfile(next);
+                      saveProfile(next);
+                    }}
+                  >
+                    Switch to sessions
+                  </button>
+                }
+              >
+                <Note label="What changes">
+                  Sessions works each day out from what you actually did, which is what the day
+                  types below are for. Your targets will move.
+                </Note>
+              </Flag>
             )}
 
             <div className="mt-4 grid grid-cols-7 gap-1">
@@ -1577,12 +1608,16 @@ export default function PlanPage() {
             .sort((a, b) => a.fatPerKg - b.fatPerKg)[0];
           if (!worst || worst.fatPerKg >= 0.6) return null;
           return (
-            <p className="mt-4 rounded-xl bg-[#2a2416] px-3.5 py-2.5 text-xs leading-relaxed text-[#ffd08a]">
-              Fat drops to {worst.fatPerKg.toFixed(2)} g/kg on a {worst.name.toLowerCase()} day —
-              the carb floor is taking it. Under about 0.6 g/kg for a long block isn't worth it for
-              the calories it saves; raise fat g/kg, or lower the carb floor so carbs give way
-              instead.
-            </p>
+            <Flag
+              className="mt-4"
+              title={`Fat drops to ${worst.fatPerKg.toFixed(2)} g/kg on a ${worst.name.toLowerCase()} day`}
+              detail="The carb floor is taking it."
+            >
+              <Note label="What to change">
+                Under about 0.6 g/kg for a long block isn&rsquo;t worth the calories it saves.
+                Raise fat per kg, or lower the carb floor so carbohydrate gives way instead.
+              </Note>
+            </Flag>
           );
         })()}
 
@@ -1886,33 +1921,37 @@ export default function PlanPage() {
                 bigger protein target than the goal intended — and it looks
                 identical in the box. Worth saying out loud. */}
             {basisMismatch && (
-              <div className="mt-2 rounded-xl bg-[#2a2416] px-3 py-2.5 text-xs leading-relaxed text-[#ffd08a]">
-                <p>
-                  {goalDef(profile.goal).label} means {goalDef(profile.goal).protein.perKg} g per kg
-                  of <b>lean mass</b>, but this is set to per kg of bodyweight — so it&rsquo;s
-                  asking for {Math.round(proteinTarget(profile))} g rather than about{" "}
-                  {Math.round(
-                    proteinTarget({ ...profile, protein_basis: "lean" })
-                  )}{" "}
-                  g.
-                </p>
-                <button
-                  className="btn btn-sm mt-2"
-                  onClick={() =>
-                    setProfile((p) =>
-                      p
-                        ? {
-                            ...p,
-                            protein_basis: goalDef(p.goal).protein.basis,
-                            protein_per_kg: goalDef(p.goal).protein.perKg,
-                          }
-                        : p
-                    )
-                  }
-                >
-                  Use lean mass, as the goal intends
-                </button>
-              </div>
+              <Flag
+                className="mt-2"
+                title="This is per kg of bodyweight, not lean mass"
+                detail={`Asking for ${Math.round(proteinTarget(profile))} g instead of about ${Math.round(
+                  proteinTarget({ ...profile, protein_basis: "lean" })
+                )} g.`}
+                action={
+                  <button
+                    className="btn btn-sm"
+                    onClick={() =>
+                      setProfile((p) =>
+                        p
+                          ? {
+                              ...p,
+                              protein_basis: goalDef(p.goal).protein.basis,
+                              protein_per_kg: goalDef(p.goal).protein.perKg,
+                            }
+                          : p
+                      )
+                    }
+                  >
+                    Use lean mass
+                  </button>
+                }
+              >
+                <Note label="Why it matters">
+                  {goalDef(profile.goal).label} means {goalDef(profile.goal).protein.perKg} g per
+                  kg of lean mass. The same figure applied to bodyweight is about 15% more protein
+                  than the goal intended, and it looks identical in the box.
+                </Note>
+              </Flag>
             )}
           </Field>
 

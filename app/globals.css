@@ -299,6 +299,25 @@ input[type="number"] {
   transform: scale(0.9);
 }
 
+/* Something that needs your attention. See app/flag.tsx.
+   A quiet ground with a coloured edge, rather than the solid amber fill this
+   replaced — six filled slabs on one screen read as a fault report, and the
+   edge carries the same information at a tenth of the volume. */
+.flag {
+  display: flex;
+  gap: 0.7rem;
+  align-items: flex-start;
+  border-radius: 0.85rem;
+  padding: 0.7rem 0.9rem;
+  background: #16181d;
+  border-left: 3px solid var(--flag, var(--color-carbs));
+}
+/* Sunk cards are darker than the page, so a flag inside one has to go the
+   other way to stay visible. */
+.sunk .flag {
+  background: #1b1e24;
+}
+
 /* Rows that have been dealt with fade back rather than disappearing, so the
    list doesn't reflow under your thumb while you're shopping. */
 .done {

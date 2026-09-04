@@ -19,6 +19,7 @@ import { overlayPending, type PendingPortion } from "@/lib/pending";
 import { normaliseProfile, SHOP_DAY_OPTIONS } from "@/lib/profile";
 import { NumberField, scrollIntoViewSoon } from "../number-field";
 import { Note, SectionLabel } from "../explain";
+import { Flag } from "../flag";
 
 type PantryRow = { name: string; grams: number };
 
@@ -293,9 +294,9 @@ export default function ShopPage() {
       </section>
 
       {list.warnings.map((w, i) => (
-        <div key={i} className="rounded-xl bg-[#2a2416] px-4 py-3 text-xs leading-relaxed text-[#ffd08a]">
-          {w}
-        </div>
+        <Flag key={i} title={w.title} detail={w.detail}>
+          {w.more && <Note label="Why">{w.more}</Note>}
+        </Flag>
       ))}
 
       {total === 0 ? (

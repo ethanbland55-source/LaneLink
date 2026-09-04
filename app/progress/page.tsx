@@ -24,6 +24,7 @@ import {
 } from "@/lib/bodyfat";
 import { applyRoll, rollDelta, rollState } from "@/lib/weekly";
 import { Note } from "../explain";
+import { Flag } from "../flag";
 import {
   DEFAULT_RISE_PER_HOUR,
   calibrate,
@@ -481,14 +482,19 @@ export default function ProgressPage() {
             </Note>
           </>
         ) : (
-          <p className="mt-3 text-xs leading-relaxed" style={{ color: "var(--color-carbs)" }}>
-            {bfMethod === "manual"
-              ? "Type the percentage from your scan."
-              : `Fill in ${sitesFor(bfMethod, profile.sex)
-                  .map((k) => MEASURE_SITES[k]?.label.toLowerCase())
-                  .filter(Boolean)
-                  .join(", ")} and it works the rest out.`}
-          </p>
+          <Flag
+            className="mt-3"
+            tone="info"
+            title={
+              bfMethod === "manual"
+                ? "Type the percentage from your scan"
+                : `Fill in ${sitesFor(bfMethod, profile.sex)
+                    .map((k) => MEASURE_SITES[k]?.label.toLowerCase())
+                    .filter(Boolean)
+                    .join(", ")}`
+            }
+            detail={bfMethod === "manual" ? undefined : "It works the rest out."}
+          />
         )}
 
         {bfHistory.length >= 2 && (
@@ -517,17 +523,21 @@ export default function ProgressPage() {
         </Note>
 
         {roll.due && roll.figures ? (
-          <div className="mt-4 rounded-xl bg-[#2a2416] px-3.5 py-3">
-            <p className="text-xs leading-relaxed text-[#ffd08a]">
-              Shopping day was {prettyDay(roll.dueOn)} and the plan hasn&rsquo;t been rebuilt since.
-              Your trend is now <b>{roll.figures.weightKg.toFixed(1)} kg</b>
-              {rollMove.kg !== 0 && ` (${rollMove.kg > 0 ? "+" : ""}${rollMove.kg} kg)`}
-              {roll.figures.bodyFatPct != null && ` at ${roll.figures.bodyFatPct}% body fat`}.
-            </p>
-            <button className="btn btn-sm btn-accent mt-2.5" onClick={doRoll}>
-              Rebuild this week&rsquo;s targets
-            </button>
-          </div>
+          <Flag
+            className="mt-4"
+            title="This week's targets are out of date"
+            detail={
+              `Shopping day was ${prettyDay(roll.dueOn)}. You're now ` +
+              `${roll.figures.weightKg.toFixed(1)} kg` +
+              `${rollMove.kg !== 0 ? ` (${rollMove.kg > 0 ? "+" : ""}${rollMove.kg} kg)` : ""}` +
+              `${roll.figures.bodyFatPct != null ? ` at ${roll.figures.bodyFatPct}% body fat` : ""}.`
+            }
+            action={
+              <button className="btn btn-sm btn-accent" onClick={doRoll}>
+                Rebuild them
+              </button>
+            }
+          />
         ) : (
           <p className="mt-3 text-xs text-[#5b6270]">
             Next update {prettyDay(roll.nextOn)}, your shopping day.
@@ -633,10 +643,11 @@ export default function ProgressPage() {
             </Note>
 
             {cal.confidence === "low" && (
-              <p className="mt-2 text-xs leading-relaxed" style={{ color: "var(--color-carbs)" }}>
-                Thin data so far — more logged days and daily weigh-ins will tighten this up before
-                it's worth acting on.
-              </p>
+              <Flag
+                className="mt-2"
+                title="Thin data so far"
+                detail="More logged days and daily weigh-ins before it's worth acting on."
+              />
             )}
 
             <button

@@ -2,6 +2,7 @@
 
 import { useEffect, useState } from "react";
 import { Note } from "./explain";
+import { Flag } from "./flag";
 
 /**
  * Your account, on the page where the rest of your settings already are.
@@ -150,11 +151,13 @@ export function AccountCard() {
       </div>
 
       {weakSecret && (
-        <p className="mt-3 rounded-xl bg-[#2a2416] px-3.5 py-2.5 text-xs text-[#ffd08a]">
-          Set <span className="num">AUTH_SECRET</span> where this is deployed. Without it the
-          session signature is a constant anyone can read in the source, and passwords stop being
-          the thing that keeps accounts apart.
-        </p>
+        <Flag className="mt-3" tone="bad" title="AUTH_SECRET isn't set">
+          <Note label="What that means">
+            Sessions are signed with a constant that is printed in the source, so anyone who reads
+            it can forge a cookie for any account. Add it as an environment variable where this is
+            deployed — README.md has the two-minute version.
+          </Note>
+        </Flag>
       )}
 
       <Note label={others > 0 ? `${others + 1} plans on here` : "Sharing this with someone?"}>

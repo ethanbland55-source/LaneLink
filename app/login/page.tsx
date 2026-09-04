@@ -210,7 +210,7 @@ function SignIn() {
             </div>
 
             {error && (
-              <p role="alert" className="text-xs" style={{ color: "var(--color-fat)" }}>
+              <p role="alert" className="text-xs font-semibold" style={{ color: "var(--color-fat)" }}>
                 {error}
               </p>
             )}
