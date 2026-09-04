@@ -18,6 +18,11 @@ body {
   background: #0a0b0d;
   color: #f2f4f7;
   -webkit-font-smoothing: antialiased;
+  /* Without this, tapping any button or field on a phone flashes the
+     browser's own grey highlight box first — square-cornered against every
+     rounded pill in the app — before the real, deliberate tap state below
+     ever gets to render. That flash is what reads as "glitchy". */
+  -webkit-tap-highlight-color: transparent;
 }
 
 body {
@@ -126,8 +131,10 @@ body {
   background: transparent;
   border-color: transparent;
 }
-.field-bare:hover {
-  border-color: #2a2f38;
+@media (hover: hover) and (pointer: fine) {
+  .field-bare:hover {
+    border-color: #2a2f38;
+  }
 }
 .field-bare:focus {
   background: #1e222a;
@@ -149,28 +156,69 @@ body {
   color: #f2f4f7;
   border: none;
   cursor: pointer;
-  transition: 0.15s;
+  transition:
+    background 0.15s,
+    transform 0.1s;
   white-space: nowrap;
+  /* The 300ms wait-and-see-if-this-is-a-double-tap delay some mobile
+     browsers add before honouring a tap. A button is never a zoom target. */
+  touch-action: manipulation;
 }
-.btn:hover {
+/* A tap on a touchscreen briefly matches `:hover` too, so without gating
+   this to real pointers a button looks stuck "hovered" after every tap
+   until you touch something else — the other half of "glitchy on click". */
+@media (hover: hover) and (pointer: fine) {
+  .btn:hover {
+    background: #262a32;
+  }
+}
+/* The actual press feedback: instant, so it lands before the tap-highlight
+   flash it replaced would have, and it's what a tap is actually missing
+   without it — nothing acknowledges the touch until the request resolves. */
+.btn:active {
+  transform: scale(0.96);
   background: #262a32;
 }
 .btn:disabled {
   opacity: 0.4;
   cursor: default;
 }
+.btn:disabled:active {
+  transform: none;
+}
+/* A tap is not keyboard navigation and shouldn't draw a focus ring — only
+   draw one for someone actually tabbing through, which is what leaves a
+   button looking like it's stuck "selected" after an ordinary tap. */
+.btn:focus {
+  outline: none;
+}
+.btn:focus-visible {
+  outline: 2px solid var(--color-accent);
+  outline-offset: 2px;
+}
 .btn-accent {
   background: var(--color-accent);
   color: #10160a;
 }
-.btn-accent:hover {
-  background: #d6f96a;
+@media (hover: hover) and (pointer: fine) {
+  .btn-accent:hover {
+    background: #d6f96a;
+  }
+}
+.btn-accent:active {
+  background: #bce646;
 }
 .btn-quiet {
   background: transparent;
   color: var(--color-mut);
 }
-.btn-quiet:hover {
+@media (hover: hover) and (pointer: fine) {
+  .btn-quiet:hover {
+    background: var(--color-raised);
+    color: #f2f4f7;
+  }
+}
+.btn-quiet:active {
   background: var(--color-raised);
   color: #f2f4f7;
 }
@@ -201,11 +249,15 @@ input[type="number"] {
   transition: 0.12s;
   cursor: pointer;
   background: #0e1013;
+  touch-action: manipulation;
 }
 .tick[data-on="true"] {
   background: var(--color-accent);
   border-color: var(--color-accent);
   color: #10160a;
+}
+.tick:active {
+  transform: scale(0.9);
 }
 
 /* Rows that have been dealt with fade back rather than disappearing, so the
