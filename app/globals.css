@@ -352,6 +352,81 @@ input[type="number"] {
   border-radius: 999px;
 }
 
+/* The lights behind the sign-in card.
+
+   Parallax, done the cheap way. The stage sets --px and --py to how far the
+   pointer is from the middle (-0.5 to 0.5); each layer multiplies those by a
+   different distance, and that difference is the whole illusion — the near
+   light swings 60px, the far one 22px, and your eye reads the gap as depth.
+
+   The float underneath runs regardless, because there is no pointer on a
+   phone and a completely still screen looks like a screenshot. It is slow
+   enough (40s and up, and prime-ish durations so the three never resynchronise)
+   that you notice it only if you look. Transform only, so none of this leaves
+   the compositor. */
+/* The fallback lives in `var(--px, 0)`, NOT in a `--px: 0` declaration here.
+   Declaring it on .drift sets the element's own value, which shadows the one
+   inherited from the stage — the layers would sit at zero forever and the
+   parallax would be dead on arrival, silently, because a custom property that
+   resolves has no way of telling you it resolved to the wrong thing. */
+.drift {
+  will-change: transform;
+  transition: transform 400ms cubic-bezier(0.22, 1, 0.36, 1);
+  animation: float-a 43s ease-in-out infinite;
+}
+.drift-1 {
+  transform: translate3d(calc(var(--px, 0) * 60px), calc(var(--py, 0) * 60px), 0);
+}
+.drift-2 {
+  transform: translate3d(calc(var(--px, 0) * -44px), calc(var(--py, 0) * -44px), 0);
+  animation-name: float-b;
+  animation-duration: 37s;
+}
+.drift-3 {
+  transform: translate3d(calc(var(--px, 0) * 22px), calc(var(--py, 0) * 26px), 0);
+  animation-name: float-c;
+  animation-duration: 53s;
+}
+
+/* The float is on a wrapper-free element that also carries the pointer
+   transform, so the two are composed by running the animation on `translate`
+   instead — it is a separate property and they add up rather than fight. */
+@keyframes float-a {
+  0%,
+  100% {
+    translate: 0 0;
+  }
+  50% {
+    translate: 3% -4%;
+  }
+}
+@keyframes float-b {
+  0%,
+  100% {
+    translate: 0 0;
+  }
+  50% {
+    translate: -4% 3%;
+  }
+}
+@keyframes float-c {
+  0%,
+  100% {
+    translate: 0 0;
+  }
+  50% {
+    translate: 2% 5%;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .drift {
+    animation: none;
+    transition: none;
+    transform: none;
+  }
+}
+
 /* Frosted panel. Used by the sign-in card: a pane of glass lifted off the
    blurred field behind it, edge-lit along the top where a real one would
    catch the light. */

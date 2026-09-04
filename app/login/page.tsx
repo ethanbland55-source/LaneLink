@@ -1,15 +1,17 @@
 "use client";
 
-import { Suspense, useRef, useState } from "react";
+import { Suspense, useEffect, useRef, useState } from "react";
 import { useSearchParams } from "next/navigation";
 
 /**
  * The front door.
  *
- * A frosted panel lifted off a blurred field of colour. The tilt is small and
- * it flattens as soon as you touch the form — a card that keeps leaning while
- * you type in it is a card you fight, and the effect has done its job by then
- * anyway.
+ * A frosted panel, flat, on a field of coloured light that has depth of its
+ * own. The card used to be tilted in 3D and it was the wrong element to put
+ * the effect on: a form leaning away from you is a form that looks like it is
+ * about to do something, and the first thing you do on this screen is type
+ * into it. The depth moved to the background, where nothing has to be legible
+ * and nothing has to be tapped — see `.drift` in globals.css.
  *
  * One card does both jobs. A separate sign-up page would be a second thing to
  * design, a second thing to route to, and a second place for the same three
@@ -37,9 +39,50 @@ function SignIn() {
   const [reveal, setReveal] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
-  const [engaged, setEngaged] = useState(false);
 
   const joining = mode === "new";
+
+  /**
+   * Parallax on the lights behind the glass.
+   *
+   * Two custom properties on the stage — how far the pointer is from the
+   * middle, as a fraction — and each light multiplies them by a different
+   * amount in CSS. That is the whole trick, and doing it with properties
+   * rather than per-element styles means one write per frame instead of three,
+   * and the compositor does the rest.
+   *
+   * Only for a real pointer. There is no cursor on a phone, and the
+   * alternative — device orientation — needs a permission prompt on iOS, which
+   * is an absurd thing to ask someone for on a sign-in page. Touch gets the
+   * slow ambient float in the stylesheet instead, which needs nothing and
+   * stops the screen looking dead.
+   */
+  const stage = useRef<HTMLDivElement>(null);
+
+  useEffect(() => {
+    const el = stage.current;
+    if (!el) return;
+    if (!window.matchMedia("(pointer: fine)").matches) return;
+    if (window.matchMedia("(prefers-reduced-motion: reduce)").matches) return;
+
+    let frame = 0;
+    function onMove(e: PointerEvent) {
+      if (frame) return;
+      frame = requestAnimationFrame(() => {
+        frame = 0;
+        const node = stage.current;
+        if (!node) return;
+        node.style.setProperty("--px", String(e.clientX / window.innerWidth - 0.5));
+        node.style.setProperty("--py", String(e.clientY / window.innerHeight - 0.5));
+      });
+    }
+
+    window.addEventListener("pointermove", onMove, { passive: true });
+    return () => {
+      window.removeEventListener("pointermove", onMove);
+      if (frame) cancelAnimationFrame(frame);
+    };
+  }, []);
 
   /**
    * The fields are uncontrolled, and that is the fix rather than a shortcut.
@@ -112,9 +155,19 @@ function SignIn() {
   }
 
   return (
-    <div className="relative flex min-h-[100dvh] items-center justify-center overflow-hidden px-4 py-10">
+    <div
+      ref={stage}
+      className="relative flex min-h-[100dvh] items-center justify-center overflow-hidden px-4 py-10"
+    >
       {/* Blurred field behind the glass. Three soft lights, heavily blurred —
           cheaper and calmer than an image, and it can't fail to load.
+
+          The depth is here now rather than in the card. Each light drifts by a
+          different amount, which is what makes it read as distance: the near
+          one moves most, the far one barely at all. Tilting the card was the
+          other way round — it announced itself, it fought you the moment you
+          tried to type in it, and a sign-in form is not a thing that should be
+          doing tricks.
 
           Not `-z-10`: a negative z-index paints behind the background of the
           nearest stacking-context ancestor, and <body> has one, so the whole
@@ -122,21 +175,13 @@ function SignIn() {
           same job without the trap. */}
       <div aria-hidden className="pointer-events-none absolute inset-0 overflow-hidden">
         <div className="absolute inset-0 bg-[#07080a]" />
-        <div className="absolute left-[-15%] top-[-20%] h-[65vmax] w-[65vmax] rounded-full bg-[#c9f24d] opacity-[0.30] blur-[110px]" />
-        <div className="absolute bottom-[-25%] right-[-20%] h-[60vmax] w-[60vmax] rounded-full bg-[#5b9dff] opacity-[0.28] blur-[120px]" />
-        <div className="absolute bottom-[5%] left-[20%] h-[40vmax] w-[40vmax] rounded-full bg-[#ff5d8f] opacity-[0.18] blur-[110px]" />
+        <div className="drift drift-1 absolute left-[-15%] top-[-20%] h-[65vmax] w-[65vmax] rounded-full bg-[#c9f24d] opacity-[0.30] blur-[110px]" />
+        <div className="drift drift-2 absolute bottom-[-25%] right-[-20%] h-[60vmax] w-[60vmax] rounded-full bg-[#5b9dff] opacity-[0.28] blur-[120px]" />
+        <div className="drift drift-3 absolute bottom-[5%] left-[20%] h-[40vmax] w-[40vmax] rounded-full bg-[#ff5d8f] opacity-[0.18] blur-[110px]" />
       </div>
 
-      <div className="relative w-full max-w-[22rem]" style={{ perspective: "1200px" }}>
-        <div
-          className="glass px-7 pb-7 pt-8"
-          style={{
-            transform: engaged
-              ? "rotateX(0deg) rotateY(0deg) translateZ(0)"
-              : "rotateX(7deg) rotateY(-6deg) translateZ(0)",
-            transition: "transform 600ms cubic-bezier(0.22, 1, 0.36, 1)",
-          }}
-        >
+      <div className="relative w-full max-w-[22rem]">
+        <div className="glass px-7 pb-7 pt-8">
           <p className="text-[1.35rem] font-bold tracking-tight">
             Meal<span className="text-[var(--color-accent)]">Hub</span>
           </p>
@@ -149,7 +194,6 @@ function SignIn() {
             ref={formRef}
             className="mt-6 space-y-3"
             onSubmit={submit}
-            onFocus={() => setEngaged(true)}
           >
             {joining && (
               <label className="block">

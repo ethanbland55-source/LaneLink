@@ -91,12 +91,12 @@ session. So the client also watches for the app being backgrounded and signs
 out on the way back in, and the signed cookie carries a twelve-hour expiry of
 its own as a third backstop.
 
-There's a short grace period so that glancing at a notification and swiping
-straight back doesn't cost you a sign-in. Set `NEXT_PUBLIC_LOCK_AFTER` to the
-number of seconds you want, or to `0` to lock the instant you look away.
+There's a ten-minute grace period, so checking a message or putting the kettle
+on doesn't cost you a sign-in. Set `NEXT_PUBLIC_LOCK_AFTER` to the number of
+seconds you want, or to `0` to lock the instant you look away.
 
 ```
-NEXT_PUBLIC_LOCK_AFTER=15   # default
+NEXT_PUBLIC_LOCK_AFTER=600   # default, ten minutes
 ```
 
 ## Deploy

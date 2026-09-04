@@ -42,12 +42,20 @@ export const SESSION_MAX_AGE = 60 * 60 * 12;
 /**
  * How long the app may sit in the background before it re-locks, in seconds.
  *
- * The point is that coming back to it asks for the password again. The small
- * grace is so that glancing at a notification and swiping straight back
- * doesn't cost you a sign-in — set `NEXT_PUBLIC_LOCK_AFTER=0` if you'd rather
- * it locked the instant you look away.
+ * Ten minutes. Fifteen seconds was the original figure and it was wrong for
+ * how this actually gets used: you check a recipe, reply to a message, put the
+ * kettle on, come back — and you are typing a password again to find out how
+ * many carbs are left. A lock that fires on every glance away is one you start
+ * resenting, and the thing people do about that is stop locking at all.
+ *
+ * Ten minutes still covers the case this exists for. It is not a bank; the
+ * risk is somebody picking up your unlocked phone, and after ten minutes the
+ * phone's own lock has almost certainly beaten us to it anyway. The signed
+ * twelve-hour expiry and the session cookie are the other two backstops.
+ *
+ * Set `NEXT_PUBLIC_LOCK_AFTER=0` to lock the instant you look away.
  */
-export const LOCK_AFTER_SECONDS = Number(process.env.NEXT_PUBLIC_LOCK_AFTER ?? 15);
+export const LOCK_AFTER_SECONDS = Number(process.env.NEXT_PUBLIC_LOCK_AFTER ?? 600);
 
 /**
  * Falls back to a constant so the app runs out of the box. That fallback is
