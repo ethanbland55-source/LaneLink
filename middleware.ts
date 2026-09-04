@@ -27,10 +27,14 @@ export async function middleware(req: NextRequest) {
 export const config = {
   matcher: [
     /*
-     * Everything except the sign-in page, the route that signs you in, and
-     * Next's own static assets — which have to stay reachable or the sign-in
-     * page has no stylesheet to render itself with.
+     * Everything except the sign-in page, the route that signs you in, the
+     * build-version check, and Next's own static assets — which have to stay
+     * reachable or the sign-in page has no stylesheet to render itself with.
+     *
+     * `api/version` is open because a stale sign-in page needs to find out it
+     * is stale, and it has no session to check with. It reports a build id and
+     * nothing else.
      */
-    "/((?!login|api/auth|_next/static|_next/image|favicon.ico).*)",
+    "/((?!login|api/auth|api/version|_next/static|_next/image|favicon.ico).*)",
   ],
 };

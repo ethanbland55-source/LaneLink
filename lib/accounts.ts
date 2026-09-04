@@ -146,6 +146,109 @@ export async function changePassword(
   return { ok: true };
 }
 
+/**
+ * Delete an account and everything it owns.
+ *
+ * Written out table by table rather than looped, and deliberately not left to
+ * `on delete cascade`. Two reasons, and the second is the one that matters:
+ *
+ *  - Most of these tables have no foreign key to `users` at all. `user_id` was
+ *    added as a plain column with a default, precisely so that existing rows
+ *    didn't need a backfill — which means the database has no idea these rows
+ *    belong to anybody, and would happily leave every one of them behind.
+ *  - A list you can read is a list you can check. This is the one operation in
+ *    the app that cannot be undone, and "did we get all of it?" should be
+ *    answerable by looking rather than by trusting a loop over a constant.
+ *
+ * Children before parents, so an interrupted run leaves orphans rather than
+ * dangling references. The row count comes back so the caller can say what
+ * actually went.
+ *
+ * The last account is refused. `ensureOwner` recreates account 1 from the
+ * environment on the next page load, so deleting the only one doesn't empty
+ * the app — it silently replaces you with a stranger who has your username and
+ * whatever `AUTH_PASSWORD` happens to be. That is a worse outcome than a
+ * refusal, and much harder to understand after the fact.
+ */
+export async function deleteAccount(
+  userId: number,
+  password: unknown
+): Promise<{ error: string } | { ok: true; rows: number }> {
+  const rows = (await sql`
+    select pw_hash, pw_salt from users where id = ${userId}`) as any[];
+  const row = rows[0];
+  if (!row) return { error: "No such account." };
+
+  if (
+    typeof password !== "string" ||
+    !(await passwordMatches(password, String(row.pw_salt), String(row.pw_hash)))
+  ) {
+    return { error: "That isn't your password." };
+  }
+
+  const [{ n }] = (await sql`select count(*)::int as n from users`) as any[];
+  if (Number(n) <= 1) {
+    return {
+      error:
+        "This is the only account. Delete it and the app just makes a new owner on the next load — make another account first if you're handing it over.",
+    };
+  }
+
+  let gone = 0;
+  const ran = async (rs: unknown) => {
+    gone += Array.isArray(rs) ? rs.length : 0;
+  };
+
+  await ran(await sql`delete from ingredients where user_id = ${userId} returning 1`);
+  await ran(await sql`delete from pending_portions where user_id = ${userId} returning 1`);
+  await ran(await sql`delete from portion_history where user_id = ${userId} returning 1`);
+  await ran(await sql`delete from cheat_meals where user_id = ${userId} returning 1`);
+  await ran(await sql`delete from supplement_log where user_id = ${userId} returning 1`);
+  await ran(await sql`delete from supplements where user_id = ${userId} returning 1`);
+  await ran(await sql`delete from log_entries where user_id = ${userId} returning 1`);
+  await ran(await sql`delete from weigh_ins where user_id = ${userId} returning 1`);
+  await ran(await sql`delete from pantry where user_id = ${userId} returning 1`);
+  await ran(await sql`delete from shop_checks where user_id = ${userId} returning 1`);
+  await ran(await sql`delete from meals where user_id = ${userId} returning 1`);
+  await ran(await sql`delete from day_types where user_id = ${userId} returning 1`);
+  await ran(await sql`delete from profile where id = ${userId} returning 1`);
+  await ran(await sql`delete from users where id = ${userId} returning 1`);
+
+  return { ok: true, rows: gone };
+}
+
+/** Anything still tagged to an account that no longer exists. Zero, or a bug. */
+export async function orphanedRows(): Promise<{ table: string; n: number }[]> {
+  const rows = (await sql`
+    select 'ingredients' as t, count(*)::int as n from ingredients i
+      where not exists (select 1 from users u where u.id = i.user_id)
+    union all select 'meals', count(*)::int from meals x
+      where not exists (select 1 from users u where u.id = x.user_id)
+    union all select 'day_types', count(*)::int from day_types x
+      where not exists (select 1 from users u where u.id = x.user_id)
+    union all select 'log_entries', count(*)::int from log_entries x
+      where not exists (select 1 from users u where u.id = x.user_id)
+    union all select 'weigh_ins', count(*)::int from weigh_ins x
+      where not exists (select 1 from users u where u.id = x.user_id)
+    union all select 'supplements', count(*)::int from supplements x
+      where not exists (select 1 from users u where u.id = x.user_id)
+    union all select 'supplement_log', count(*)::int from supplement_log x
+      where not exists (select 1 from users u where u.id = x.user_id)
+    union all select 'pantry', count(*)::int from pantry x
+      where not exists (select 1 from users u where u.id = x.user_id)
+    union all select 'shop_checks', count(*)::int from shop_checks x
+      where not exists (select 1 from users u where u.id = x.user_id)
+    union all select 'pending_portions', count(*)::int from pending_portions x
+      where not exists (select 1 from users u where u.id = x.user_id)
+    union all select 'portion_history', count(*)::int from portion_history x
+      where not exists (select 1 from users u where u.id = x.user_id)
+    union all select 'cheat_meals', count(*)::int from cheat_meals x
+      where not exists (select 1 from users u where u.id = x.user_id)
+    union all select 'profile', count(*)::int from profile p
+      where not exists (select 1 from users u where u.id = p.id)`) as any[];
+  return rows.map((r) => ({ table: String(r.t), n: Number(r.n) })).filter((r) => r.n > 0);
+}
+
 export async function renameAccount(userId: number, displayName: unknown): Promise<void> {
   const shown = typeof displayName === "string" ? displayName.trim().slice(0, 40) : "";
   if (!shown) return;

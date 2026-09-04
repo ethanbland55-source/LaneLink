@@ -21,6 +21,8 @@ export function AccountCard() {
   const [current, setCurrent] = useState("");
   const [next, setNext] = useState("");
   const [changing, setChanging] = useState(false);
+  const [closing, setClosing] = useState(false);
+  const [confirmPw, setConfirmPw] = useState("");
   const [busy, setBusy] = useState(false);
   const [msg, setMsg] = useState<string | null>(null);
   const [bad, setBad] = useState(false);
@@ -81,6 +83,27 @@ export function AccountCard() {
     } else {
       say(body.error ?? "Couldn't change it", true);
     }
+  }
+
+  async function confirmDelete(e: React.FormEvent) {
+    e.preventDefault();
+    setBusy(true);
+    const res = await fetch("/api/account", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ confirm: "delete", password: confirmPw }),
+    });
+    const body = await res.json().catch(() => ({}));
+    if (!res.ok) {
+      setBusy(false);
+      setConfirmPw("");
+      say(body.error ?? "Couldn't delete it", true);
+      return;
+    }
+    // A full navigation rather than a router push: the account this page was
+    // built from no longer exists, and every fetch it makes from here would
+    // 401. Start again from the door.
+    window.location.href = "/login";
   }
 
   return (
@@ -165,6 +188,64 @@ export function AccountCard() {
         shopping list. Nobody sees anyone else&rsquo;s, and nothing you change touches theirs. They
         can set one up from the sign-in page.
       </Note>
+
+      {/* Two steps and a password, because there is no third step where you
+          get it back. The button stays quiet until you have asked for it —
+          a red "Delete everything" sitting permanently under your name is
+          both alarming and easier to hit by accident than it should be. */}
+      <div className="mt-4 border-t border-[#1c1f25] pt-3">
+        {closing ? (
+          <form className="space-y-3" onSubmit={confirmDelete}>
+            <Flag
+              tone="bad"
+              title="This deletes your plan and everything in it"
+              detail="Meals, week, weigh-ins, log, shopping list, history. It can't be undone."
+            />
+            <label className="block">
+              <span className="mb-1.5 block text-xs text-[var(--color-mut)]">
+                Your password, to be sure
+              </span>
+              <input
+                className="field w-full"
+                type="password"
+                autoComplete="current-password"
+                value={confirmPw}
+                onChange={(e) => setConfirmPw(e.target.value)}
+              />
+            </label>
+            <div className="flex gap-2">
+              <button
+                className="btn flex-1"
+                type="submit"
+                disabled={busy || !confirmPw}
+                style={{ background: "var(--color-fat)", color: "#2a0a13" }}
+              >
+                {busy ? "Deleting…" : "Delete my account"}
+              </button>
+              <button
+                className="btn"
+                type="button"
+                onClick={() => {
+                  setClosing(false);
+                  setConfirmPw("");
+                }}
+              >
+                Keep it
+              </button>
+            </div>
+          </form>
+        ) : (
+          <button
+            className="btn btn-sm btn-quiet"
+            onClick={() => {
+              setClosing(true);
+              setMsg(null);
+            }}
+          >
+            Delete my account
+          </button>
+        )}
+      </div>
     </section>
   );
 }
