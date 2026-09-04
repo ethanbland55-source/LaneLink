@@ -485,7 +485,7 @@ export default function TodayPage() {
           <div className="pt-1 text-right">
             <div className="flex items-center justify-end gap-1">
               <button
-                className="btn btn-sm btn-quiet px-2"
+                className="btn btn-sm btn-quiet hit px-2"
                 onClick={() => go(-1)}
                 aria-label="Previous day"
               >
@@ -495,7 +495,7 @@ export default function TodayPage() {
                 {isToday ? "Today" : prettyDay(day)}
               </span>
               <button
-                className="btn btn-sm btn-quiet px-2 disabled:opacity-20"
+                className="btn btn-sm btn-quiet hit px-2 disabled:opacity-20"
                 disabled={isToday}
                 onClick={() => go(1)}
                 aria-label="Next day"

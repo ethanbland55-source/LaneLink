@@ -468,7 +468,7 @@ function Line({
           </span>
         ) : (
           <button
-            className="text-[0.68rem] text-[#5b6270] underline decoration-dotted"
+            className="hit text-[0.68rem] text-[#5b6270] underline decoration-dotted"
             onClick={() => setEditing(true)}
           >
             {line.haveGrams > 0 ? "change what I have in" : "I already have some"}

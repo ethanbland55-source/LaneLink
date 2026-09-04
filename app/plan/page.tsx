@@ -285,6 +285,16 @@ export default function PlanPage() {
   }, [meals, dayTypes.length]);
   const weekDiff = Math.round(weekAvg.planned.kcal - weekAvg.target.kcal);
   const weekOff = Math.abs(weekDiff) > Math.max(20, weekAvg.target.kcal * 0.01);
+  /**
+   * Nothing on the plate yet.
+   *
+   * Worth its own branch rather than letting the ordinary card render zeroes.
+   * A new account was met with a 3.25rem "0" and "-2,965 a day" in warning
+   * orange — the layout for a plan that is catastrophically off, shown to
+   * someone whose only crime is not having typed any food in yet. It reads as
+   * a fault to fix rather than a form to fill.
+   */
+  const nothingPlanned = meals.every((m) => m.ingredients.length === 0);
 
   // The weekly roll moves the targets on shopping day; it does not touch the
   // portions, so say which of the two moved rather than leaving a bare number.
@@ -886,7 +896,10 @@ export default function PlanPage() {
               <div className="mt-2.5 space-y-1.5">
                 {snapshots.slice(0, 3).map((sn) => (
                   <div key={sn.id} className="flex items-center gap-3">
-                    <span className="mr-auto min-w-0 truncate text-xs text-[var(--color-mut)]">
+                    {/* Wraps rather than truncating: the date is the half that
+                        tells you which one this is, and it was the half the
+                        ellipsis was eating. */}
+                    <span className="mr-auto min-w-0 text-xs leading-snug text-[var(--color-mut)]">
                       Before the {sn.reason} on{" "}
                       {new Date(sn.changed_on + "T12:00:00").toLocaleDateString(undefined, {
                         weekday: "short",
@@ -961,6 +974,30 @@ export default function PlanPage() {
       {/* The week — what each kind of day should be, and what it is */}
       <section className="card px-5 py-6">
         <p className="label">Your week, on average</p>
+
+        {nothingPlanned ? (
+          <>
+            <p className="mt-2 text-sm text-[var(--color-mut)]">
+              Your days are worked out. Add the food you actually eat below and this fills in.
+            </p>
+            <div className="mt-4 space-y-1.5">
+              {standing
+                .filter((d) => d.days > 0)
+                .map((d) => (
+                  <div key={d.id} className="flex items-baseline gap-2 text-sm">
+                    <span className="min-w-0 flex-1 truncate">{d.name}</span>
+                    <span className="shrink-0 text-xs text-[var(--color-mut)]">
+                      {d.days === 1 ? "1 day" : `${d.days} days`}
+                    </span>
+                    <span className="num w-16 shrink-0 text-right text-sm">
+                      {Math.round(d.target.kcal).toLocaleString()}
+                    </span>
+                  </div>
+                ))}
+            </div>
+          </>
+        ) : (
+          <>
         <div className="mt-2 flex flex-wrap items-baseline gap-x-3 gap-y-1">
           <p className="num-hero text-[3.25rem] sm:text-[4rem]">
             {Math.round(weekAvg.planned.kcal).toLocaleString()}
@@ -1005,6 +1042,8 @@ export default function PlanPage() {
               );
             })}
         </div>
+          </>
+        )}
 
         {unusedTypes.length > 0 && (
           <p className="mt-3 text-xs leading-relaxed text-[var(--color-mut)]">
@@ -1025,9 +1064,9 @@ export default function PlanPage() {
         )}
 
         <button
-          className={`${weekOff ? "btn btn-accent" : "btn"} mt-5 w-full`}
+          className={`${weekOff && !nothingPlanned ? "btn btn-accent" : "btn"} mt-5 w-full`}
           onClick={() => setShowRecalc(true)}
-          disabled={meals.every((m) => m.ingredients.length === 0)}
+          disabled={nothingPlanned}
         >
           Rebalance the week
         </button>

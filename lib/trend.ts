@@ -476,7 +476,7 @@ export function recompVerdict(rate: Rate | null, waist: ReturnType<typeof waistR
     return {
       headline: `Losing ${kg} kg a week — too fast for this`,
       detail:
-        "Past about 0.7% of bodyweight a week you start giving back lean mass, and in a training block you'll feel it in the pool before you see it anywhere else. Add a few hundred calories.",
+        "Past about 0.7% of bodyweight a week you start giving back lean mass, and in a training block you'll feel it in a session before you see it anywhere else. Add a few hundred calories.",
       tone: "watch",
     };
   }

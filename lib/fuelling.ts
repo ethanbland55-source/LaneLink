@@ -277,7 +277,7 @@ export function lossRate(p: Profile, plan: WeekPlan): RateVerdict {
       pctPerWeek: pct,
       kgPerWeek,
       verdict: "maintaining",
-      note: "Holding weight. Leanness has to come from training and protein, which is slower and keeps the swimming.",
+      note: "Holding weight. Leanness has to come from training and protein, which is slower and keeps the training.",
     };
   if (pct >= -LOSS_TARGET_PCT * 1.15)
     return {
@@ -401,7 +401,7 @@ export function proteinVerdict(grams: number, weightKg: number): ProteinVerdict 
     perKg,
     grams,
     verdict: "very_high",
-    note: "Past 2.4 g/kg. This is crowding out the carbohydrate the swimming runs on for a gain the evidence does not really show.",
+    note: "Past 2.4 g/kg. This is crowding out the carbohydrate the training runs on for a gain the evidence does not really show.",
   };
 }
 

@@ -63,7 +63,7 @@ export function SectionLabel({
             onClick={() => setOpen((v) => !v)}
             aria-expanded={open}
             aria-label={open ? "Hide the explanation" : "What is this?"}
-            className="inline-flex"
+            className="hit inline-flex"
           >
             <Mark open={open} />
           </button>
@@ -89,7 +89,7 @@ export function Note({ children, label }: { children: ReactNode; label?: string 
         type="button"
         onClick={() => setOpen((v) => !v)}
         aria-expanded={open}
-        className="mt-1.5 inline-flex items-center gap-1.5 text-[0.7rem] text-[#5b6270]"
+        className="hit mt-1.5 inline-flex items-center gap-1.5 text-[0.7rem] text-[#5b6270]"
       >
         <Mark open={open} />
         {label ?? "Why"}

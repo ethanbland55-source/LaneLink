@@ -227,6 +227,14 @@ body {
   font-size: 0.8rem;
 }
 
+/* A range input is 16px of track, which is a fiddly thing to drag on a phone.
+   The track stays thin — the browser centres it — and the element gets a
+   thumb's worth of height to grab it by. */
+input[type="range"] {
+  height: 40px;
+  touch-action: pan-y;
+}
+
 input[type="number"]::-webkit-outer-spin-button,
 input[type="number"]::-webkit-inner-spin-button {
   -webkit-appearance: none;
@@ -234,6 +242,25 @@ input[type="number"]::-webkit-inner-spin-button {
 }
 input[type="number"] {
   -moz-appearance: textfield;
+}
+
+/* A small control still needs a thumb-sized target.
+   The visual size is the design — a 26px tick reads better in a list than a
+   44px one — but the thing you actually hit should be 44px, which is the
+   width of an adult thumb and the figure every platform guideline lands on.
+   A centred pseudo-element does that without touching layout, so nothing
+   moves and nothing else has to know. */
+.hit {
+  position: relative;
+}
+.hit::after {
+  content: "";
+  position: absolute;
+  top: 50%;
+  left: 50%;
+  width: max(100%, 44px);
+  height: max(100%, 44px);
+  transform: translate(-50%, -50%);
 }
 
 /* Checkbox that reads at arm's length in a supermarket aisle. */
@@ -250,6 +277,18 @@ input[type="number"] {
   cursor: pointer;
   background: #0e1013;
   touch-action: manipulation;
+  /* See .hit — 26px to look at, 44px to hit. The rows these sit in are 40px
+     apart, so the expanded targets never reach each other. */
+  position: relative;
+}
+.tick::after {
+  content: "";
+  position: absolute;
+  top: 50%;
+  left: 50%;
+  width: 44px;
+  height: 44px;
+  transform: translate(-50%, -50%);
 }
 .tick[data-on="true"] {
   background: var(--color-accent);

@@ -167,20 +167,51 @@ export async function renameAccount(userId: number, displayName: unknown): Promi
 const SEED_DAY_TYPES: { name: string; sessions: unknown[] }[] = [
   { name: "Rest", sessions: [] },
   {
+    // Deliberately the generic sport rather than a swim. This app was written
+    // for a swimmer, and seeding "Swim — main set, 90 min" for someone who
+    // signed up to track their running would be the app telling them what
+    // they do. `sport` at a moderate level reads as "Training, 60 min", which
+    // is a starting point rather than an assumption; the picker has swim,
+    // run, cycle and the rest for when they say what it actually is.
     name: "Training",
-    sessions: [{ activity: "swim", level: "moderate", met: 8.3, minutes: 90 }],
+    sessions: [{ activity: "sport", level: "moderate", met: 7, minutes: 60 }],
   },
   {
     name: "Training + gym",
     sessions: [
-      { activity: "swim", level: "moderate", met: 8.3, minutes: 90 },
+      { activity: "sport", level: "moderate", met: 7, minutes: 60 },
       { activity: "gym", level: "moderate", met: 5, minutes: 45 },
     ],
   },
 ];
 
 export async function seedAccount(userId: number): Promise<void> {
-  await sql`insert into profile (id) values (${userId}) on conflict (id) do nothing`;
+  /**
+   * Maintenance, not cutting.
+   *
+   * The `goal` column defaults to 'cut', which is what this app was for on the
+   * day it was written — and 'cut' means twenty per cent below maintenance. So
+   * a new account that never opened the settings was silently on an aggressive
+   * deficit, with nothing on screen saying it had chosen that for them. A
+   * default that makes a decision this size on someone's behalf is a bug, not
+   * a default. Maintenance is the honest answer to a question nobody asked
+   * yet, and it is one tap to change.
+   */
+  /**
+   * Fat at 0.9 g/kg rather than the 0.8 the goal suggests.
+   *
+   * Protein and fat lean toward the days that earn them, so a rest day gets a
+   * shade less fat than the average — and at 0.8 that lands the lightest day
+   * at 18% of calories, under the 20% floor the app itself warns about. A new
+   * account would open on a plan it was already complaining about, which reads
+   * as the app being broken rather than as advice. 0.9 keeps every day inside
+   * the 20–35% guidance, and is still a modest amount of fat.
+   */
+  await sql`
+    insert into profile (id, goal, protein_basis, protein_per_kg, fat_per_kg,
+                         phase_start_adjust, phase_end_adjust)
+    values (${userId}, 'maintain', 'bodyweight', 2.0, 0.9, 0, 0)
+    on conflict (id) do nothing`;
 
   const existing = (await sql`
     select id from day_types where user_id = ${userId} limit 1`) as any[];

@@ -1,6 +1,6 @@
 "use client";
 
-import { Suspense, useState } from "react";
+import { Suspense, useRef, useState } from "react";
 import { useSearchParams } from "next/navigation";
 
 /**
@@ -30,18 +30,46 @@ function SignIn() {
   const params = useSearchParams();
   const next = params.get("next") || "/";
 
+  const formRef = useRef<HTMLFormElement>(null);
   const [mode, setMode] = useState<Mode>("in");
-  const [user, setUser] = useState("");
-  const [password, setPassword] = useState("");
-  const [displayName, setDisplayName] = useState("");
+  /** Carried across a swap so typing your name twice isn't the price of it. */
+  const [keepUser, setKeepUser] = useState("");
+  const [reveal, setReveal] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
   const [engaged, setEngaged] = useState(false);
 
   const joining = mode === "new";
 
-  async function submit(e: React.FormEvent) {
+  /**
+   * The fields are uncontrolled, and that is the fix rather than a shortcut.
+   *
+   * This is what made signing up look broken. They were controlled inputs, so
+   * `password` only updated when React saw a change event — and most of the
+   * things that fill a password field on a phone never fire one. iOS Safari's
+   * strong-password suggestion, 1Password, Chrome's saved logins: they write
+   * straight to the DOM node. React's state stayed empty, and then the next
+   * render helpfully wrote that empty string back over the field. So you
+   * watched a password appear, pressed the button, and were told your password
+   * was too short. Nothing on screen could explain it.
+   *
+   * Letting the DOM own the value removes the whole class of problem instead
+   * of patching the one symptom, and the form is read at the moment of submit.
+   * Swapping between signing in and joining remounts the form — that's what
+   * the `key` is for — which clears the password and keeps the username.
+   */
+  async function submit(e: React.FormEvent<HTMLFormElement>) {
     e.preventDefault();
+    const data = new FormData(e.currentTarget);
+    const typedUser = String(data.get("user") ?? "").trim();
+    const typedPassword = String(data.get("password") ?? "");
+    const typedName = String(data.get("display_name") ?? "").trim();
+
+    if (!typedUser || !typedPassword) {
+      setError("Fill both boxes in.");
+      return;
+    }
+
     setBusy(true);
     setError(null);
     try {
@@ -50,8 +78,13 @@ function SignIn() {
         headers: { "content-type": "application/json" },
         body: JSON.stringify(
           joining
-            ? { action: "signup", user, password, display_name: displayName }
-            : { user, password }
+            ? {
+                action: "signup",
+                user: typedUser,
+                password: typedPassword,
+                display_name: typedName,
+              }
+            : { user: typedUser, password: typedPassword }
         ),
       });
       if (!res.ok) {
@@ -71,9 +104,11 @@ function SignIn() {
   }
 
   function swap(to: Mode) {
+    const data = formRef.current ? new FormData(formRef.current) : null;
+    setKeepUser(String(data?.get("user") ?? "").trim());
     setMode(to);
     setError(null);
-    setPassword("");
+    setReveal(false);
   }
 
   return (
@@ -109,16 +144,21 @@ function SignIn() {
             {joining ? "Your own plan, your own numbers" : "Sign in to your plan"}
           </p>
 
-          <form className="mt-6 space-y-3" onSubmit={submit} onFocus={() => setEngaged(true)}>
+          <form
+            key={mode}
+            ref={formRef}
+            className="mt-6 space-y-3"
+            onSubmit={submit}
+            onFocus={() => setEngaged(true)}
+          >
             {joining && (
               <label className="block">
                 <span className="mb-1.5 block text-xs text-[var(--color-mut)]">Your name</span>
                 <input
+                  name="display_name"
                   className="field w-full"
                   autoComplete="name"
                   placeholder="What you'd like to be called"
-                  value={displayName}
-                  onChange={(e) => setDisplayName(e.target.value)}
                 />
               </label>
             )}
@@ -126,25 +166,48 @@ function SignIn() {
             <label className="block">
               <span className="mb-1.5 block text-xs text-[var(--color-mut)]">Username</span>
               <input
+                name="user"
                 className="field w-full"
                 autoComplete="username"
                 autoCapitalize="none"
+                autoCorrect="off"
                 spellCheck={false}
-                value={user}
-                onChange={(e) => setUser(e.target.value)}
+                required
+                defaultValue={keepUser}
               />
             </label>
 
-            <label className="block">
-              <span className="mb-1.5 block text-xs text-[var(--color-mut)]">Password</span>
+            {/* The header sits outside the label rather than inside it, so
+                that tapping Show toggles the field instead of being forwarded
+                to it as a label click. */}
+            <div className="block">
+              <div className="mb-1.5 flex items-baseline gap-2 text-xs text-[var(--color-mut)]">
+                <label htmlFor="mh-password">Password</label>
+                {joining && <span className="text-[#5b6270]">8 characters or more</span>}
+                {/* Reading back what you typed matters more here than anywhere
+                    else in the app: it is the one field you cannot see, on the
+                    one screen where getting it wrong locks you out. */}
+                <button
+                  type="button"
+                  className="ml-auto text-[0.7rem] text-[var(--color-mut)] underline decoration-dotted underline-offset-2"
+                  onClick={() => setReveal((v) => !v)}
+                >
+                  {reveal ? "Hide" : "Show"}
+                </button>
+              </div>
               <input
+                id="mh-password"
+                name="password"
                 className="field w-full"
-                type="password"
+                type={reveal ? "text" : "password"}
                 autoComplete={joining ? "new-password" : "current-password"}
-                value={password}
-                onChange={(e) => setPassword(e.target.value)}
+                autoCapitalize="none"
+                autoCorrect="off"
+                spellCheck={false}
+                required
+                minLength={joining ? 8 : undefined}
               />
-            </label>
+            </div>
 
             {error && (
               <p role="alert" className="text-xs" style={{ color: "var(--color-fat)" }}>

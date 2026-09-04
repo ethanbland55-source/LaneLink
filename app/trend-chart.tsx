@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 
 export type ChartPoint = { day: string; value: number | null; trend: number };
 
@@ -27,19 +27,42 @@ export function TrendChart({
   decimals?: number;
   height?: number;
 }) {
-  const wrap = useRef<HTMLDivElement>(null);
-  const [width, setWidth] = useState(640);
+  /**
+   * A callback ref, not `useRef` plus an effect, and it matters.
+   *
+   * This component returns a different element while it is waiting for enough
+   * readings to draw a line. The observer was set up in an effect with an
+   * empty dependency list, so on a page that starts empty and fills in — which
+   * is every page here, the data arrives over fetch — the effect ran once
+   * against the placeholder, found no node to watch, and returned. The chart
+   * mounted afterwards with nothing observing it, so the width stayed at
+   * whatever it was initialised to for the life of the page.
+   *
+   * That is why the Progress page hung 300 pixels off the side of a phone: a
+   * 640px chart in a 303px card, quietly, only once you had weighed in enough
+   * times for the chart to exist at all.
+   *
+   * A callback ref runs whenever the node changes — placeholder to chart and
+   * back — so the observer follows the element instead of a moment in time.
+   */
+  const [width, setWidth] = useState(320);
   const [hover, setHover] = useState<number | null>(null);
+  const observer = useRef<ResizeObserver | null>(null);
 
   // Render at real pixel size rather than scaling a viewBox, so the labels
   // stay the size they were designed at.
-  useEffect(() => {
-    const el = wrap.current;
+  const wrap = useCallback((el: HTMLDivElement | null) => {
+    observer.current?.disconnect();
+    observer.current = null;
     if (!el) return;
+    const now = el.getBoundingClientRect().width;
+    if (now > 0) setWidth(Math.max(240, now));
     const ro = new ResizeObserver(([e]) => setWidth(Math.max(240, e.contentRect.width)));
     ro.observe(el);
-    return () => ro.disconnect();
+    observer.current = ro;
   }, []);
+
+  useEffect(() => () => observer.current?.disconnect(), []);
 
   const pad = { top: 10, right: 54, bottom: 22, left: 8 };
 
@@ -69,7 +92,7 @@ export function TrendChart({
 
   if (!geo) {
     return (
-      <div className="sunk flex items-center justify-center px-4" style={{ height }}>
+      <div ref={wrap} className="sunk flex items-center justify-center px-4" style={{ height }}>
         <p className="text-xs text-[var(--color-mut)]">
           A couple of weeks of readings and the trend appears here.
         </p>
@@ -82,7 +105,7 @@ export function TrendChart({
   const fmt = (v: number) => v.toFixed(decimals);
 
   return (
-    <div ref={wrap} className="relative w-full">
+    <div ref={wrap} className="relative w-full max-w-full overflow-hidden">
       <svg
         width={width}
         height={height}

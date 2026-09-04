@@ -26,7 +26,12 @@ export function Nav() {
       .then((r) => r.json())
       .then((d) => {
         if (live && d?.me) {
-          setMe({ name: String(d.me.display_name), shared: (d.others ?? 0) > 0 });
+          // First name only. The header is a brand, four tabs and a sign-out
+          // icon on a 375px phone; a full name has about seventy pixels to
+          // live in and "Rowan Ellis" became "Rowa…", which reads as a bug
+          // rather than as a name.
+          const full = String(d.me.display_name).trim();
+          setMe({ name: full.split(/\s+/)[0] || full, shared: (d.others ?? 0) > 0 });
         }
       })
       .catch(() => {});
@@ -78,7 +83,7 @@ export function Nav() {
       <button
         title="Sign out"
         aria-label="Sign out"
-        className="shrink-0 rounded-full p-1.5 text-[#4a505c] transition hover:text-[var(--color-fat)]"
+        className="hit shrink-0 rounded-full p-1.5 text-[#4a505c] transition hover:text-[var(--color-fat)]"
         onClick={async () => {
           await fetch("/api/auth", { method: "DELETE" });
           window.location.href = "/login";
