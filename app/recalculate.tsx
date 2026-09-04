@@ -16,6 +16,7 @@ import {
 import { smartBounds, VOLUME_FOODS } from "@/lib/foods";
 import { dayVolume, fillerSuggestions, volumeHeadline } from "@/lib/prep";
 import { servingGrams, type PlanMeal } from "@/lib/batch";
+import { Note } from "./explain";
 import { appliesOn, fitWeek, mealGroups, repsOf } from "@/lib/weekfit";
 import type { WeekPlan } from "@/lib/nutrition";
 import type { Supplement } from "@/lib/supplements";
@@ -481,11 +482,11 @@ export function RecalculateDialog({
                     { value: "free", label: "Best fit" },
                   ]}
                 />
-                <p className="mt-2 text-xs leading-relaxed text-[var(--color-mut)]">
+                <Note>
                   {drift === "keep_close"
                     ? "Spreads a change over everything instead of taking it all out of one thing. Slightly less exact on paper, much more like the food you already buy."
                     : "Ignores what the plan looks like now and fits the targets outright. Right for a plan you are building from scratch, blunt for one you are adjusting."}
-                </p>
+                </Note>
 
                 {movement.length > 0 && (
                   <div className="mt-3 rounded-lg bg-[var(--color-surface)] px-3 py-2.5">
@@ -520,12 +521,12 @@ export function RecalculateDialog({
 
           {tab === "splits" && (
             <div className="space-y-4 pb-2">
-              <p className="text-xs leading-relaxed text-[var(--color-mut)]">
-                This is plan-building. Nothing in the day&rsquo;s targets says how to divide meals
-                that always appear together, so these say what you want and the fit holds it.
-                Figures are shares of the <b>calories</b>. It shapes the plan you cook to — logging
-                what you ate is untouched by any of it.
-              </p>
+              <Note label="What these do">
+                Nothing in the day&rsquo;s targets says how to divide meals that always appear
+                together, so these say what you want and the fit holds it. Figures are shares of
+                the <b>calories</b>. It shapes the plan you cook to — logging what you ate is
+                untouched by any of it.
+              </Note>
 
               {/* Between meals that come and go together */}
               {groups.map((g) => (
@@ -559,11 +560,11 @@ export function RecalculateDialog({
               {/* Inside one meal — opt in, because most meals aren't like that */}
               <div className="sunk px-4 py-3.5">
                 <p className="text-xs font-semibold text-[var(--color-mut)]">Inside a meal</p>
-                <p className="mt-1.5 text-[0.7rem] leading-relaxed text-[var(--color-mut)]">
+                <Note>
                   Some meals you balance deliberately — a yoghurt bowl you want half yoghurt rather
                   than half granola. Most you don&rsquo;t: chicken and rice is a recipe, not a
                   ratio. Open one only if it&rsquo;s the first kind.
-                </p>
+                </Note>
 
                 <div className="mt-3 flex flex-wrap gap-1.5">
                   {draft
@@ -726,11 +727,8 @@ export function RecalculateDialog({
         {/* Footer */}
         <div className="safe-b shrink-0 border-t border-[#1c1f25] px-5 pt-3">
           {applyOn && (
-            <p className="mb-2.5 text-xs leading-relaxed text-[var(--color-mut)]">
-              You are part-way through a week you have already shopped for and cooked. Staging
-              writes this to <b className="text-[var(--color-fg)]">{prettyDay(applyOn)}</b> — the
-              shopping list starts buying for it straight away, and the plan changes the morning
-              you start eating it.
+            <p className="mb-2.5 text-xs text-[var(--color-mut)]">
+              Staged for <b className="text-[var(--color-fg)]">{prettyDay(applyOn)}</b>.
             </p>
           )}
           <div className="flex gap-2">
@@ -1190,11 +1188,11 @@ function PrepGuide({
       <div className="sunk px-4 py-3.5">
         <p className="label">How much food this actually is</p>
         <p className="mt-2 text-sm leading-relaxed">{volumeHeadline(volume)}</p>
-        <p className="mt-2 text-xs leading-relaxed text-[var(--color-mut)]">
+        <Note>
           Energy density is the number that decides whether a day fills you up. Under about
           150 kcal per 100 g you&rsquo;ll finish the day full; over 250 and you&rsquo;ll be hungry
           on the same calories.
-        </p>
+        </Note>
       </div>
 
       {volume.meals.map((m) => (

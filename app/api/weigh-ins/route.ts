@@ -1,5 +1,6 @@
 import { NextResponse } from "next/server";
 import { sql, ensureSchema } from "@/lib/db";
+import { requireUser } from "@/lib/session";
 import {
   DEFAULT_WAIST_RISE_PER_HOUR,
   TAG_HOUR,
@@ -71,13 +72,16 @@ function row(r: any) {
 
 export async function GET(req: Request) {
   await ensureSchema();
+  const who = await requireUser();
+  if ("res" in who) return who.res;
+
   const days = Math.min(365, Math.max(7, Number(new URL(req.url).searchParams.get("days")) || 120));
   const rows = await sql`
     select to_char(day, 'YYYY-MM-DD') as day, weight_kg, waist_cm, tag, at_time,
            neck_cm, hip_cm, sf_chest, sf_abdomen, sf_thigh, sf_tricep,
            sf_suprailiac, bf_pct, bf_method, note
     from weigh_ins
-    where day > current_date - ${days}::int
+    where user_id = ${who.id} and day > current_date - ${days}::int
     order by day`;
   return NextResponse.json(rows.map(row));
 }
@@ -91,6 +95,9 @@ export async function GET(req: Request) {
  */
 export async function PUT(req: Request) {
   await ensureSchema();
+  const who = await requireUser();
+  if ("res" in who) return who.res;
+
   const b = await req.json();
   const day = String(b?.day ?? "").slice(0, 10);
   if (!/^\d{4}-\d{2}-\d{2}$/.test(day)) {
@@ -108,13 +115,14 @@ export async function PUT(req: Request) {
 
   const anything = w != null || Object.values(m).some((v) => v != null);
   if (!anything) {
-    await sql`delete from weigh_ins where day = ${day}`;
+    await sql`delete from weigh_ins where user_id = ${who.id} and day = ${day}`;
     return NextResponse.json({ ok: true, removed: true });
   }
 
   // --- Body fat, from whichever measurements are actually here -------------
   const prof = (await sql`
-    select sex, dob, height_cm, weight_kg, neck_cm, hip_cm from profile where id = 1`) as any[];
+    select sex, dob, height_cm, weight_kg, neck_cm, hip_cm
+      from profile where id = ${who.id}`) as any[];
   const p = prof[0] ?? {};
   const sex = p.sex === "female" ? "female" : "male";
   const weightForBf = w ?? (Number(p.weight_kg) || 0);
@@ -171,12 +179,12 @@ export async function PUT(req: Request) {
 
   const rows = await sql`
     insert into weigh_ins
-      (day, weight_kg, waist_cm, tag, at_time, neck_cm, hip_cm, sf_chest,
+      (user_id, day, weight_kg, waist_cm, tag, at_time, neck_cm, hip_cm, sf_chest,
        sf_abdomen, sf_thigh, sf_tricep, sf_suprailiac, bf_pct, bf_method, note)
-    values (${day}, ${w}, ${m.waist_cm}, ${tag}, ${at}, ${m.neck_cm}, ${m.hip_cm},
+    values (${who.id}, ${day}, ${w}, ${m.waist_cm}, ${tag}, ${at}, ${m.neck_cm}, ${m.hip_cm},
             ${m.sf_chest}, ${m.sf_abdomen}, ${m.sf_thigh}, ${m.sf_tricep},
             ${m.sf_suprailiac}, ${bfPct}, ${bfMethod}, ${b?.note ?? null})
-    on conflict (day) do update set
+    on conflict (user_id, day) do update set
       weight_kg = ${w}, waist_cm = ${m.waist_cm}, tag = ${tag}, at_time = ${at},
       neck_cm = ${m.neck_cm}, hip_cm = ${m.hip_cm}, sf_chest = ${m.sf_chest},
       sf_abdomen = ${m.sf_abdomen}, sf_thigh = ${m.sf_thigh},
@@ -195,16 +203,17 @@ export async function PUT(req: Request) {
     const corrected = m.waist_cm - riseAt(hours, DEFAULT_WAIST_RISE_PER_HOUR);
     await sql`
       update profile set waist_cm = ${corrected}
-      where id = 1
+      where id = ${who.id}
         and not exists (
-          select 1 from weigh_ins where waist_cm is not null and day > ${day}::date
+          select 1 from weigh_ins
+           where user_id = ${who.id} and waist_cm is not null and day > ${day}::date
         )`;
   }
   if (m.neck_cm != null) {
-    await sql`update profile set neck_cm = ${m.neck_cm} where id = 1`;
+    await sql`update profile set neck_cm = ${m.neck_cm} where id = ${who.id}`;
   }
   if (m.hip_cm != null) {
-    await sql`update profile set hip_cm = ${m.hip_cm} where id = 1`;
+    await sql`update profile set hip_cm = ${m.hip_cm} where id = ${who.id}`;
   }
   // Deliberately not touching profile.bf_source or body_fat_pct. The figure
   // the plan uses comes from the latest weigh-in that has one, via the weekly

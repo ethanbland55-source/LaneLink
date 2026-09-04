@@ -88,9 +88,9 @@ export function applyDayFor(rollDow: number, today: string = dayKey()): string {
  * through. Only ever called when something is genuinely staged for tomorrow,
  * so it costs nothing on the other three hundred days of the year.
  */
-async function dayIsDoneBeforeRoll(day: string): Promise<boolean> {
+async function dayIsDoneBeforeRoll(userId: number, day: string): Promise<boolean> {
   const rows = (await sql`
-    select plan_roll_dow, shop_start_dow, week_ids from profile where id = 1`) as any[];
+    select plan_roll_dow, shop_start_dow, week_ids from profile where id = ${userId}`) as any[];
   const p = rows[0];
   if (!p) return false;
 
@@ -106,14 +106,17 @@ async function dayIsDoneBeforeRoll(day: string): Promise<boolean> {
   const [menu] = (await sql`
     select count(*)::int as n
       from meals
-     where coalesce(array_length(day_type_ids, 1), 0) = 0
-        or ${dayTypeId} = any(day_type_ids)
-        or array_length(day_type_ids, 1) >= (select count(*) from day_types)`) as any[];
+     where user_id = ${userId}
+       and (coalesce(array_length(day_type_ids, 1), 0) = 0
+            or ${dayTypeId} = any(day_type_ids)
+            or array_length(day_type_ids, 1)
+               >= (select count(*) from day_types where user_id = ${userId}))`) as any[];
 
   const [done] = (await sql`
     select count(distinct meal_id)::int as n
       from log_entries
-     where day = ${day}::date and confirmed and meal_id is not null`) as any[];
+     where user_id = ${userId}
+       and day = ${day}::date and confirmed and meal_id is not null`) as any[];
 
   const need = Number(menu?.n ?? 0);
   return need > 0 && Number(done?.n ?? 0) >= need;
@@ -132,27 +135,27 @@ async function dayIsDoneBeforeRoll(day: string): Promise<boolean> {
  *
  * Returns how many portions changed, which the caller may ignore.
  */
-export async function applyDuePortions(today?: string): Promise<number> {
+export async function applyDuePortions(userId: number, today?: string): Promise<number> {
   try {
     const day = today ?? dayKey();
     const soon = (await sql`
       select meal_id, slot, name, grams, to_char(apply_on, 'YYYY-MM-DD') as apply_on
         from pending_portions
-       where apply_on <= ${day}::date + 1`) as any[];
+       where user_id = ${userId} and apply_on <= ${day}::date + 1`) as any[];
     if (!soon.length) return 0;
 
     const ready = soon.filter((r) => String(r.apply_on) <= day);
     const tomorrow = soon.filter((r) => String(r.apply_on) > day);
 
     const due =
-      tomorrow.length && (await dayIsDoneBeforeRoll(day)) ? soon : ready;
+      tomorrow.length && (await dayIsDoneBeforeRoll(userId, day)) ? soon : ready;
     if (!due.length) return 0;
 
     // Everything up to and including the latest date being applied.
     const cutoff = due.reduce((a, r) => (String(r.apply_on) > a ? String(r.apply_on) : a), day);
 
     // What they were, before they stop being what they were.
-    await snapshot("staged change", day);
+    await snapshot(userId, "staged change", day);
 
     const rows = (await sql`
       with moved as (
@@ -166,12 +169,15 @@ export async function applyDuePortions(today?: string): Promise<number> {
               grams: Number(d.grams),
             }))
           )}::jsonb) as t(meal_id int, slot int, name text, grams numeric)) v
-         where i.meal_id = v.meal_id and i.sort_order = v.slot and i.name = v.name
+         where i.user_id = ${userId}
+           and i.meal_id = v.meal_id and i.sort_order = v.slot and i.name = v.name
         returning i.id
       )
       select count(*)::int as n from moved`) as any[];
 
-    await sql`delete from pending_portions where apply_on <= ${cutoff}::date`;
+    await sql`
+      delete from pending_portions
+       where user_id = ${userId} and apply_on <= ${cutoff}::date`;
     return Number(rows[0]?.n ?? 0);
   } catch (e) {
     // A page that can't apply a staged change should still render the plan it
@@ -182,7 +188,7 @@ export async function applyDuePortions(today?: string): Promise<number> {
 }
 
 /** Everything still waiting, in plan order, with the names to show it. */
-export async function listPending(): Promise<PendingPortion[]> {
+export async function listPending(userId: number): Promise<PendingPortion[]> {
   const rows = (await sql`
     select p.meal_id,
            p.slot,
@@ -195,6 +201,7 @@ export async function listPending(): Promise<PendingPortion[]> {
            m.name as meal_name
       from pending_portions p
       join meals m on m.id = p.meal_id
+     where p.user_id = ${userId}
      order by m.sort_order, m.id, p.slot`) as any[];
 
   return rows.map((r) => ({
@@ -221,11 +228,12 @@ export type StageRow = { meal_id: number; slot: number; name: string; grams: num
  * dropped, so the "12 changes pending" count means twelve real changes.
  */
 export async function stagePortions(
+  userId: number,
   rows: StageRow[],
   applyOn: string,
   note?: string
 ): Promise<number> {
-  await sql`delete from pending_portions`;
+  await sql`delete from pending_portions where user_id = ${userId}`;
 
   const wanted = rows.filter(
     (r) =>
@@ -242,8 +250,8 @@ export async function stagePortions(
   // so that a stale tab cannot stage a change against a meal that has since
   // been edited out from under it.
   const inserted = (await sql`
-    insert into pending_portions (meal_id, slot, name, grams, was_grams, apply_on, note)
-    select v.meal_id, v.slot, v.name, v.grams, i.grams, ${applyOn}::date, ${note ?? null}
+    insert into pending_portions (user_id, meal_id, slot, name, grams, was_grams, apply_on, note)
+    select ${userId}, v.meal_id, v.slot, v.name, v.grams, i.grams, ${applyOn}::date, ${note ?? null}
       from (select * from jsonb_to_recordset(${JSON.stringify(
         wanted.map((r) => ({
           meal_id: Number(r.meal_id),
@@ -254,7 +262,7 @@ export async function stagePortions(
       )}::jsonb) as t(meal_id int, slot int, name text, grams numeric)) v
       join ingredients i
         on i.meal_id = v.meal_id and i.sort_order = v.slot and i.name = v.name
-     where abs(i.grams - v.grams) >= 0.5
+     where i.user_id = ${userId} and abs(i.grams - v.grams) >= 0.5
     on conflict (meal_id, slot) do update
       set name      = excluded.name,
           grams     = excluded.grams,
@@ -267,8 +275,8 @@ export async function stagePortions(
 }
 
 /** Throw away what's staged, leaving the live plan alone. */
-export async function discardPending(): Promise<void> {
-  await sql`delete from pending_portions`;
+export async function discardPending(userId: number): Promise<void> {
+  await sql`delete from pending_portions where user_id = ${userId}`;
 }
 
 /**

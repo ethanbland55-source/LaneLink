@@ -1,6 +1,8 @@
 import { NextResponse } from "next/server";
 import { sql, ensureSchema } from "@/lib/db";
+import { requireUser } from "@/lib/session";
 import { normaliseProfile } from "@/lib/profile";
+import { seedAccount } from "@/lib/accounts";
 import { applyRoll, rollState } from "@/lib/weekly";
 import { refitPlan, restagePlan } from "@/lib/refit";
 import { applyDayFor } from "@/lib/pending";
@@ -23,13 +25,13 @@ export const dynamic = "force-dynamic";
  * rebuilding a week's targets on one scale reading would be worse than leaving
  * last week's alone.
  */
-async function rollIfDue(p: Profile): Promise<Profile> {
+async function rollIfDue(userId: number, p: Profile): Promise<Profile> {
   if (!p.auto_roll) return p;
   try {
     const rows = (await sql`
       select to_char(day, 'YYYY-MM-DD') as day, weight_kg, waist_cm, tag, at_time, bf_pct
       from weigh_ins
-      where day > current_date - 180
+      where user_id = ${userId} and day > current_date - 180
       order by day`) as any[];
 
     const state = rollState(p, rows as WeighIn[]);
@@ -42,12 +44,12 @@ async function rollIfDue(p: Profile): Promise<Profile> {
         plan_bf_pct = ${next.plan_bf_pct},
         plan_updated_on = ${next.plan_updated_on},
         updated_at = now()
-      where id = 1`;
+      where id = ${userId}`;
 
     // Moving the targets without moving the plan leaves the two disagreeing,
     // and the gap only grows — so the roll re-fits the portions too, with the
     // same solver the Recalculate button uses.
-    await refitPlan(next, state.dueOn);
+    await refitPlan(userId, next, state.dueOn);
     return next;
   } catch (e) {
     // A failed roll must never take the page down — last week's numbers are a
@@ -68,25 +70,41 @@ async function rollIfDue(p: Profile): Promise<Profile> {
  */
 export async function GET() {
   await ensureSchema();
+  const who = await requireUser();
+  if ("res" in who) return who.res;
+
   const rows = await sql`
     select *,
            to_char(phase_start, 'YYYY-MM-DD') as phase_start,
            to_char(plan_updated_on, 'YYYY-MM-DD') as plan_updated_on,
            to_char(dob, 'YYYY-MM-DD') as dob
-    from profile where id = 1`;
-  const profile = normaliseProfile(rows[0] ?? {});
-  return NextResponse.json(await rollIfDue(profile));
+    from profile where id = ${who.id}`;
+
+  // A profile row is created with the account, but an account made before this
+  // route ever ran — or one whose seeding was interrupted — would otherwise
+  // land on a blank page with no way back.
+  if (!rows[0]) {
+    await seedAccount(who.id);
+    const made = await sql`select * from profile where id = ${who.id}`;
+    return NextResponse.json(normaliseProfile(made[0] ?? {}));
+  }
+
+  const profile = normaliseProfile(rows[0]);
+  return NextResponse.json(await rollIfDue(who.id, profile));
 }
 
 export async function PUT(req: Request) {
   await ensureSchema();
+  const who = await requireUser();
+  if ("res" in who) return who.res;
+
   // Normalise on the way in too, so a stale client can't write nonsense.
   const b = normaliseProfile(await req.json());
   const prev = (await sql`
     select *, to_char(plan_updated_on, 'YYYY-MM-DD') as plan_updated_on,
               to_char(phase_start, 'YYYY-MM-DD') as phase_start,
               to_char(dob, 'YYYY-MM-DD') as dob
-      from profile where id = 1`) as any[];
+      from profile where id = ${who.id}`) as any[];
   const before: string | null = prev[0]?.plan_updated_on ?? null;
   const targetsBefore = prev.length ? targetSignature(normaliseProfile(prev[0])) : null;
   const rows = await sql`
@@ -127,7 +145,7 @@ export async function PUT(req: Request) {
       auto_roll = ${b.auto_roll},
       periodise = ${b.periodise},
       updated_at = now()
-    where id = 1
+    where id = ${who.id}
     returning *,
               to_char(phase_start, 'YYYY-MM-DD') as phase_start,
               to_char(plan_updated_on, 'YYYY-MM-DD') as plan_updated_on,
@@ -144,7 +162,7 @@ export async function PUT(req: Request) {
    * stop, reachable only by pressing the button that says it is rolling.
    */
   if (before && next.plan_updated_on && next.plan_updated_on !== before) {
-    await refitPlan(next, next.plan_updated_on);
+    await refitPlan(who.id, next, next.plan_updated_on);
   }
 
   /**
@@ -156,7 +174,11 @@ export async function PUT(req: Request) {
    * question that had already changed.
    */
   if (targetsBefore && targetSignature(next) !== targetsBefore) {
-    await restagePlan(next, applyDayFor(next.plan_roll_dow ?? next.shop_start_dow, dayKey()));
+    await restagePlan(
+      who.id,
+      next,
+      applyDayFor(next.plan_roll_dow ?? next.shop_start_dow, dayKey())
+    );
   }
 
   return NextResponse.json(next);

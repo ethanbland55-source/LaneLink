@@ -23,6 +23,7 @@ import {
   type BfMethod,
 } from "@/lib/bodyfat";
 import { applyRoll, rollDelta, rollState } from "@/lib/weekly";
+import { Note } from "../explain";
 import {
   DEFAULT_RISE_PER_HOUR,
   calibrate,
@@ -377,11 +378,11 @@ export default function ProgressPage() {
           Save
         </button>
 
-        <p className="mt-3 text-xs leading-relaxed text-[var(--color-mut)]">
+        <Note label="Weighed at an odd time?">
           You don&rsquo;t have to weigh at the same time every day — say when you did and the
           reading is corrected to what it would have been first thing before it touches the trend.
           You gain about a kilo through the day and none of it is fat.
-        </p>
+        </Note>
 
         {offsets.measured ? (
           <p className="mt-2 text-xs leading-relaxed text-[#5b6270]">
@@ -472,12 +473,12 @@ export default function ProgressPage() {
                 sub={liveBf.error > 0 ? `±${liveBf.error} pts` : undefined}
               />
             </div>
-            <p className="mt-3 text-xs leading-relaxed text-[var(--color-mut)]">
+            <Note label="How accurate is this?">
               Worth ±{liveBf.error} points against a scan, but most of that error is a fixed offset
               for your build — so treat the percentage as approximate and the direction it moves as
               real. It also can&rsquo;t tell muscle from water: a smaller waist at the same weight
               reads as lean mass up whether or not any appeared.
-            </p>
+            </Note>
           </>
         ) : (
           <p className="mt-3 text-xs leading-relaxed" style={{ color: "var(--color-carbs)" }}>
@@ -509,11 +510,11 @@ export default function ProgressPage() {
           </p>
         </div>
 
-        <p className="mt-2 text-xs leading-relaxed text-[var(--color-mut)]">
+        <Note label="Where this figure comes from">
           {roll.current.fromSnapshot
             ? `Taken from your trend on ${prettyDay(roll.lastRolled ?? roll.dueOn)}. Every target, the shopping list and the cook list are built on this figure, and it holds still until ${prettyDay(roll.nextOn)} — so what you buy on shopping day is what you eat all week.`
             : `Your typed-in weight, until there are enough weigh-ins for a trend. From then on this updates itself every ${DOW_LABELS[profile.shop_start_dow]}.`}
-        </p>
+        </Note>
 
         {roll.due && roll.figures ? (
           <div className="mt-4 rounded-xl bg-[#2a2416] px-3.5 py-3">
@@ -623,13 +624,13 @@ export default function ProgressPage() {
               />
             </div>
 
-            <p className="mt-4 text-xs leading-relaxed text-[var(--color-mut)]">
+            <Note label="How this is worked out">
               Over the last {cal.days} days you ate {cal.intake.toLocaleString()} kcal a day on
               average across {cal.intakeDays} logged days, and the trend moved{" "}
               {cal.kgPerWeek >= 0 ? "+" : ""}
               {cal.kgPerWeek.toFixed(2)} kg a week. What you ate minus what you stored is what you
               burned — which is measured on you, rather than predicted from a population.
-            </p>
+            </Note>
 
             {cal.confidence === "low" && (
               <p className="mt-2 text-xs leading-relaxed" style={{ color: "var(--color-carbs)" }}>

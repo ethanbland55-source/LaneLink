@@ -921,6 +921,18 @@ export function carbCheck(p: Profile, plan: WeekPlan): CarbCheck[] {
     const band = carbBandFor(load);
     const lowGrams = Math.round(band.low * kg);
     const highGrams = Math.round(band.high * kg);
+    /**
+     * The bands are ranges of opinion, not thresholds.
+     *
+     * "6–10 g/kg" is a round number carrying no claim to single-gram accuracy,
+     * so treating 5.94 g/kg as under-fuelled and 6.00 as fine is false
+     * precision — and it is precision the app then shouts about on every load.
+     * A day sitting within a few per cent of the floor is at the floor.
+     *
+     * 5 % is about 23 g of carbohydrate at this bodyweight: a banana. Past
+     * that the gap is real and is still called what it is.
+     */
+    const shortOf = lowGrams * 0.95;
     return {
       dayTypeId: dt.id,
       name: dt.name,
@@ -933,7 +945,7 @@ export function carbCheck(p: Profile, plan: WeekPlan): CarbCheck[] {
       verdict:
         t.carbs > highGrams
           ? "over"
-          : t.carbs >= lowGrams
+          : t.carbs >= shortOf
             ? "in"
             : load >= 45
               ? "under_fuelled"

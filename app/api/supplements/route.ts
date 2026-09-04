@@ -1,5 +1,6 @@
 import { NextResponse } from "next/server";
 import { sql, ensureSchema } from "@/lib/db";
+import { requireUser } from "@/lib/session";
 import { TIMING_LABEL, type SuppTiming, type SuppUnit } from "@/lib/supplements";
 
 export const dynamic = "force-dynamic";
@@ -32,35 +33,45 @@ function row(r: any) {
 
 export async function GET() {
   await ensureSchema();
-  const rows = await sql`select * from supplements order by sort_order, id`;
+  const who = await requireUser();
+  if ("res" in who) return who.res;
+
+  const rows = await sql`
+    select * from supplements where user_id = ${who.id} order by sort_order, id`;
   return NextResponse.json(rows.map(row));
 }
 
 export async function POST(req: Request) {
   await ensureSchema();
+  const who = await requireUser();
+  if ("res" in who) return who.res;
+
   const b = await req.json();
   const rows = await sql`
     insert into supplements
-      (name, dose, unit, timing, times_per_day, kcal, protein, carbs, fat, note, sort_order)
-    values (${String(b?.name ?? "Supplement").slice(0, 60)}, ${num(b?.dose)},
+      (user_id, name, dose, unit, timing, times_per_day, kcal, protein, carbs, fat, note, sort_order)
+    values (${who.id}, ${String(b?.name ?? "Supplement").slice(0, 60)}, ${num(b?.dose)},
             ${UNITS.includes(b?.unit) ? b.unit : "g"},
             ${b?.timing in TIMING_LABEL ? b.timing : "anytime"},
             ${Math.max(1, num(b?.times_per_day, 1))},
             ${num(b?.kcal)}, ${num(b?.protein)}, ${num(b?.carbs)}, ${num(b?.fat)},
             ${b?.note ?? null},
-            coalesce((select max(sort_order) + 1 from supplements), 0))
+            coalesce((select max(sort_order) + 1 from supplements where user_id = ${who.id}), 0))
     returning *`;
   return NextResponse.json(row(rows[0]));
 }
 
 export async function PUT(req: Request) {
   await ensureSchema();
+  const who = await requireUser();
+  if ("res" in who) return who.res;
+
   const b = await req.json();
   const id = Number(b?.id);
   if (!Number.isFinite(id)) return NextResponse.json({ ok: false }, { status: 400 });
 
   // Day types that no longer exist are dropped here rather than left to rot.
-  const live = (await sql`select id from day_types`) as any[];
+  const live = (await sql`select id from day_types where user_id = ${who.id}`) as any[];
   const liveIds = new Set(live.map((r) => Number(r.id)));
   const picked: number[] = Array.isArray(b?.day_type_ids)
     ? [...new Set<number>(b.day_type_ids.map(Number).filter((n: number) => liveIds.has(n)))]
@@ -76,7 +87,9 @@ export async function PUT(req: Request) {
       dose = ${num(b?.dose)},
       unit = ${UNITS.includes(b?.unit) ? b.unit : "g"},
       timing = ${b?.timing in TIMING_LABEL ? b.timing : "anytime"},
-      meal_id = ${Number.isFinite(mealId) && mealId > 0 ? mealId : null},
+      meal_id = (select id from meals
+                  where id = ${Number.isFinite(mealId) && mealId > 0 ? mealId : null}
+                    and user_id = ${who.id}),
       day_type_ids = ${types}::int[],
       times_per_day = ${Math.max(1, num(b?.times_per_day, 1))},
       kcal = ${num(b?.kcal)},
@@ -84,14 +97,18 @@ export async function PUT(req: Request) {
       carbs = ${num(b?.carbs)},
       fat = ${num(b?.fat)},
       note = ${b?.note ?? null}
-    where id = ${id}
+    where id = ${id} and user_id = ${who.id}
     returning *`;
+  if (!rows[0]) return NextResponse.json({ ok: false }, { status: 404 });
   return NextResponse.json(row(rows[0]));
 }
 
 export async function DELETE(req: Request) {
   await ensureSchema();
+  const who = await requireUser();
+  if ("res" in who) return who.res;
+
   const id = Number(new URL(req.url).searchParams.get("id"));
-  await sql`delete from supplements where id = ${id}`;
+  await sql`delete from supplements where id = ${id} and user_id = ${who.id}`;
   return NextResponse.json({ ok: true });
 }

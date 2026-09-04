@@ -1,5 +1,6 @@
 import { NextResponse } from "next/server";
 import { sql, ensureSchema } from "@/lib/db";
+import { requireUser } from "@/lib/session";
 
 export const dynamic = "force-dynamic";
 
@@ -9,13 +10,16 @@ export const dynamic = "force-dynamic";
  */
 export async function GET(req: Request) {
   await ensureSchema();
+  const who = await requireUser();
+  if ("res" in who) return who.res;
+
   const days = Math.min(365, Math.max(7, Number(new URL(req.url).searchParams.get("days")) || 90));
   const rows = await sql`
     select to_char(day, 'YYYY-MM-DD') as day,
            sum(kcal)    as kcal,
            sum(protein) as protein
     from log_entries
-    where confirmed = true and day > current_date - ${days}::int
+    where user_id = ${who.id} and confirmed = true and day > current_date - ${days}::int
     group by day
     order by day`;
   return NextResponse.json(

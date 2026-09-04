@@ -636,15 +636,22 @@ export default function TodayPage() {
                         {done ? "✓" : "+"}
                       </span>
                       <span className="min-w-0 flex-1">
-                        <span className="block truncate text-sm font-semibold">{m.name}</span>
+                        <span className="block truncate text-sm font-semibold">
+                          {m.name}
+                          {/* On the name line, not the macro line: that one is
+                              already four numbers wide and truncates on a
+                              phone, which turned "out of the fridge" into
+                              "out of the f…". */}
+                          {(m.batch || hasPrepped(m as any)) && (
+                            <span className="ml-1.5 text-[0.68rem] font-medium text-[#5b6270]">
+                              cooked ahead
+                            </span>
+                          )}
+                        </span>
                         <span className="block truncate text-xs tabular-nums text-[var(--color-mut)]">
                           {Math.round(t.kcal)} kcal · {Math.round(t.protein)}P{" "}
                           {Math.round(t.carbs)}C {Math.round(t.fat)}F
-                          {m.batch
-                            ? ` · weigh ${Math.round(servingGrams(m as any))} g`
-                            : hasPrepped(m as any)
-                              ? " · out of the fridge"
-                              : ""}
+                          {m.batch ? ` · weigh ${Math.round(servingGrams(m as any))} g` : ""}
                         </span>
                       </span>
                       {used > 0 && (

@@ -61,6 +61,8 @@ import {
   type Weekday,
 } from "@/lib/nutrition";
 import { DOW_LABELS, SHOP_DAY_OPTIONS, normaliseProfile } from "@/lib/profile";
+import { Note, SectionLabel } from "../explain";
+import { AccountCard } from "../account-ui";
 import { lastShopDay } from "@/lib/weekly";
 
 type Meal = {
@@ -726,11 +728,11 @@ export default function PlanPage() {
               Discard
             </button>
           </div>
-          <p className="mt-1 text-xs leading-relaxed text-[var(--color-mut)]">
-            The plan below is what is in the fridge this week. The shopping list is already
-            buying for these. They come in the evening before, as soon as that day&rsquo;s meals
-            are all ticked off — so what you cook on prep night is next week&rsquo;s numbers.
-          </p>
+          <Note label="When these land">
+            The plan below is what is in the fridge this week; the shopping list is already buying
+            for these. They come in the evening before, as soon as that day&rsquo;s meals are all
+            ticked off — so what you cook on prep night is next week&rsquo;s numbers.
+          </Note>
           <ul className="mt-2.5 space-y-0.5">
             {pending.slice(0, 6).map((c) => (
               <li
@@ -760,13 +762,17 @@ export default function PlanPage() {
           calorie average that looks fine can hide a day that isn't. */}
       {plan && profile && energy.length > 0 && (
         <section className="card px-5 py-5">
-          <p className="label">Fuelled enough to train</p>
-          <p className="mt-1 text-xs leading-relaxed text-[var(--color-mut)]">
-            What each day leaves you once the session is paid for, per kg of lean mass. Under{" "}
-            {EA_FLOOR} is where training and recovery start to go, and the scale won&rsquo;t warn
-            you — swimmers in that state have lost speed at perfectly steady bodyweight. The plan
-            holds every day above it.
-          </p>
+          <SectionLabel
+            title="Fuelled enough to train"
+            info={
+              <>
+                What each day leaves you once the session is paid for, per kg of lean mass. Under{" "}
+                {EA_FLOOR} is where training and recovery start to go, and the scale won&rsquo;t
+                warn you — swimmers in that state have lost speed at perfectly steady bodyweight.
+                The plan holds every day above it.
+              </>
+            }
+          />
 
           <div className="mt-3 space-y-1.5">
             {energy
@@ -800,7 +806,7 @@ export default function PlanPage() {
           </div>
 
           {energy.some((d) => d.days > 0 && d.band === "reduced") && (
-            <p className="mt-2.5 text-xs leading-relaxed text-[var(--color-mut)]">
+            <Note label="What these numbers mean">
               {balance === "restricting" ? (
                 <>
                   Between {EA_FLOOR} and {EA_OPTIMAL} while eating under maintenance. Fine for a
@@ -816,7 +822,7 @@ export default function PlanPage() {
                   is your everyday activity setting, not your plate.
                 </>
               )}
-            </p>
+            </Note>
           )}
           {plan.order.some((id) => targetsFor(plan, id).eaFloored) && (
             <p className="mt-2 text-xs leading-relaxed" style={{ color: "var(--color-carbs)" }}>
@@ -873,9 +879,10 @@ export default function PlanPage() {
           <p className="text-sm font-bold">Put the portions back</p>
           {snapshots.length > 0 ? (
             <>
-              <p className="mt-0.5 text-xs leading-relaxed text-[var(--color-mut)]">
-                Every automatic rewrite takes a copy first.
-              </p>
+              <Note label="How this works">
+                Every automatic rewrite takes a copy first, so a plan that moved overnight can
+                always be put back the way it was.
+              </Note>
               <div className="mt-2.5 space-y-1.5">
                 {snapshots.slice(0, 3).map((sn) => (
                   <div key={sn.id} className="flex items-center gap-3">
@@ -899,11 +906,11 @@ export default function PlanPage() {
               </div>
             </>
           ) : (
-            <p className="mt-0.5 text-xs leading-relaxed text-[var(--color-mut)]">
+            <Note label="Nothing to put back yet">
               Nothing has been rewritten since copies started being kept. If the portions changed
-              before that, the log still remembers them — every meal you tapped stored its
-              amounts as they were that day.
-            </p>
+              before that, the log still remembers them — every meal you tapped stored its amounts
+              as they were that day.
+            </Note>
           )}
 
           <div className="mt-3 border-t border-[#1c1f25] pt-3">
@@ -941,12 +948,12 @@ export default function PlanPage() {
               </ul>
             )}
 
-            <p className="mt-1.5 text-[0.7rem] leading-relaxed text-[var(--color-mut)]">
+            <Note label="Where these come from">
               {logWindow?.because
                 ? `${logWindow.because[0].toUpperCase()}${logWindow.because.slice(1)}, back to ${logWindow.from}. `
                 : ""}
               Every logged day votes, a one-off mis-weigh loses, and locked portions are left alone.
-            </p>
+            </Note>
           </div>
         </section>
       )}
@@ -1169,12 +1176,11 @@ export default function PlanPage() {
             </div>
 
             {meal.batch && meal.ingredients.length > 0 && (
-              <p className="mt-2.5 text-[0.7rem] leading-relaxed text-[#5b6270]">
-                One serving is {Math.round(totalGrams(meal))} g of the batch. Recalculate can
-                change how much of it you plate, but not the ratio inside it — once it's cooked,
-                that's fixed. The cook list on the Shop page turns this into what to cook and how
-                much to serve on each kind of day.
-              </p>
+              <Note label={`One serving is ${Math.round(totalGrams(meal))} g`}>
+                Recalculate can change how much of it you plate, but not the ratio inside it — once
+                it&rsquo;s cooked, that&rsquo;s fixed. The cook list on the Shop page turns this
+                into what to cook and how much to serve.
+              </Note>
             )}
 
             <button
@@ -1208,11 +1214,11 @@ export default function PlanPage() {
             </p>
           )}
         </div>
-        <p className="mt-1.5 text-xs leading-relaxed text-[var(--color-mut)]">
+        <Note label="What these are">
           A dose you take, not a portion you weigh — so the fit counts them toward the day and
           never resizes them to hit a number. Each one is graded on the evidence behind it, which
           for some of them is the most useful thing on the card.
-        </p>
+        </Note>
 
         {supplements.length > 0 && (
           <div className="mt-3 space-y-1.5">
@@ -1235,13 +1241,17 @@ export default function PlanPage() {
 
       {/* Fuelling the work */}
       <section className="card px-5 py-5">
-        <p className="label">Fuelling the work</p>
-        <p className="mt-1.5 text-xs leading-relaxed text-[var(--color-mut)]">
-          Carbohydrate need scales with the training a day holds, not with the size of its calorie
-          budget — which is the check a percentage-based macro split can never make, and the one
-          that matters most in a pool. Bands from {short("burke2011")}, applied to swimming by{" "}
-          {short("shaw2014")}.
-        </p>
+        <SectionLabel
+          title="Fuelling the work"
+          info={
+            <>
+              Carbohydrate need scales with the training a day holds, not with the size of its
+              calorie budget — which is the check a percentage-based macro split can never make,
+              and the one that matters most in a pool. Bands from {short("burke2011")}, applied to
+              swimming by {short("shaw2014")}.
+            </>
+          }
+        />
 
         <div className="mt-4 space-y-1.5">
           {fuel
@@ -1280,15 +1290,19 @@ export default function PlanPage() {
         </div>
 
         {underFuelled.length > 0 && (
-          <div className="mt-3 rounded-xl bg-[#2a2416] px-3.5 py-3 text-xs leading-relaxed text-[#ffd08a]">
+          <div className="mt-3 rounded-xl bg-[#2a2416] px-3.5 py-3 text-xs text-[#ffd08a]">
             <p>
-              {underFuelled.map((c) => c.name.toLowerCase()).join(" and ")}{" "}
-              {underFuelled.length === 1 ? "sits" : "sit"} below the band its training asks for.
-              You&rsquo;re running a deficit, so you can&rsquo;t clear these and shouldn&rsquo;t
-              try — the bands assume energy balance. What you can do is put the carbohydrate you do
-              have around the session rather than spreading it flat: a pre-swim top-up and a
-              post-swim refill buy more training quality than the same grams at breakfast.
+              {underFuelled
+                .map((c) => `${c.name.toLowerCase()} is ${c.lowGrams - c.grams} g short`)
+                .join(", ")}
+              .
             </p>
+            <Note label="What to do about it">
+              The bands assume energy balance, so in a deficit you can&rsquo;t clear them and
+              shouldn&rsquo;t try. What you can do is put the carbohydrate you do have around the
+              session rather than spreading it flat: a pre-swim top-up and a post-swim refill buy
+              more training quality than the same grams at breakfast.
+            </Note>
           </div>
         )}
 
@@ -1318,11 +1332,10 @@ export default function PlanPage() {
       <section className="card px-5 py-5">
         <div className="flex items-center gap-3">
           <div className="mr-auto">
-            <p className="label">Your week</p>
-            <p className="mt-1.5 text-xs leading-relaxed text-[var(--color-mut)]">
-              Describe the kinds of day you have, then say which is which. Calories follow the
-              training, and the seven-day average still lands on your goal.
-            </p>
+            <SectionLabel
+              title="Your week"
+              info="Describe the kinds of day you have, then say which is which. Calories follow the training, and the seven-day average still lands on your goal."
+            />
           </div>
           <button
             className={profile.cycling ? "btn btn-sm btn-accent" : "btn btn-sm"}
@@ -1438,12 +1451,16 @@ export default function PlanPage() {
 
       {/* Phase */}
       <section className="card px-5 py-5">
-        <p className="label">This block</p>
-        <p className="mt-1.5 text-xs leading-relaxed text-[var(--color-mut)]">
-          A block has a start, a length, and a target that can move across it. Starting level with
-          maintenance and drifting gently under is how you get leaner without the training falling
-          apart — the scale barely reacts, and body composition does.
-        </p>
+        <SectionLabel
+          title="This block"
+          info={
+            <>
+              A block has a start, a length, and a target that can move across it. Starting level
+              with maintenance and drifting gently under is how you get leaner without the training
+              falling apart — the scale barely reacts, and body composition does.
+            </>
+          }
+        />
 
         <div className="mt-4 grid gap-4 sm:grid-cols-2">
           <Field label="Name">
@@ -1566,20 +1583,17 @@ export default function PlanPage() {
             ))}
           </div>
 
-          <p className="mt-3 text-xs leading-relaxed text-[var(--color-mut)]">
-            {protein.notes.join(" ")} A dose under about {Math.round(protein.thresholdG)} g doesn't
-            clear the threshold that switches muscle protein synthesis on — the protein still gets
-            used, the signal just isn't sent.
-          </p>
+          <Note label="How to spread it">
+            {protein.notes.join(" ")} A dose under about {Math.round(protein.thresholdG)} g
+            doesn&rsquo;t clear the threshold that switches muscle protein synthesis on — the
+            protein still gets used, the signal just isn&rsquo;t sent.
+          </Note>
         </section>
       )}
 
       {/* Shopping */}
       <section className="card px-5 py-5">
         <p className="label">Shopping</p>
-        <p className="mt-1.5 text-xs leading-relaxed text-[var(--color-mut)]">
-          How many days of food you buy in one go, and the day you shop.
-        </p>
 
         <div className="mt-3 flex flex-wrap gap-1.5">
           {SHOP_DAY_OPTIONS.map((n) => (
@@ -1635,6 +1649,8 @@ export default function PlanPage() {
           Open the shopping list
         </Link>
       </section>
+
+      <AccountCard />
 
       {/* Numbers */}
       <section className="card px-5 py-5">

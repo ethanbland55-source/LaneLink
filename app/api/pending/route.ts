@@ -1,5 +1,6 @@
 import { NextResponse } from "next/server";
 import { sql, ensureSchema } from "@/lib/db";
+import { requireUser } from "@/lib/session";
 import { normaliseProfile } from "@/lib/profile";
 import { applyDayFor, discardPending, listPending, stagePortions } from "@/lib/pending";
 import { dayKey } from "@/lib/nutrition";
@@ -9,7 +10,10 @@ export const dynamic = "force-dynamic";
 /** What is waiting, and the day it comes into force. */
 export async function GET() {
   await ensureSchema();
-  const rows = await listPending();
+  const who = await requireUser();
+  if ("res" in who) return who.res;
+
+  const rows = await listPending(who.id);
   return NextResponse.json({
     portions: rows,
     applyOn: rows[0]?.apply_on ?? null,
@@ -32,15 +36,19 @@ export async function GET() {
  */
 export async function POST(req: Request) {
   await ensureSchema();
+  const who = await requireUser();
+  if ("res" in who) return who.res;
+
   try {
     const body = await req.json();
 
-    const prof = await sql`select * from profile where id = 1`;
+    const prof = await sql`select * from profile where id = ${who.id}`;
     const profile = normaliseProfile(prof[0] ?? {});
     const applyOn = applyDayFor(profile.plan_roll_dow ?? profile.shop_start_dow, dayKey());
 
     const rows = Array.isArray(body?.portions) ? body.portions : [];
     const count = await stagePortions(
+      who.id,
       rows.map((r: any) => ({
         meal_id: Number(r.meal_id),
         slot: Number(r.slot),
@@ -64,6 +72,9 @@ export async function POST(req: Request) {
 /** Throw the staged changes away. The live plan is untouched either way. */
 export async function DELETE() {
   await ensureSchema();
-  await discardPending();
+  const who = await requireUser();
+  if ("res" in who) return who.res;
+
+  await discardPending(who.id);
   return NextResponse.json({ ok: true });
 }

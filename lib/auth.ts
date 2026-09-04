@@ -1,16 +1,27 @@
 /**
- * The front door.
+ * The front door, and who came through it.
  *
- * This is a **doorstop, not a lock.** It keeps the page out of the hands of
- * someone who stumbles on the URL, and that is the whole of what it does. The
- * default password is four digits; anyone who wants in is in.
+ * This used to be one password for one person. It is now one account each: the
+ * cookie says *which* account, and every query in the app is filtered by it, so
+ * two people using the same install never see a gram of each other's food.
  *
- * It is at least an honest doorstop. The check runs on the server and sets a
- * signed cookie, so it can't be stepped over by editing the page in devtools
- * the way a password compared in the browser can. Set `AUTH_USER` and
- * `AUTH_PASSWORD` in the environment and it becomes a real one — nothing else
- * has to change. Setting `AUTH_SECRET` as well is what makes the cookie
- * unforgeable rather than merely inconvenient to forge.
+ * What is in this file is deliberately only the cryptography — signing a
+ * session, checking one, hashing a password. It has no database import, because
+ * the middleware runs on the edge and imports it on every single request; a
+ * session check that had to ask Postgres who you were would put a round trip in
+ * front of every page load for no benefit. The signature is the proof.
+ *
+ * `lib/accounts.ts` is the half that talks to the database.
+ *
+ * ## What this is and isn't
+ *
+ * Passwords are stored as PBKDF2-HMAC-SHA256 with a per-account salt at the
+ * iteration count OWASP currently suggests, and compared in constant time. That
+ * is a real password store, not a doorstop. It is still worth being plain about
+ * the limits: there is no rate limiting, no second factor, and no password
+ * reset that doesn't go through you. Set `AUTH_SECRET` in the environment or
+ * the session signature falls back to a constant that is in this file, and
+ * anyone reading it can mint a cookie for any account.
  */
 
 const encoder = new TextEncoder();
@@ -38,18 +49,10 @@ export const SESSION_MAX_AGE = 60 * 60 * 12;
  */
 export const LOCK_AFTER_SECONDS = Number(process.env.NEXT_PUBLIC_LOCK_AFTER ?? 15);
 
-export function expectedUser(): string {
-  return process.env.AUTH_USER || "admin";
-}
-
-export function expectedPassword(): string {
-  return process.env.AUTH_PASSWORD || "1234";
-}
-
 /**
  * Falls back to a constant so the app runs out of the box. That fallback is
- * public knowledge, which is exactly why the docstring above calls this a
- * doorstop — set AUTH_SECRET and it stops being one.
+ * public knowledge, which is exactly why `usingDefaults()` exists and why the
+ * sign-in page says so.
  */
 function secret(): string {
   return process.env.AUTH_SECRET || "meal-hub-unset-secret";
@@ -63,6 +66,10 @@ function sameString(a: string, b: string): boolean {
   return diff === 0;
 }
 
+function hex(buf: ArrayBuffer): string {
+  return [...new Uint8Array(buf)].map((b) => b.toString(16).padStart(2, "0")).join("");
+}
+
 async function hmac(payload: string): Promise<string> {
   const key = await crypto.subtle.importKey(
     "raw",
@@ -71,47 +78,126 @@ async function hmac(payload: string): Promise<string> {
     false,
     ["sign"]
   );
-  const sig = await crypto.subtle.sign("HMAC", key, encoder.encode(payload));
-  return [...new Uint8Array(sig)].map((b) => b.toString(16).padStart(2, "0")).join("");
+  return hex(await crypto.subtle.sign("HMAC", key, encoder.encode(payload)));
 }
 
-/** The cookie value for a session that starts now. */
-export async function issueSession(): Promise<string> {
+/* ------------------------------------------------------------------ */
+/* Sessions                                                            */
+/* ------------------------------------------------------------------ */
+
+/** The cookie value for a session that starts now, for this account. */
+export async function issueSession(userId: number): Promise<string> {
   const expires = Date.now() + SESSION_MAX_AGE * 1000;
-  const payload = `${expectedUser()}.${expires}`;
+  const payload = `${userId}.${expires}`;
   return `${payload}.${await hmac(payload)}`;
 }
 
 /**
- * Is this cookie one we issued, and still in date?
+ * Who this cookie says you are, or null.
  *
  * Rejects anything it doesn't recognise rather than throwing, because a
  * mangled cookie is a request to sign in again, not an error to show someone.
+ * Cookies issued before accounts existed carried a username where the id now
+ * goes, so they fail the number check and ask for one more sign-in. That is
+ * the correct outcome and not worth a compatibility path.
  */
-export async function validSession(value: string | undefined | null): Promise<boolean> {
-  if (!value) return false;
+export async function sessionUser(value: string | undefined | null): Promise<number | null> {
+  if (!value) return null;
   const parts = value.split(".");
-  if (parts.length !== 3) return false;
-  const [user, expires, sig] = parts;
-  if (!sameString(user, expectedUser())) return false;
+  if (parts.length !== 3) return null;
+  const [id, expires, sig] = parts;
+
+  const userId = Number(id);
+  if (!Number.isInteger(userId) || userId <= 0) return null;
 
   const ms = Number(expires);
-  if (!Number.isFinite(ms) || ms < Date.now()) return false;
+  if (!Number.isFinite(ms) || ms < Date.now()) return null;
 
-  return sameString(sig, await hmac(`${user}.${expires}`));
+  return sameString(sig, await hmac(`${id}.${expires}`)) ? userId : null;
 }
 
-/** Whether the credentials typed on the sign-in page are the right ones. */
-export function credentialsOk(user: unknown, password: unknown): boolean {
-  return (
-    typeof user === "string" &&
-    typeof password === "string" &&
-    sameString(user.trim(), expectedUser()) &&
-    sameString(password, expectedPassword())
+/* ------------------------------------------------------------------ */
+/* Passwords                                                           */
+/* ------------------------------------------------------------------ */
+
+/**
+ * PBKDF2-HMAC-SHA256, 210,000 iterations.
+ *
+ * Web Crypto rather than node:crypto's scrypt on purpose: it is the one API
+ * available on both runtimes this app can be deployed on, so there is a single
+ * code path and no chance of the edge build quietly failing to hash. 210,000
+ * is OWASP's current figure for this construction. scrypt would be stronger
+ * against dedicated hardware; for a meal planner shared with a handful of
+ * teammates, this is the right place on the curve.
+ */
+const PBKDF2_ITERATIONS = 210_000;
+
+export function newSalt(): string {
+  return hex(crypto.getRandomValues(new Uint8Array(16)).buffer);
+}
+
+export async function hashPassword(password: string, salt: string): Promise<string> {
+  const key = await crypto.subtle.importKey(
+    "raw",
+    encoder.encode(password),
+    "PBKDF2",
+    false,
+    ["deriveBits"]
   );
+  const bits = await crypto.subtle.deriveBits(
+    {
+      name: "PBKDF2",
+      salt: encoder.encode(salt),
+      iterations: PBKDF2_ITERATIONS,
+      hash: "SHA-256",
+    },
+    key,
+    256
+  );
+  return hex(bits);
 }
 
-/** True while the defaults are still in place — the UI says so rather than pretending. */
+export async function passwordMatches(
+  password: string,
+  salt: string,
+  expected: string
+): Promise<boolean> {
+  return sameString(await hashPassword(password, salt), expected);
+}
+
+/* ------------------------------------------------------------------ */
+/* What a name and a password have to be                               */
+/* ------------------------------------------------------------------ */
+
+/** Letters, digits and the two separators people actually type. */
+export const USERNAME_RULE = /^[a-z0-9][a-z0-9._-]{1,23}$/;
+
+export const PASSWORD_MIN = 8;
+
+/** Why a sign-up was refused, in words meant for the person typing. */
+export function checkUsername(name: unknown): string | null {
+  if (typeof name !== "string") return "Pick a username.";
+  const v = name.trim().toLowerCase();
+  if (v.length < 2) return "Usernames are at least 2 characters.";
+  if (v.length > 24) return "Usernames are at most 24 characters.";
+  if (!USERNAME_RULE.test(v)) {
+    return "Letters and numbers, plus dot, dash and underscore. Start with a letter or number.";
+  }
+  return null;
+}
+
+export function checkPassword(password: unknown): string | null {
+  if (typeof password !== "string") return "Pick a password.";
+  if (password.length < PASSWORD_MIN) return `Passwords are at least ${PASSWORD_MIN} characters.`;
+  if (password.length > 200) return "That password is longer than anything needs to be.";
+  return null;
+}
+
+export function normaliseUsername(name: string): string {
+  return name.trim().toLowerCase();
+}
+
+/** True while the session signature is still the one printed in this file. */
 export function usingDefaults(): boolean {
-  return !process.env.AUTH_PASSWORD || !process.env.AUTH_SECRET;
+  return !process.env.AUTH_SECRET;
 }

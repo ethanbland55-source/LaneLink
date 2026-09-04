@@ -74,14 +74,15 @@ function toMeals(meals: Row[], ings: Row[]): PlanMeal[] {
  * two changes compound and you drift twice as far as you meant to.
  */
 export async function restagePlan(
+  userId: number,
   profile: Profile,
   applyOn: string
 ): Promise<{ staged: number } | null> {
   try {
-    const waiting = await listPending();
+    const waiting = await listPending(userId);
     if (!waiting.length) return null;
 
-    const fitted = await fitFromDb(profile, applyOn);
+    const fitted = await fitFromDb(userId, profile, applyOn);
     if (!fitted) return null;
 
     const rows = fitted.meals.flatMap((m) =>
@@ -93,7 +94,12 @@ export async function restagePlan(
       }))
     );
 
-    const staged = await stagePortions(rows, applyOn, "Re-fitted after a settings change");
+    const staged = await stagePortions(
+      userId,
+      rows,
+      applyOn,
+      "Re-fitted after a settings change"
+    );
     return { staged };
   } catch (e) {
     console.warn("re-staging skipped:", e);
@@ -106,12 +112,14 @@ export async function restagePlan(
  * want a fresh fit — the weekly roll, which writes it to the plan, and a
  * settings change, which writes it to what is staged.
  */
-async function fitFromDb(profile: Profile, today?: string) {
+async function fitFromDb(userId: number, profile: Profile, today?: string) {
   const [dtRows, mealRows, ingRows, supRows] = await Promise.all([
-    sql`select * from day_types order by sort_order, id`,
-    sql`select * from meals order by sort_order, id`,
-    sql`select * from ingredients order by sort_order, id`,
-    sql`select * from supplements order by sort_order, id`.catch(() => [] as Row[]),
+    sql`select * from day_types where user_id = ${userId} order by sort_order, id`,
+    sql`select * from meals where user_id = ${userId} order by sort_order, id`,
+    sql`select * from ingredients where user_id = ${userId} order by sort_order, id`,
+    sql`select * from supplements where user_id = ${userId} order by sort_order, id`.catch(
+      () => [] as Row[]
+    ),
   ]);
 
   const dayTypes: DayType[] = (dtRows as Row[]).map((r, i) => normaliseDayType(r, i));
@@ -143,7 +151,11 @@ export type RefitResult = {
  * for and cooked, so it is a perfectly good thing to be left with. A page that
  * failed to load because the re-fit threw would be much worse.
  */
-export async function refitPlan(profile: Profile, today?: string): Promise<RefitResult | null> {
+export async function refitPlan(
+  userId: number,
+  profile: Profile,
+  today?: string
+): Promise<RefitResult | null> {
   try {
     /**
      * A staged change beats a re-fit, and they land on the same day.
@@ -167,18 +179,21 @@ export async function refitPlan(profile: Profile, today?: string): Promise<Refit
      * today would miss it by a few hours and overwrite it on the Monday.
      */
     const day = today ?? new Date().toISOString().slice(0, 10);
-    await applyDuePortions(day);
+    await applyDuePortions(userId, day);
     const staged = (await sql`
       select 1 from portion_history
-       where reason = 'staged change' and changed_on >= ${day}::date - 2
+       where user_id = ${userId}
+         and reason = 'staged change' and changed_on >= ${day}::date - 2
        limit 1`) as any[];
     if (staged.length) return null;
 
     const [dtRows, mealRows, ingRows, supRows] = await Promise.all([
-      sql`select * from day_types order by sort_order, id`,
-      sql`select * from meals order by sort_order, id`,
-      sql`select * from ingredients order by sort_order, id`,
-      sql`select * from supplements order by sort_order, id`.catch(() => [] as Row[]),
+      sql`select * from day_types where user_id = ${userId} order by sort_order, id`,
+      sql`select * from meals where user_id = ${userId} order by sort_order, id`,
+      sql`select * from ingredients where user_id = ${userId} order by sort_order, id`,
+      sql`select * from supplements where user_id = ${userId} order by sort_order, id`.catch(
+        () => [] as Row[]
+      ),
     ]);
 
     const dayTypes: DayType[] = (dtRows as Row[]).map((r, i) => normaliseDayType(r, i));
@@ -233,7 +248,7 @@ export async function refitPlan(profile: Profile, today?: string): Promise<Refit
       // without anyone pressing anything, so "put it back" has to be an option
       // afterwards — otherwise you open the app on a Monday, find the numbers
       // have moved, and have no way to say that was fine as it was.
-      await snapshot("weekly re-fit", today);
+      await snapshot(userId, "weekly re-fit", today);
 
       // One statement rather than one per portion: an automatic rewrite that
       // can stop halfway leaves a plan that is half of each.
@@ -242,7 +257,7 @@ export async function refitPlan(profile: Profile, today?: string): Promise<Refit
            set grams = v.grams
           from (select * from jsonb_to_recordset(${JSON.stringify(writes)}::jsonb)
                        as t(id int, grams numeric)) v
-         where i.id = v.id`;
+         where i.id = v.id and i.user_id = ${userId}`;
     }
 
     return { changed: writes.length, held };

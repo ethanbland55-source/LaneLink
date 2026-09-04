@@ -1,5 +1,6 @@
 import { neon } from "@neondatabase/serverless";
 import { profileFor } from "./foods";
+import { hashPassword, newSalt } from "./auth";
 import { LEGACY_DAY_TYPE_MAP, SEED_DAY_TYPES, WEEKDAYS } from "./nutrition";
 
 const url = process.env.DATABASE_URL;
@@ -34,7 +35,7 @@ let schemaReady: Promise<void> | null = null;
  * a database stamped with an older number runs the whole migration again, and
  * every statement in it is `if not exists`, so running it again is harmless.
  */
-const SCHEMA_VERSION = "2026-09-04.1";
+const SCHEMA_VERSION = "2026-09-04.2-accounts";
 
 /**
  * Creates the tables if they don't exist, adds any columns a newer version
@@ -416,6 +417,78 @@ async function createSchema() {
     created_at timestamptz not null default now()
   )`;
 
+  /* --- Accounts ---------------------------------------------------------
+   *
+   * The app began as one person's, and every table was written on that
+   * assumption: one profile row, one set of meals, one weigh-in per day. Making
+   * room for a second person is a `user_id` on everything that is owned, and a
+   * filter on every query that reads it.
+   *
+   * Two details in here matter more than they look:
+   *
+   *  - **The default is 1, and user 1 is the original owner.** Every existing
+   *    row therefore belongs to them the moment the column appears, with no
+   *    backfill statement to get wrong and no window where data is orphaned.
+   *  - **The keys that were unique per install have to become unique per
+   *    person.** One weigh-in a day is right; one weigh-in a day *for everyone
+   *    who ever signs up* is a second account silently overwriting the first's
+   *    Tuesday. Those are the constraint swaps below, and they are the whole
+   *    reason this migration is more than an ALTER or two.
+   */
+  await sql`create table if not exists users (
+    id           serial primary key,
+    username     text not null unique,
+    display_name text not null,
+    pw_hash      text not null,
+    pw_salt      text not null,
+    created_at   timestamptz not null default now(),
+    last_seen    timestamptz
+  )`;
+
+  // Written out rather than looped, because a table name cannot be a bound
+  // parameter and building this SQL by hand from a list is how injection bugs
+  // start — even from a list that is right here in the file.
+  await sql`alter table day_types add column if not exists user_id int not null default 1`;
+  await sql`alter table meals add column if not exists user_id int not null default 1`;
+  await sql`alter table ingredients add column if not exists user_id int not null default 1`;
+  await sql`alter table log_entries add column if not exists user_id int not null default 1`;
+  await sql`alter table weigh_ins add column if not exists user_id int not null default 1`;
+  await sql`alter table supplements add column if not exists user_id int not null default 1`;
+  await sql`alter table supplement_log add column if not exists user_id int not null default 1`;
+  await sql`alter table pantry add column if not exists user_id int not null default 1`;
+  await sql`alter table shop_checks add column if not exists user_id int not null default 1`;
+  await sql`alter table pending_portions add column if not exists user_id int not null default 1`;
+  await sql`alter table portion_history add column if not exists user_id int not null default 1`;
+  await sql`alter table cheat_meals add column if not exists user_id int not null default 1`;
+
+  await sql`create index if not exists day_types_user_idx on day_types(user_id)`;
+  await sql`create index if not exists meals_user_idx on meals(user_id)`;
+  await sql`create index if not exists ingredients_user_idx on ingredients(user_id)`;
+  await sql`create index if not exists log_entries_user_idx on log_entries(user_id, day)`;
+  await sql`create index if not exists supplements_user_idx on supplements(user_id)`;
+  await sql`create index if not exists supplement_log_user_idx on supplement_log(user_id, day)`;
+  await sql`create index if not exists pantry_user_idx on pantry(user_id)`;
+  await sql`create index if not exists pending_user_idx on pending_portions(user_id)`;
+  await sql`create index if not exists portion_history_user_idx on portion_history(user_id, changed_on desc)`;
+  await sql`create index if not exists cheat_meals_user_idx on cheat_meals(user_id)`;
+
+  // One profile row per account, keyed by the account id.
+  await sql`alter table profile drop constraint if exists profile_singleton`;
+  await sql`alter table profile alter column id drop default`;
+
+  // Was "one weigh-in a day"; now "one weigh-in a day each".
+  await sql`alter table weigh_ins drop constraint if exists weigh_ins_pkey`;
+  await sql`alter table weigh_ins add constraint weigh_ins_pkey primary key (user_id, day)`;
+
+  await sql`alter table shop_checks drop constraint if exists shop_checks_pkey`;
+  await sql`alter table shop_checks add constraint shop_checks_pkey primary key (user_id, key)`;
+
+  await sql`alter table pantry drop constraint if exists pantry_name_key`;
+  await sql`create unique index if not exists pantry_user_name_idx on pantry(user_id, name)`;
+
+  await sql`alter table cheat_meals drop constraint if exists cheat_meals_day_key`;
+  await sql`create unique index if not exists cheat_meals_user_day_idx on cheat_meals(user_id, day)`;
+
   await sql`create index if not exists pending_apply_idx on pending_portions(apply_on)`;
   await sql`create index if not exists portion_history_idx on portion_history(changed_on desc)`;
   await sql`create index if not exists log_entries_day_idx on log_entries(day)`;
@@ -426,6 +499,39 @@ async function createSchema() {
     on conflict (id) do nothing`;
 
   await batch.flush();
+
+  // The owner's account, so an install that predates sign-in pages still has
+  // someone to sign in as. Runs after the flush because it reads back an id.
+  await ensureOwner();
+}
+
+/**
+ * Account 1: whoever was already using this before accounts existed.
+ *
+ * All their data is already tagged `user_id = 1` by the column defaults above,
+ * so this exists purely to give them a way back in. The credentials come from
+ * the environment if they were ever set, and from the old built-in defaults if
+ * not — because the alternative is an app that migrates itself and then locks
+ * its only user out, which is a worse failure than a weak first password. The
+ * sign-in page says so until it's changed.
+ *
+ * The sequence is nudged past 1 afterwards so the next person to sign up gets
+ * their own id rather than a duplicate-key error.
+ */
+async function ensureOwner(): Promise<void> {
+  const existing = (await sql`select id from users where id = 1`) as any[];
+  if (existing.length) return;
+
+  const username = (process.env.AUTH_USER || "admin").trim().toLowerCase();
+  const password = process.env.AUTH_PASSWORD || "1234";
+  const salt = newSalt();
+  const hash = await hashPassword(password, salt);
+
+  await sql`
+    insert into users (id, username, display_name, pw_hash, pw_salt)
+    values (1, ${username}, ${username}, ${hash}, ${salt})
+    on conflict (id) do nothing`;
+  await sql`select setval('users_id_seq', greatest((select max(id) from users), 1))`;
 }
 
 /**

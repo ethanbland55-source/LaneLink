@@ -1,5 +1,5 @@
 import { NextResponse, type NextRequest } from "next/server";
-import { SESSION_COOKIE, validSession } from "./lib/auth";
+import { SESSION_COOKIE, sessionUser } from "./lib/auth";
 
 /**
  * Everything is behind the door except the door itself.
@@ -9,8 +9,8 @@ import { SESSION_COOKIE, validSession } from "./lib/auth";
  * are just a way of looking at that.
  */
 export async function middleware(req: NextRequest) {
-  const ok = await validSession(req.cookies.get(SESSION_COOKIE)?.value);
-  if (ok) return NextResponse.next();
+  const user = await sessionUser(req.cookies.get(SESSION_COOKIE)?.value);
+  if (user != null) return NextResponse.next();
 
   const { pathname } = req.nextUrl;
   if (pathname.startsWith("/api/")) {

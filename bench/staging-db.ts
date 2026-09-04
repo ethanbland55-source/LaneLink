@@ -27,10 +27,13 @@ async function saveMeal(sql: Sql, mealId: number, items: { name: string; grams: 
   await sql`delete from ingredients where meal_id = ${mealId}`;
   for (const [n, i] of items.entries()) {
     await sql`
-      insert into ingredients (meal_id, name, grams, kcal_100, protein_100, carbs_100, fat_100, sort_order)
-      values (${mealId}, ${i.name}, ${i.grams}, 100, 5, 20, 1, ${n})`;
+      insert into ingredients (user_id, meal_id, name, grams, kcal_100, protein_100, carbs_100, fat_100, sort_order)
+      values (1, ${mealId}, ${i.name}, ${i.grams}, 100, 5, 20, 1, ${n})`;
   }
 }
+
+/** Everything in this bench belongs to account 1, as a pre-accounts install does. */
+const U = 1;
 
 async function main() {
   const { sql, client } = await connect(url!);
@@ -98,6 +101,7 @@ async function main() {
 
   console.log("\n=== 1. Staging, plainly ===\n");
   const n1 = await stagePortions(
+    U,
     [
       { meal_id: 1, slot: 0, name: "Rice Cakes", grams: 56 },
       { meal_id: 1, slot: 1, name: "Banana", grams: 210 }, // unchanged
@@ -108,7 +112,7 @@ async function main() {
   );
   check("only the portions that really move are staged", n1 === 2, `${n1} staged`);
 
-  const listed = await listPending();
+  const listed = await listPending(U);
   check("they come back with their meal names", listed.length === 2 && !!listed[0].meal_name);
   check(
     "and with what they were, for the 70 → 56 line",
@@ -119,7 +123,7 @@ async function main() {
   check("the live plan has not moved", Number(liveNow[0].grams) === 70, `${liveNow[0].grams} g`);
 
   console.log("\n=== 2. Not due yet ===\n");
-  const applied0 = await applyDuePortions("2026-09-03");
+  const applied0 = await applyDuePortions(U, "2026-09-03");
   check("nothing applies before its day", applied0 === 0);
 
   console.log("\n=== 3. THE BUG: saving the meals first ===\n");
@@ -135,7 +139,7 @@ async function main() {
     `${idsBefore[0].id} → ${idsAfter[0].id}`
   );
 
-  const stillThere = await listPending();
+  const stillThere = await listPending(U);
   check(
     "the staged change survives that save",
     stillThere.length === 2,
@@ -143,7 +147,7 @@ async function main() {
   );
 
   console.log("\n=== 4. The whole flow, in the order the button does it ===\n");
-  await discardPending();
+  await discardPending(U);
   // Exactly what applyRecalc does: persist every meal, THEN post the portions.
   await saveMeal(sql, 1, [
     { name: "Rice Cakes", grams: 70 },
@@ -151,6 +155,7 @@ async function main() {
   ]);
   await saveMeal(sql, 2, [{ name: "Chicken Breast", grams: 190 }]);
   const n2 = await stagePortions(
+    U,
     [
       { meal_id: 1, slot: 0, name: "Rice Cakes", grams: 56 },
       { meal_id: 2, slot: 0, name: "Chicken Breast", grams: 175 },
@@ -160,7 +165,7 @@ async function main() {
   check("Stage works after the meals were saved", n2 === 2, `${n2} staged`);
 
   console.log("\n=== 5. Roll day ===\n");
-  const applied = await applyDuePortions("2026-09-07");
+  const applied = await applyDuePortions(U, "2026-09-07");
   check("both come into force", applied === 2, `${applied} applied`);
   const after = (await sql`
     select name, grams from ingredients order by meal_id, sort_order`) as any[];
@@ -169,13 +174,13 @@ async function main() {
     Number(after.find((r) => r.name === "Rice Cakes").grams) === 56 &&
       Number(after.find((r) => r.name === "Chicken Breast").grams) === 175
   );
-  check("and the queue is empty", (await listPending()).length === 0);
-  check("applying twice is harmless", (await applyDuePortions("2026-09-07")) === 0);
+  check("and the queue is empty", (await listPending(U)).length === 0);
+  check("applying twice is harmless", (await applyDuePortions(U, "2026-09-07")) === 0);
 
   console.log("\n=== 6. Undo ===\n");
-  const snaps = await listSnapshots();
+  const snaps = await listSnapshots(U);
   check("applying took a snapshot first", snaps.length >= 1, snaps[0]?.reason ?? "none");
-  const res = await restore(snaps[0].id);
+  const res = await restore(U, snaps[0].id);
   check("restoring puts the portions back", res.restored === 2, `${res.restored} restored`);
   const back = (await sql`select name, grams from ingredients order by meal_id, sort_order`) as any[];
   check(
@@ -185,14 +190,14 @@ async function main() {
   );
 
   console.log("\n=== 7. A renamed ingredient is skipped, not guessed at ===\n");
-  await snapshot("test");
-  const s2 = (await listSnapshots())[0];
+  await snapshot(U, "test");
+  const s2 = (await listSnapshots(U))[0];
   await saveMeal(sql, 1, [
     { name: "Oatcakes", grams: 70 }, // renamed in place
     { name: "Banana", grams: 210 },
   ]);
   await sql`update ingredients set grams = 40 where meal_id = 1 and sort_order = 0`;
-  const r2 = await restore(s2.id);
+  const r2 = await restore(U, s2.id);
   check("the renamed one is reported as skipped", r2.skipped.includes("Rice Cakes"));
   const oat = (await sql`select grams from ingredients where meal_id = 1 and sort_order = 0`) as any[];
   check(
@@ -213,9 +218,9 @@ async function main() {
               { name: "Rice Cakes", grams: 70, kcal_100: 100, protein_100: 5, carbs_100: 20, fat_100: 1 },
               { name: "Banana", grams: 210, kcal_100: 100, protein_100: 5, carbs_100: 20, fat_100: 1 },
             ])}::jsonb)`;
-  const fromLog = await portionsFromLog("2026-08-31", "2026-09-06");
+  const fromLog = await portionsFromLog(U, "2026-08-31", "2026-09-06");
   check("the log remembers what the portions were", fromLog.length === 2);
-  const n3 = await applyPortions(fromLog);
+  const n3 = await applyPortions(U, fromLog);
   check("and they can be put back", n3 === 2);
   const restored = (await sql`
     select name, grams from ingredients where meal_id = 1 order by sort_order`) as any[];
@@ -263,7 +268,7 @@ async function main() {
   // Now the automatic re-fit guts it, the way it did on the live database.
   await sql`update ingredients set grams = 43 where meal_id = 1 and sort_order = 0`;
 
-  const week = await portionsFromLog("2026-08-31", "2026-09-06");
+  const week = await portionsFromLog(U, "2026-08-31", "2026-09-06");
   const riceRow = week.find((r) => r.name === "Rice Cakes");
   check("rice cakes are recovered", riceRow?.grams === 70, `${riceRow?.grams} g`);
   check("on the strength of four logged days", riceRow?.votes === 4, `${riceRow?.votes} votes`);
@@ -273,7 +278,7 @@ async function main() {
     week.map((r) => r.name).join(", ")
   );
 
-  await applyPortions(week);
+  await applyPortions(U, week);
   const fixed = (await sql`
     select name, grams, locked from ingredients where meal_id = 1 order by sort_order`) as any[];
   check("the plan is put back to 70 g", Number(fixed[0].grams) === 70, `${fixed[0].grams} g`);
@@ -281,7 +286,7 @@ async function main() {
 
   console.log("\n=== 8c. A renamed food is not restored onto ===\n");
   await sql`update ingredients set name = 'Corn Cakes' where meal_id = 1 and sort_order = 0`;
-  const after8c = await portionsFromLog("2026-08-31", "2026-09-06");
+  const after8c = await portionsFromLog(U, "2026-08-31", "2026-09-06");
   check(
     "the log says nothing about a food that has been renamed",
     !after8c.some((r) => r.name === "Corn Cakes")
@@ -294,8 +299,8 @@ async function main() {
   ]);
 
   console.log("\n=== 9. The shop overlay ===\n");
-  await stagePortions([{ meal_id: 1, slot: 0, name: "Rice Cakes", grams: 56 }], "2099-01-01");
-  const pend = await listPending();
+  await stagePortions(U, [{ meal_id: 1, slot: 0, name: "Rice Cakes", grams: 56 }], "2099-01-01");
+  const pend = await listPending(U);
   const overlaid = overlayPending(1, [{ name: "Rice Cakes", grams: 70 }, { name: "Banana", grams: 210 }], pend);
   check("the shop buys the staged number", overlaid[0].grams === 56, `${overlaid[0].grams} g`);
   check("and leaves the rest alone", overlaid[1].grams === 210);
@@ -306,7 +311,7 @@ async function main() {
   const { restagePlan } = await import("../lib/refit");
   const { normaliseProfile } = await import("../lib/profile");
 
-  await discardPending();
+  await discardPending(U);
   await sql`delete from day_types`;
   await sql`
     insert into day_types (id, name, sort_order, sessions)
@@ -333,6 +338,7 @@ async function main() {
 
   // Something is staged, fitted under fat 0.65.
   await stagePortions(
+    U,
     [
       { meal_id: 1, slot: 0, name: "Rice Cakes", grams: 60 },
       { meal_id: 2, slot: 0, name: "Chicken Breast", grams: 175 },
@@ -340,7 +346,7 @@ async function main() {
     "2026-09-07",
     "Rebalanced"
   );
-  const staged0 = await listPending();
+  const staged0 = await listPending(U);
   check("a change is staged to begin with", staged0.length === 2, `${staged0.length}`);
 
   // Now fat moves to 0.8 — the targets those grams were fitted to are gone.
@@ -348,10 +354,10 @@ async function main() {
   const reread = (await sql`
     select *, to_char(phase_start,'YYYY-MM-DD') as phase_start,
               to_char(dob,'YYYY-MM-DD') as dob from profile where id = 1`) as any[];
-  const restaged = await restagePlan(normaliseProfile(reread[0]), "2026-09-07");
+  const restaged = await restagePlan(U, normaliseProfile(reread[0]), "2026-09-07");
   check("re-staging runs and writes something", (restaged?.staged ?? 0) > 0, `${restaged?.staged} staged`);
 
-  const nowStaged = await listPending();
+  const nowStaged = await listPending(U);
   check("the queue still applies on the same day", nowStaged.every((r) => r.apply_on === "2026-09-07"));
   check(
     "and it is marked as re-fitted, not left saying 'Rebalanced'",
@@ -370,8 +376,8 @@ async function main() {
   );
 
   // With nothing staged it must do nothing rather than inventing a stage.
-  await discardPending();
-  const none = await restagePlan(prof, "2026-09-07");
+  await discardPending(U);
+  const none = await restagePlan(U, prof, "2026-09-07");
   check("nothing staged means nothing to re-stage", none === null);
 
   console.log("\n=== 10. applyDayFor ===\n");

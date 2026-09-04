@@ -1,5 +1,6 @@
 import { NextResponse } from "next/server";
 import { sql, ensureSchema } from "@/lib/db";
+import { requireUser } from "@/lib/session";
 import { profileFor } from "@/lib/foods";
 import { applyDuePortions } from "@/lib/pending";
 
@@ -14,9 +15,14 @@ export const dynamic = "force-dynamic";
  */
 export async function GET() {
   await ensureSchema();
-  await applyDuePortions();
-  const meals = await sql`select * from meals order by sort_order, id`;
-  const ings = await sql`select * from ingredients order by sort_order, id`;
+  const who = await requireUser();
+  if ("res" in who) return who.res;
+
+  await applyDuePortions(who.id);
+  const meals = await sql`
+    select * from meals where user_id = ${who.id} order by sort_order, id`;
+  const ings = await sql`
+    select * from ingredients where user_id = ${who.id} order by sort_order, id`;
   return NextResponse.json(
     meals.map((m: any) => ({
       ...m,
@@ -45,10 +51,15 @@ export async function GET() {
 
 export async function POST(req: Request) {
   await ensureSchema();
+  const who = await requireUser();
+  if ("res" in who) return who.res;
+
   const { name } = await req.json();
   const rows = await sql`
-    insert into meals (name, sort_order)
-    values (${name || "New meal"}, coalesce((select max(sort_order) + 1 from meals), 0))
+    insert into meals (user_id, name, sort_order)
+    values (${who.id},
+            ${name || "New meal"},
+            coalesce((select max(sort_order) + 1 from meals where user_id = ${who.id}), 0))
     returning *`;
   return NextResponse.json({
     ...rows[0],
@@ -63,6 +74,9 @@ export async function POST(req: Request) {
 /** Replaces a meal's name and its whole ingredient list in one go. */
 export async function PUT(req: Request) {
   await ensureSchema();
+  const who = await requireUser();
+  if ("res" in who) return who.res;
+
   const { id, name, ingredients, times_per_day, day_type_ids, batch, share_pct } =
     await req.json();
 
@@ -78,7 +92,7 @@ export async function PUT(req: Request) {
 
   // null means "every day type". Anything pointing at a day type that no
   // longer exists is dropped here rather than left to rot in the array.
-  const live = (await sql`select id from day_types`) as any[];
+  const live = (await sql`select id from day_types where user_id = ${who.id}`) as any[];
   const liveIds = new Set(live.map((r) => Number(r.id)));
   const picked: number[] = Array.isArray(day_type_ids)
     ? [...new Set(day_type_ids.map(Number).filter((n: number) => liveIds.has(n)))]
@@ -88,16 +102,27 @@ export async function PUT(req: Request) {
   const types: string | null =
     picked.length > 0 && picked.length < liveIds.size ? `{${picked.join(",")}}` : null;
 
-  await sql`
+  /**
+   * The update is filtered by owner, so a meal that isn't yours doesn't move.
+   * That is not enough on its own: the insert below is keyed on the id you
+   * sent, so a request naming someone else's meal used to leave a row tagged
+   * to you and pointing at their breakfast. Nobody could read it, but "nobody
+   * can read the mess" is not the same as not making one.
+   *
+   * So the write is refused outright unless the meal is yours.
+   */
+  const owned = (await sql`
     update meals set
       name = ${name},
       times_per_day = ${Number.isFinite(reps) && reps > 0 ? reps : 1},
       day_type_ids = ${types}::int[],
       batch = ${!!batch},
       share_pct = ${share == null ? null : share}
-    where id = ${id}`;
+    where id = ${id} and user_id = ${who.id}
+    returning id`) as any[];
+  if (!owned.length) return NextResponse.json({ error: "No such meal" }, { status: 404 });
 
-  await sql`delete from ingredients where meal_id = ${id}`;
+  await sql`delete from ingredients where meal_id = ${id} and user_id = ${who.id}`;
 
   /**
    * One insert, not one per ingredient.
@@ -117,6 +142,7 @@ export async function PUT(req: Request) {
       fat_100: num(i.fat_100),
     });
     return {
+      user_id: who.id,
       meal_id: id,
       name: i.name || "Ingredient",
       grams: num(i.grams),
@@ -140,14 +166,14 @@ export async function PUT(req: Request) {
   if (rows.length) {
     await sql`
       insert into ingredients
-        (meal_id, name, grams, kcal_100, protein_100, carbs_100, fat_100,
+        (user_id, meal_id, name, grams, kcal_100, protein_100, carbs_100, fat_100,
          food_class, aisle, pack_grams, min_grams, max_grams, locked,
          prepped, share_pct, sort_order)
-      select meal_id, name, grams, kcal_100, protein_100, carbs_100, fat_100,
+      select user_id, meal_id, name, grams, kcal_100, protein_100, carbs_100, fat_100,
              food_class, aisle, pack_grams, min_grams, max_grams, locked,
              prepped, share_pct, sort_order
         from jsonb_to_recordset(${JSON.stringify(rows)}::jsonb)
-          as t(meal_id int, name text, grams numeric, kcal_100 numeric,
+          as t(user_id int, meal_id int, name text, grams numeric, kcal_100 numeric,
                protein_100 numeric, carbs_100 numeric, fat_100 numeric,
                food_class text, aisle text, pack_grams numeric,
                min_grams numeric, max_grams numeric, locked boolean,
@@ -158,8 +184,11 @@ export async function PUT(req: Request) {
 
 export async function DELETE(req: Request) {
   await ensureSchema();
+  const who = await requireUser();
+  if ("res" in who) return who.res;
+
   const id = Number(new URL(req.url).searchParams.get("id"));
-  await sql`delete from meals where id = ${id}`;
+  await sql`delete from meals where id = ${id} and user_id = ${who.id}`;
   return NextResponse.json({ ok: true });
 }
 

@@ -1,5 +1,6 @@
 import { NextResponse } from "next/server";
 import { sql, ensureSchema } from "@/lib/db";
+import { requireUser } from "@/lib/session";
 import { totalFor, type Item } from "@/lib/nutrition";
 
 export const dynamic = "force-dynamic";
@@ -17,23 +18,35 @@ function clock(v: unknown): string | null {
 
 export async function GET(req: Request) {
   await ensureSchema();
+  const who = await requireUser();
+  if ("res" in who) return who.res;
+
   const day = new URL(req.url).searchParams.get("day");
   const rows = day
-    ? await sql`select * from log_entries where day = ${day}
-                order by at_time nulls last, id`
-    : await sql`select * from log_entries order by id desc limit 100`;
+    ? await sql`select * from log_entries
+                 where user_id = ${who.id} and day = ${day}
+                 order by at_time nulls last, id`
+    : await sql`select * from log_entries
+                 where user_id = ${who.id} order by id desc limit 100`;
   return NextResponse.json(rows);
 }
 
 /** Add a meal to today's log, pre-filled from the plan. */
 export async function POST(req: Request) {
   await ensureSchema();
+  const who = await requireUser();
+  if ("res" in who) return who.res;
+
   const { day, meal_id, meal_name, items, day_type_id, at_time } = await req.json();
   const t = totalFor((items ?? []) as Item[]);
   const dt = Number(day_type_id);
   const rows = await sql`
-    insert into log_entries (day, meal_id, meal_name, confirmed, kcal, protein, carbs, fat, items, day_type_id, at_time)
-    values (${day}, ${meal_id ?? null}, ${meal_name}, false,
+    insert into log_entries (user_id, day, meal_id, meal_name, confirmed, kcal, protein, carbs, fat, items, day_type_id, at_time)
+    values (${who.id}, ${day},
+            -- A meal id from someone else's plan is stored as null rather
+            -- than as a reference that will never match anything.
+            (select id from meals where id = ${meal_id ?? null} and user_id = ${who.id}),
+            ${meal_name}, false,
             ${t.kcal}, ${t.protein}, ${t.carbs}, ${t.fat},
             ${JSON.stringify(items ?? [])}::jsonb, ${Number.isFinite(dt) && dt > 0 ? dt : null},
             ${clock(at_time)})
@@ -44,6 +57,9 @@ export async function POST(req: Request) {
 /** Edit gram amounts and/or confirm the meal. */
 export async function PATCH(req: Request) {
   await ensureSchema();
+  const who = await requireUser();
+  if ("res" in who) return who.res;
+
   const { id, items, confirmed, at_time } = await req.json();
   const t = totalFor((items ?? []) as Item[]);
   // at_time is only written when the caller sends one, so confirming a meal
@@ -55,14 +71,18 @@ export async function PATCH(req: Request) {
       kcal = ${t.kcal}, protein = ${t.protein}, carbs = ${t.carbs}, fat = ${t.fat},
       confirmed = ${!!confirmed},
       at_time = coalesce(${at}, at_time)
-    where id = ${id}
+    where id = ${id} and user_id = ${who.id}
     returning *`;
+  if (!rows[0]) return NextResponse.json({ error: "Not found" }, { status: 404 });
   return NextResponse.json(rows[0]);
 }
 
 export async function DELETE(req: Request) {
   await ensureSchema();
+  const who = await requireUser();
+  if ("res" in who) return who.res;
+
   const id = Number(new URL(req.url).searchParams.get("id"));
-  await sql`delete from log_entries where id = ${id}`;
+  await sql`delete from log_entries where id = ${id} and user_id = ${who.id}`;
   return NextResponse.json({ ok: true });
 }

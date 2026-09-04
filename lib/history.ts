@@ -37,10 +37,11 @@ export type Snapshot = {
 const KEEP = 12;
 
 /** Every portion as it stands right now, in the form a snapshot takes. */
-export async function currentPortions(): Promise<PortionRow[]> {
+export async function currentPortions(userId: number): Promise<PortionRow[]> {
   const rows = (await sql`
     select meal_id, sort_order as slot, name, grams
       from ingredients
+     where user_id = ${userId}
      order by meal_id, sort_order`) as any[];
   return rows.map((r) => ({
     meal_id: Number(r.meal_id),
@@ -57,21 +58,29 @@ export async function currentPortions(): Promise<PortionRow[]> {
  * a snapshot that could not be taken is a shame, but refusing to re-fit the
  * plan because the undo table was unhappy would be worse.
  */
-export async function snapshot(reason: string, on?: string): Promise<number | null> {
+export async function snapshot(
+  userId: number,
+  reason: string,
+  on?: string
+): Promise<number | null> {
   try {
-    const rows = await currentPortions();
+    const rows = await currentPortions(userId);
     if (!rows.length) return null;
     const res = (await sql`
-      insert into portion_history (changed_on, reason, rows)
-      values (${on ?? new Date().toISOString().slice(0, 10)}::date,
+      insert into portion_history (user_id, changed_on, reason, rows)
+      values (${userId},
+              ${on ?? new Date().toISOString().slice(0, 10)}::date,
               ${reason},
               ${JSON.stringify(rows)}::jsonb)
       returning id`) as any[];
 
     // Trim, so this never becomes a table nobody looks at that only grows.
+    // Per person: twelve each, not twelve between everyone.
     await sql`
       delete from portion_history
-       where id not in (select id from portion_history order by id desc limit ${KEEP})`;
+       where user_id = ${userId}
+         and id not in (select id from portion_history
+                         where user_id = ${userId} order by id desc limit ${KEEP})`;
 
     return Number(res[0]?.id ?? 0) || null;
   } catch (e) {
@@ -81,10 +90,11 @@ export async function snapshot(reason: string, on?: string): Promise<number | nu
 }
 
 /** The snapshots there are, newest first, without their contents. */
-export async function listSnapshots(): Promise<Omit<Snapshot, "rows">[]> {
+export async function listSnapshots(userId: number): Promise<Omit<Snapshot, "rows">[]> {
   const rows = (await sql`
     select id, to_char(changed_on, 'YYYY-MM-DD') as changed_on, reason
       from portion_history
+     where user_id = ${userId}
      order by id desc`) as any[];
   return rows.map((r) => ({
     id: Number(r.id),
@@ -101,12 +111,16 @@ export async function listSnapshots(): Promise<Omit<Snapshot, "rows">[]> {
  * forced, because the one thing worse than not restoring a portion is
  * restoring it onto the wrong food.
  */
-export async function restore(id: number): Promise<{ restored: number; skipped: string[] }> {
-  const got = (await sql`select rows from portion_history where id = ${id}`) as any[];
+export async function restore(
+  userId: number,
+  id: number
+): Promise<{ restored: number; skipped: string[] }> {
+  const got = (await sql`
+    select rows from portion_history where id = ${id} and user_id = ${userId}`) as any[];
   const rows = (got[0]?.rows ?? []) as PortionRow[];
   if (!rows.length) return { restored: 0, skipped: [] };
 
-  const live = await currentPortions();
+  const live = await currentPortions(userId);
   const key = (r: PortionRow) => `${r.meal_id}:${r.slot}:${r.name}`;
   const liveBy = new Map(live.map((r) => [key(r), r]));
 
@@ -124,7 +138,8 @@ export async function restore(id: number): Promise<{ restored: number; skipped: 
          set grams = v.grams
         from (select * from jsonb_to_recordset(${JSON.stringify(wanted)}::jsonb)
                      as t(meal_id int, slot int, name text, grams numeric)) v
-       where i.meal_id = v.meal_id and i.sort_order = v.slot and i.name = v.name`;
+       where i.user_id = ${userId}
+         and i.meal_id = v.meal_id and i.sort_order = v.slot and i.name = v.name`;
   }
 
   return { restored: wanted.length, skipped };
@@ -220,11 +235,16 @@ export function consensus(values: number[]): number {
   return best;
 }
 
-export async function portionsFromLog(from: string, to: string): Promise<LogPortion[]> {
+export async function portionsFromLog(
+  userId: number,
+  from: string,
+  to: string
+): Promise<LogPortion[]> {
   const rows = (await sql`
     select meal_id, items
       from log_entries
-     where day between ${from}::date and ${to}::date
+     where user_id = ${userId}
+       and day between ${from}::date and ${to}::date
        and meal_id is not null
        and meal_id > 0
      order by day, id`) as any[];
@@ -232,6 +252,7 @@ export async function portionsFromLog(from: string, to: string): Promise<LogPort
   const live = (await sql`
     select meal_id, sort_order as slot, name, grams, locked
       from ingredients
+     where user_id = ${userId}
      order by meal_id, sort_order`) as any[];
 
   const liveBy = new Map(
@@ -297,6 +318,7 @@ export async function portionsFromLog(from: string, to: string): Promise<LogPort
  * take a view from.
  */
 export async function logWindowFor(
+  userId: number,
   lastRollDay: string,
   today: string
 ): Promise<{ from: string; to: string; because: string }> {
@@ -311,6 +333,7 @@ export async function logWindowFor(
     const rows = (await sql`
       select to_char(changed_on, 'YYYY-MM-DD') as changed_on, reason
         from portion_history
+       where user_id = ${userId}
        order by changed_on desc, id desc
        limit 1`) as any[];
     const last = rows[0];
@@ -335,13 +358,14 @@ export async function logWindowFor(
 }
 
 /** Apply a set of portions read back out of the log. */
-export async function applyPortions(rows: PortionRow[]): Promise<number> {
+export async function applyPortions(userId: number, rows: PortionRow[]): Promise<number> {
   if (!rows.length) return 0;
   await sql`
     update ingredients i
        set grams = v.grams
       from (select * from jsonb_to_recordset(${JSON.stringify(rows)}::jsonb)
                    as t(meal_id int, slot int, name text, grams numeric)) v
-     where i.meal_id = v.meal_id and i.sort_order = v.slot and i.name = v.name`;
+     where i.user_id = ${userId}
+       and i.meal_id = v.meal_id and i.sort_order = v.slot and i.name = v.name`;
   return rows.length;
 }

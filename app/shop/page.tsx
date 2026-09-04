@@ -18,6 +18,7 @@ import { planDayForShop } from "@/lib/weekly";
 import { overlayPending, type PendingPortion } from "@/lib/pending";
 import { normaliseProfile, SHOP_DAY_OPTIONS } from "@/lib/profile";
 import { NumberField, scrollIntoViewSoon } from "../number-field";
+import { Note, SectionLabel } from "../explain";
 
 type PantryRow = { name: string; grams: number };
 
@@ -221,13 +222,18 @@ export default function ShopPage() {
         </div>
 
         {pending.length > 0 && (
-          <p className="mt-3 rounded-lg bg-[var(--color-surface)] px-3 py-2.5 text-xs leading-relaxed text-[var(--color-mut)]">
-            Buying the <b className="text-[var(--color-fg)]">rebalanced</b> portions —{" "}
-            {pending.length} of them change for {pretty(pending[0].apply_on)}, which is the week
-            this food is for. The Plan page keeps showing what&rsquo;s in the fridge until the
-            evening before, when the last of that day&rsquo;s meals is ticked off — in time to
-            cook to.
-          </p>
+          <div className="mt-3 rounded-lg bg-[var(--color-surface)] px-3 py-2.5">
+            <p className="text-xs text-[var(--color-mut)]">
+              Buying the <b className="text-[var(--color-fg)]">rebalanced</b> portions —{" "}
+              {pending.length} change for {pretty(pending[0].apply_on)}.
+            </p>
+            <Note label="Why next week's">
+              The food you buy today is for the week starting {pretty(pending[0].apply_on)}, so the
+              list is built against those portions. The Plan page keeps showing what&rsquo;s in the
+              fridge until the evening before, when the last of that day&rsquo;s meals is ticked
+              off — in time to cook to.
+            </Note>
+          </div>
         )}
 
         <div className="no-print mt-4 flex flex-wrap gap-1.5">
@@ -269,12 +275,8 @@ export default function ShopPage() {
         </label>
 
         {profile.cycling && list.dayMix.length > 0 && (
-          <p className="mt-3 text-xs leading-relaxed text-[var(--color-mut)]">
-            This window is{" "}
-            {list.dayMix.map((d) => `${d.count} × ${d.name.toLowerCase()}`).join(", ")}.
-{" "}
-            The list buys your plan exactly as written — the meals you've limited to certain day
-            types are only counted on those days.
+          <p className="mt-3 text-xs text-[var(--color-mut)]">
+            {list.dayMix.map((d) => `${d.count} × ${d.name.toLowerCase()}`).join(", ")}
           </p>
         )}
 
@@ -343,11 +345,12 @@ export default function ShopPage() {
 
           {cook && cook.meals.length > 0 && (
             <section className="card px-4 py-4 sm:px-5">
-              <p className="label">Cook list</p>
-              <p className="mt-1.5 text-xs leading-relaxed text-[var(--color-mut)]">
-                Prep day, in weighing order. These are the totals for the whole window — weigh
-                each one out, cook it, then divide the lot evenly between the containers.
-                Anything listed as added on the day stays out of the box until you eat it.
+              <SectionLabel
+                title="Cook list"
+                info="Weigh each one out, cook it, then divide the lot evenly between the containers. Anything listed as added on the day stays out of the box until you eat it."
+              />
+              <p className="mt-1.5 text-xs text-[var(--color-mut)]">
+                Totals for the whole window. Weigh, cook, divide.
               </p>
 
               <div className="mt-4 space-y-4">
@@ -364,11 +367,13 @@ export default function ShopPage() {
             </section>
           )}
 
-          <p className="px-1 pb-4 text-center text-[0.7rem] leading-relaxed text-[#4a505c]">
-            Amounts are rounded up to the nearest pack, and anything you already have is taken off
-            first. Weights are as you'd weigh them for the plan — raw for meat, dry for rice and
-            pasta.
-          </p>
+          <div className="px-1 pb-4 text-center">
+            <Note label="How these amounts are worked out">
+              Rounded up to the nearest pack, with anything you already have taken off first.
+              Weights are as you&rsquo;d weigh them for the plan — raw for meat, dry for rice and
+              pasta.
+            </Note>
+          </div>
         </>
       )}
     </div>

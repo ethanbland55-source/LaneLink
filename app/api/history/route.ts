@@ -1,5 +1,6 @@
 import { NextResponse } from "next/server";
 import { ensureSchema } from "@/lib/db";
+import { requireUser } from "@/lib/session";
 import {
   applyPortions,
   currentPortions,
@@ -27,11 +28,14 @@ export const dynamic = "force-dynamic";
  */
 export async function GET(req: Request) {
   await ensureSchema();
+  const who = await requireUser();
+  if ("res" in who) return who.res;
+
   const url = new URL(req.url);
   const from = url.searchParams.get("from");
   const to = url.searchParams.get("to");
 
-  const snapshots = await listSnapshots();
+  const snapshots = await listSnapshots(who.id);
 
   /**
    * The client no longer has to know how far back to look. It used to pass a
@@ -39,16 +43,16 @@ export async function GET(req: Request) {
    * starting there contains only post-change days and the restore anchors on
    * the very values it is meant to undo.
    */
-  const prof = (await sql`select * from profile where id = 1`) as any[];
+  const prof = (await sql`select * from profile where id = ${who.id}`) as any[];
   const profile = normaliseProfile(prof[0] ?? {});
   const today = dayKey();
   const dow = profile.plan_roll_dow ?? profile.shop_start_dow;
-  const auto = await logWindowFor(lastRollDay(dow, today), today);
+  const auto = await logWindowFor(who.id, lastRollDay(dow, today), today);
   const window = from && to ? { from: from.slice(0, 10), to: to.slice(0, 10), because: "" } : auto;
 
   try {
-    const rows = await portionsFromLog(window.from, window.to);
-    const live = await currentPortions();
+    const rows = await portionsFromLog(who.id, window.from, window.to);
+    const live = await currentPortions(who.id);
     const liveBy = new Map(live.map((r) => [`${r.meal_id}:${r.slot}:${r.name}`, r.grams]));
     const changes = rows
       .map((r) => ({
@@ -81,17 +85,24 @@ export async function GET(req: Request) {
  */
 export async function POST(req: Request) {
   await ensureSchema();
+  const who = await requireUser();
+  if ("res" in who) return who.res;
+
   try {
     const b = await req.json();
 
     if (b?.id != null) {
-      await snapshot("before undo");
-      const res = await restore(Number(b.id));
+      await snapshot(who.id, "before undo");
+      const res = await restore(who.id, Number(b.id));
       return NextResponse.json(res);
     }
 
     if (b?.from && b?.to) {
-      const rows = await portionsFromLog(String(b.from).slice(0, 10), String(b.to).slice(0, 10));
+      const rows = await portionsFromLog(
+        who.id,
+        String(b.from).slice(0, 10),
+        String(b.to).slice(0, 10)
+      );
       if (!rows.length) {
         return NextResponse.json({
           restored: 0,
@@ -99,8 +110,8 @@ export async function POST(req: Request) {
           reason: "Nothing logged in those days to read the portions back out of.",
         });
       }
-      await snapshot("before restore from log");
-      const n = await applyPortions(rows);
+      await snapshot(who.id, "restore from the log");
+      const n = await applyPortions(who.id, rows);
       return NextResponse.json({ restored: n, skipped: [] });
     }
 
