@@ -227,7 +227,7 @@ function SignIn() {
             <div className="block">
               <div className="mb-1.5 flex items-baseline gap-2 text-xs text-[var(--color-mut)]">
                 <label htmlFor="mh-password">Password</label>
-                {joining && <span className="text-[#5b6270]">8 characters or more</span>}
+                {joining && <span className="text-[#5b6270]">anything you like</span>}
                 {/* Reading back what you typed matters more here than anywhere
                     else in the app: it is the one field you cannot see, on the
                     one screen where getting it wrong locks you out. */}
@@ -249,7 +249,11 @@ function SignIn() {
                 autoCorrect="off"
                 spellCheck={false}
                 required
-                minLength={joining ? 8 : undefined}
+                /* Safari reads this to decide what its strong-password
+                   generator may produce. Saying everything is allowed and
+                   nothing is required is both true and what makes the
+                   suggestion appear rather than be quietly suppressed. */
+                {...(joining ? { passwordrules: "minlength: 1; allowed: unicode;" } : {})}
               />
             </div>
 

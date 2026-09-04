@@ -180,7 +180,21 @@ export async function passwordMatches(
 /** Letters, digits and the two separators people actually type. */
 export const USERNAME_RULE = /^[a-z0-9][a-z0-9._-]{1,23}$/;
 
-export const PASSWORD_MIN = 8;
+/**
+ * The longest password we'll take. Not a policy — a bound.
+ *
+ * Every rule below this line was deleted on purpose: no minimum length, no
+ * required character classes, nothing to satisfy. Composition rules are a
+ * poor proxy for strength — they push people towards `Password1!` and towards
+ * reusing the one string that satisfies every site — and NIST dropped them
+ * from SP 800-63B for exactly that reason. The browser's own generator makes
+ * a far better password than any rule can force, and it is one tap away.
+ *
+ * This cap stays because it is about the request rather than the person: a
+ * megabyte of "a" is a way to make the server do pointless work, and nobody's
+ * passphrase is a thousand characters.
+ */
+export const PASSWORD_MAX = 1024;
 
 /** Why a sign-up was refused, in words meant for the person typing. */
 export function checkUsername(name: unknown): string | null {
@@ -194,10 +208,20 @@ export function checkUsername(name: unknown): string | null {
   return null;
 }
 
+/**
+ * Whatever you want, as long as it's something.
+ *
+ * The only check left is that there is one. An empty password isn't a password
+ * you chose, it's an account with no password on it, and the sign-in form would
+ * have no way to tell the two apart.
+ *
+ * Existing passwords are untouched by this — they are salted hashes and the
+ * rules were never stored alongside them, so nothing needs migrating and
+ * nobody gets asked to change anything.
+ */
 export function checkPassword(password: unknown): string | null {
-  if (typeof password !== "string") return "Pick a password.";
-  if (password.length < PASSWORD_MIN) return `Passwords are at least ${PASSWORD_MIN} characters.`;
-  if (password.length > 200) return "That password is longer than anything needs to be.";
+  if (typeof password !== "string" || password.length === 0) return "Pick a password.";
+  if (password.length > PASSWORD_MAX) return "That's longer than the box will take.";
   return null;
 }
 

@@ -37,6 +37,17 @@ compared in the browser can, and the middleware covers `/api/*` as well as the
 pages — a login that only hides the screens leaves the data sitting open behind
 them.
 
+**There are no password rules.** Any password, any length, no required
+character classes. Composition rules are a poor proxy for strength — they push
+people towards `Password1!` and towards reusing the one string that satisfies
+every site — and NIST dropped them from SP 800-63B on that basis. The sign-up
+field invites the browser's own generator instead, which produces something
+better than any rule could force.
+
+The honest caveat: there is no rate limiting, so a short password is a
+guessable one. If this is ever reachable by people you don't know, take the
+browser's suggestion.
+
 ### AUTH_SECRET — set this one
 
 ```
