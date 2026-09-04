@@ -114,6 +114,10 @@ create table if not exists ingredients (
   -- Share of this ingredient's meal, by calories, 0-100. The same idea as
   -- meals.share_pct one level down.
   share_pct       numeric,
+  -- Weighed, cooked and divided into containers on prep day. The plan may
+  -- choose the amount; the day you eat it may not, because it is already in
+  -- a box in the fridge. See lib/batch.ts.
+  prepped         boolean not null default false,
   sort_order      int  not null default 0
 );
 

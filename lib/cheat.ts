@@ -22,12 +22,19 @@
  *      single saving and it costs nothing, because you weren't going to eat
  *      dinner and a curry.
  *   2. **What's left of the day is re-fitted.** Only the parts that can move —
- *      food that isn't already cooked and portioned into a container.
+ *      food that isn't already cooked and portioned into a container. A box of
+ *      pasta and tuna you filled on Sunday is a fixed quantity by Friday, and
+ *      an absorber that "reduces" it to 82% is describing a meal you will not
+ *      eat. See `isPrepped` in lib/batch.ts.
  *   3. **If that isn't enough, meals come off**, cheapest first, and never the
  *      ones doing a job: protein is what protects lean mass at maintenance,
- *      and a meal timed around a session is fuelling rather than calories.
+ *      and a meal timed around a session is fuelling rather than calories. A
+ *      cooked-ahead meal can be dropped even though it can't be shrunk — you
+ *      leave the box in the fridge and eat it another day.
  *   4. **Whatever the day still cannot hold is spread over the rest of the
- *      week**, in small daily amounts with a floor under them.
+ *      week**, in small daily amounts with a floor under them — but sparingly.
+ *      A meal out should be paid for mostly on the day it happens, not turned
+ *      into four days of eating slightly less than you planned to.
  *   5. **Anything left after that is reported, in grams of fat**, because a
  *      number you can see is worth more than a plan that quietly pretends.
  *
@@ -48,7 +55,7 @@ import {
 } from "./nutrition";
 import { appliesOn, buildWeekFit, repsOf } from "./weekfit";
 import { solveRows } from "./optimise";
-import { expand, type PlanMeal } from "./batch";
+import { expand, hasPrepped, isPrepped, type PlanMeal } from "./batch";
 import { fixedMacros, type Supplement } from "./supplements";
 
 /* ------------------------------------------------------------------ */
@@ -150,20 +157,33 @@ export type Absorption = {
 
 /** A day may not be cut below this share of its calorie target. */
 const DAY_FLOOR = 0.78;
-/** Nor may any later day give up more than this share of its own. */
-const SPREAD_CAP = 0.12;
+/**
+ * Nor may any later day give up more than this share of its own.
+ *
+ * 6 % of a swim day is about 190 kcal — a smaller breakfast, or the peanut
+ * butter off the bagel. It is the most you can take off a training day before
+ * you are training on less than the day was built for, and the point of doing
+ * this at all is that the swimming does not pay for the curry.
+ *
+ * It used to be 12 %, which absorbed almost anything without dropping a thing
+ * and made a meal out feel free. It isn't free. Halving it means the day the
+ * meal happens does most of the work, which is both the honest accounting and
+ * much easier to live with: one heavier evening and a lighter day around it,
+ * rather than a week that never quite hits its numbers.
+ */
+const SPREAD_CAP = 0.06;
 /**
  * How much of the week's spare capacity to bank on before dropping a meal.
  *
- * Not all of it, deliberately. Counting on the full 12 % from every remaining
- * day means one meal out uses the entire week's slack, and the next thing that
- * happens — a session moved, a second social — has nowhere to go. Counting on
- * none of it is the old behaviour, which deleted your lunch to solve a problem
- * four other days could have absorbed between them. Somewhere near two thirds
- * leaves the week with a margin and still stops the dropping loop from being
+ * Not all of it, deliberately. Counting on every remaining day giving up its
+ * full share means one meal out uses the entire week's slack, and the next
+ * thing that happens — a session moved, a second social — has nowhere to go.
+ * Counting on none of it is the old behaviour, which deleted your lunch to
+ * solve a problem four other days could have absorbed between them. Half
+ * leaves the week a margin and still stops the dropping loop from being
  * trigger-happy.
  */
-const SPREAD_SHARE = 0.6;
+const SPREAD_SHARE = 0.5;
 /**
  * Protein below this share of the day's target is not an outcome the absorber
  * is allowed to choose. It can still happen — swap out the chicken and there
@@ -206,6 +226,13 @@ function isFuelling(meal: PlanMeal, dayTypes: DayType[]): boolean {
  * because the thing that must survive a cheat meal is the protein, and
  * `keep_close`, because a day that is 400 kcal lighter should look like the
  * day it replaces rather than a different meal plan.
+ *
+ * Anything cooked ahead is pinned before the solver sees it. Locking is
+ * exactly the right mechanism — the portion is a number that is no longer up
+ * for discussion — and it means the solve, the bounds and the reporting all
+ * behave without a second code path. What moves instead is the food you plate
+ * on the day: the shake, the fruit, the sweetcorn and the mayonnaise you were
+ * going to add anyway.
  */
 function fitOneDay(
   meals: PlanMeal[],
@@ -214,7 +241,18 @@ function fitOneDay(
   fixed: Macros,
   supplements: Supplement[]
 ): { meals: PlanMeal[]; totals: Macros } {
-  const movable = meals.filter((m) => m.ingredients.length > 0);
+  const movable = meals
+    .filter((m) => m.ingredients.length > 0)
+    .map((m) =>
+      hasPrepped(m)
+        ? {
+            ...m,
+            ingredients: m.ingredients.map((it) =>
+              isPrepped(m, it) ? { ...it, locked: true } : it
+            ),
+          }
+        : m
+    );
   if (!movable.length) return { meals, totals: { ...fixed } };
 
   const fit = buildWeekFit(movable, plan, supplements);
@@ -328,10 +366,17 @@ export function absorbCheat(input: AbsorbInput): Absorption {
 
   /* --- 2. shrink what can move ----------------------------------------- */
 
+  /**
+   * Locked and cooked-ahead are different kinds of "can't change it".
+   *
+   * A portion you locked is a decision: leave the meal alone entirely. A
+   * portion already in a box is a fact: you can't re-weigh it, but you can
+   * perfectly well not eat it and have it tomorrow instead. So a cooked-ahead
+   * meal stays a candidate for dropping — `fitOneDay` is what stops it being
+   * quietly resized — and only a deliberately locked one is set aside.
+   */
   const fixedNames = new Set<number>();
   for (const m of remaining) {
-    // A tray you cooked on Sunday can be served lighter, and often should be.
-    // What cannot move is a portion you locked on purpose.
     if (m.ingredients.every((i) => i.locked)) fixedNames.add(m.id);
   }
 
@@ -414,11 +459,18 @@ export function absorbCheat(input: AbsorbInput): Absorption {
      * need to find, and "close to the size of the overshoot" outvoted "half
      * the day's protein is in it". A cheat meal that quietly costs you 34 g of
      * protein is the exact failure this whole module exists to prevent, so the
-     * meals that would cause it are removed from consideration entirely and
-     * only come back if there is genuinely nothing else left.
+     * meals that would cause it are removed from consideration entirely.
+     *
+     * And if that leaves nothing to drop, the loop stops rather than reaching
+     * for the least-bad option. A very large meal out genuinely cannot be
+     * absorbed by one day, and the two ways of saying so are not equal: a day
+     * that is still over, spread and reported in grams of fat, is the truth.
+     * A day that balances because breakfast, lunch and the pre-swim snack all
+     * disappeared is a plan that has quietly decided you will train on a
+     * curry. It used to do the second one.
      */
     const safe = scored.filter((x) => x.proteinAfter >= proteinFloor);
-    const pick = (fit.totals.protein >= proteinFloor && safe.length ? safe : scored)[0];
+    const pick = safe[0];
     if (!pick) break;
 
     const next = live.filter((m) => m.id !== pick.meal.id);
@@ -438,9 +490,11 @@ export function absorbCheat(input: AbsorbInput): Absorption {
     if (o) {
       o.action = "dropped";
       o.after = { ...ZERO_MACROS };
-      o.why = isFuelling(pick.meal, dayTypes)
-        ? "dropped last, after everything else had moved"
-        : "the cheapest thing to lose";
+      o.why = hasPrepped(pick.meal)
+        ? "cooked ahead, so it can't be made smaller — leave the box for another day"
+        : isFuelling(pick.meal, dayTypes)
+          ? "dropped last, after everything else had moved"
+          : "the cheapest thing to lose";
     }
   }
 
@@ -467,6 +521,20 @@ export function absorbCheat(input: AbsorbInput): Absorption {
   for (const m of held) {
     const o = outcomes.get(m.id);
     if (o) o.why = "locked, so left alone";
+  }
+  for (const m of live) {
+    const o = outcomes.get(m.id);
+    if (!o || o.action === "dropped" || o.action === "replaced" || !hasPrepped(m)) continue;
+    if (!o.why) o.why = "cooked ahead — the box is the size it is";
+  }
+
+  const cookedOnMenu = live.filter((m) => hasPrepped(m)).map((m) => m.name);
+  if (cookedOnMenu.length) {
+    notes.push(
+      `${cookedOnMenu.join(" and ")} ${cookedOnMenu.length === 1 ? "was" : "were"} cooked and ` +
+        `portioned on prep day, so ${cookedOnMenu.length === 1 ? "it holds" : "they hold"} ` +
+        `at the planned weight. The day gives way in the food you plate fresh instead.`
+    );
   }
 
   /* --- 4. spread what's left over the days that follow ------------------ */

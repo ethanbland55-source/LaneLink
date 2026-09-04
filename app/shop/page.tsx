@@ -223,9 +223,10 @@ export default function ShopPage() {
         {pending.length > 0 && (
           <p className="mt-3 rounded-lg bg-[var(--color-surface)] px-3 py-2.5 text-xs leading-relaxed text-[var(--color-mut)]">
             Buying the <b className="text-[var(--color-fg)]">rebalanced</b> portions —{" "}
-            {pending.length} of them change on{" "}
-            {pretty(pending[0].apply_on)}, which is the week this food is for. The Plan page still
-            shows what&rsquo;s in the fridge until then.
+            {pending.length} of them change for {pretty(pending[0].apply_on)}, which is the week
+            this food is for. The Plan page keeps showing what&rsquo;s in the fridge until the
+            evening before, when the last of that day&rsquo;s meals is ticked off — in time to
+            cook to.
           </p>
         )}
 
@@ -344,9 +345,9 @@ export default function ShopPage() {
             <section className="card px-4 py-4 sm:px-5">
               <p className="label">Cook list</p>
               <p className="mt-1.5 text-xs leading-relaxed text-[var(--color-mut)]">
-                Everything you batch cook, for the whole window. Cook it once, then weigh the
-                serving out on the day — the amounts below are already sized to each kind of day,
-                so a heavier day gets a bigger plate rather than a different recipe.
+                Prep day, in weighing order. These are the totals for the whole window — weigh
+                each one out, cook it, then divide the lot evenly between the containers.
+                Anything listed as added on the day stays out of the box until you eat it.
               </p>
 
               <div className="mt-4 space-y-4">
@@ -474,15 +475,15 @@ function Line({
 }
 
 /**
- * One batch: what to cook, and how much of it to put on the plate on each kind
- * of day. The raw column is what you weigh into the pan; the cooked figure is
- * what you'll actually have afterwards, which is the one that has to fit in
- * your containers.
+ * One meal's prep: what to weigh out, and what it comes to once cooked.
+ *
+ * The raw column is what goes into the pan — dry pasta, raw chicken — because
+ * that is what the plan is written in and what you actually weigh. The cooked
+ * figure is what you will be dividing between containers afterwards, which is
+ * the number you need at the other end of the evening.
  */
 function CookCard({ cook }: { cook: BatchCook }) {
   const cooked = cook.ingredients.reduce((a, i) => a + i.cookedGrams, 0);
-  const spread = cook.byDayType.map((d) => d.grams);
-  const varies = spread.length > 1 && Math.max(...spread) - Math.min(...spread) >= 25;
 
   return (
     <div className="sunk px-3.5 py-3">
@@ -509,19 +510,21 @@ function CookCard({ cook }: { cook: BatchCook }) {
           ))}
       </div>
 
+      {/* Cooked weight, not raw. Raw is what you weigh into the pan and it is
+          in the list above; what goes on the scale afterwards, when you are
+          splitting it between containers, is what it became. */}
       <p className="mt-2.5 border-t border-[#1c1f25] pt-2.5 text-[0.7rem] text-[var(--color-mut)]">
-        Makes about {fmt(cooked)} of food. Serve{" "}
-        {varies ? (
-          <>
-            {cook.byDayType
-              .map((d) => `${Math.round(d.grams)} g on ${d.name.toLowerCase()} days (×${d.count})`)
-              .join(", ")}
-            .
-          </>
-        ) : (
-          <>{Math.round(cook.averageServing)} g a time.</>
-        )}
+        Makes about {fmt(cooked)} once cooked — divide into {cook.servings}{" "}
+        {cook.servings === 1 ? "portion" : "portions"} of roughly{" "}
+        {Math.round(cooked / Math.max(1, cook.servings))} g.
       </p>
+
+      {cook.fresh.length > 0 && (
+        <p className="mt-1.5 text-[0.7rem] text-[#5b6270]">
+          Add to each one on the day:{" "}
+          {cook.fresh.map((f) => `${f.name.toLowerCase()} ${f.grams} g`).join(", ")}.
+        </p>
+      )}
     </div>
   );
 }

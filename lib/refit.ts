@@ -52,6 +52,7 @@ function toMeals(meals: Row[], ings: Row[]): PlanMeal[] {
         max_grams: i.max_grams == null ? null : Number(i.max_grams),
         share_pct: i.share_pct == null ? null : Number(i.share_pct),
         locked: !!i.locked,
+        prepped: !!i.prepped,
       })) as any,
   }));
 }
@@ -159,12 +160,17 @@ export async function refitPlan(profile: Profile, today?: string): Promise<Refit
      * whether this call applied it or the other request did a moment ago — the
      * re-fit stands down. It has nothing to add: a staged plan was already
      * fitted to these targets, by you, on purpose.
+     *
+     * The window is two days rather than one because a staged change can come
+     * into force on the Sunday evening, as soon as that day's meals are ticked
+     * off, so that there is something to cook to. A guard that only looked at
+     * today would miss it by a few hours and overwrite it on the Monday.
      */
     const day = today ?? new Date().toISOString().slice(0, 10);
     await applyDuePortions(day);
     const staged = (await sql`
       select 1 from portion_history
-       where reason = 'staged change' and changed_on = ${day}::date
+       where reason = 'staged change' and changed_on >= ${day}::date - 2
        limit 1`) as any[];
     if (staged.length) return null;
 

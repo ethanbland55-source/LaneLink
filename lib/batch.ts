@@ -1,23 +1,32 @@
 /**
- * Batch cooking.
+ * Cooking ahead.
  *
- * If you cook every lunch and dinner for the week on a Sunday, the app's usual
- * assumption — that each ingredient's portion is yours to adjust, meal by meal
- * — is simply false. Once it's a tray of chicken, rice and broccoli in the
- * fridge, you cannot serve 12% more chicken on Saturday. You can only serve
- * more *tray*.
+ * There are two ways to cook a week's food in advance, and the difference
+ * between them decides what the app is allowed to change afterwards.
  *
- * So a batch-cooked meal is modelled as what it physically is: **one
- * ingredient, served by weight**. Its per-100g macros are the weighted average
- * of what went in, its portion is how much of the tray goes on the plate, and
- * the components come back out afterwards in the ratio they were cooked in.
+ * **One tray, served by weight** — `meals.batch`. A chilli goes in a big dish
+ * and you spoon some onto a plate. You cannot serve 12% more of the mince in
+ * it; you can only serve more *dish*. So it is modelled as what it physically
+ * is: one ingredient whose per-100g macros are the weighted average of what
+ * went in, whose portion is how much of the dish goes on the plate, and whose
+ * components come back out in the ratio they were cooked in. That falls out of
+ * the solver for free — a batch is one variable instead of five.
  *
- * That falls out of the existing solver for free — a batch is one variable
- * instead of five — and it's why the answer stays realistic: the fit can make
- * Saturday's plate bigger without pretending you picked the chicken out of it.
+ * **Weighed, then divided** — `ingredients.prepped`. This is the more common
+ * habit and the one this plan is built on: weigh 190 g of pasta and 112 g of
+ * tuna, cook them, stir them together, split the lot into six boxes, and add
+ * the sweetcorn and the mayonnaise on the day. Here the *ratio is still yours*
+ * — right up until Sunday evening, when you stand at the scales. So nothing
+ * about the fit changes: when the plan is being written, nothing is cooked.
  *
- * The pieces that *are* still free to move day to day are the ones you plate
- * fresh: the breakfast, the shake, the fruit. Which is exactly right.
+ * What changes is Thursday. A prepped portion is a sealed box, and no amount
+ * of arithmetic will take 40 g of rice back out of it. You can skip the box;
+ * you cannot shrink it. That distinction is what lib/cheat.ts enforces, and it
+ * is why `prepped` lives on the ingredient rather than the meal: the sweetcorn
+ * and the mayonnaise really are still free, because they haven't been cooked.
+ *
+ * The pieces that are free all week are the ones you plate fresh — the
+ * breakfast, the shake, the fruit. Which is exactly right.
  */
 
 import { type BoundedItem } from "./optimise";
@@ -175,6 +184,35 @@ export function servingGrams(meal: PlanMeal): number {
 }
 
 /* ------------------------------------------------------------------ */
+/* Cooked ahead                                                        */
+/* ------------------------------------------------------------------ */
+
+/**
+ * Is this portion already in a box by the time you eat it?
+ *
+ * True for anything explicitly marked prepped, and for every component of a
+ * batch meal — a tray is cooked ahead by definition.
+ */
+export function isPrepped(meal: PlanMeal, it: BoundedItem): boolean {
+  return !!meal.batch || !!it.prepped;
+}
+
+/** Does any of this meal come out of a container you filled on prep day? */
+export function hasPrepped(meal: PlanMeal): boolean {
+  return meal.ingredients.some((it) => isPrepped(meal, it));
+}
+
+/** The parts of a meal you still weigh, or open, on the day. */
+export function freshParts(meal: PlanMeal): BoundedItem[] {
+  return meal.ingredients.filter((it) => !isPrepped(meal, it));
+}
+
+/** Meals with anything cooked ahead — the ones prep day is actually about. */
+export function preppedMeals(meals: PlanMeal[]): PlanMeal[] {
+  return meals.filter((m) => m.ingredients.length > 0 && hasPrepped(m));
+}
+
+/* ------------------------------------------------------------------ */
 /* Serving size                                                        */
 /* ------------------------------------------------------------------ */
 
@@ -222,6 +260,8 @@ export type BatchCook = {
   averageServing: number;
   byDayType: { id: number; name: string; count: number; grams: number }[];
   ingredients: CookIngredient[];
+  /** Added on the day, out of a tin or a jar — not cooked into the batch. */
+  fresh: { name: string; grams: number }[];
 };
 
 export type CookPlan = {
@@ -231,26 +271,34 @@ export type CookPlan = {
 };
 
 /**
- * What to cook on shopping day, and how to portion it out afterwards.
+ * What to cook on prep day, and how to portion it out afterwards.
  *
  * Walks the window day by day exactly as the shopping list does, so the two
  * always agree: what you buy is what you cook is what you eat.
+ *
+ * A meal qualifies if any of it is cooked ahead — the whole thing for a batch,
+ * or just the parts you marked prepped. The cook list covers only those parts,
+ * because a tin of sweetcorn opened on Wednesday is not something you cook on
+ * Sunday, and putting it on the list would have you weigh out six days of it
+ * into a bowl for no reason. It is listed separately as what to add on the day.
  */
 export function cookPlan(
   meals: PlanMeal[],
   plan: WeekPlan,
   opts: { days: number; dayTypeForDay: (index: number) => number }
 ): CookPlan {
-  const batchMeals = meals.filter((m) => m.batch && m.ingredients.length > 0);
+  const cooked = preppedMeals(meals);
   const notes: string[] = [];
-  if (batchMeals.length === 0) {
+  if (cooked.length === 0) {
     return { days: opts.days, meals: [], notes };
   }
 
   const typeCount = plan.order.length;
 
-  const out: BatchCook[] = batchMeals.map((meal) => {
-    const serving = servingGrams(meal);
+  const out: BatchCook[] = cooked.map((meal) => {
+    const parts = meal.ingredients.filter((it) => isPrepped(meal, it));
+    // The weight that goes into one container: the cooked-ahead parts only.
+    const serving = parts.reduce((a, i) => a + (Number(i.grams) || 0), 0);
     const counts = new Map<number, number>();
     const reps = Math.max(1, Math.round(Number(meal.times_per_day ?? 1)));
 
@@ -271,11 +319,11 @@ export function cookPlan(
 
     const totalGrams = byDayType.reduce((a, d) => a + d.count * d.grams, 0);
     const servingCount = byDayType.reduce((a, d) => a + d.count, 0);
-    const base = servingGrams(meal) || 1;
 
-    const ingredients: CookIngredient[] = meal.ingredients.map((it) => {
-      const ratio = (Number(it.grams) || 0) / base;
-      const grams = totalGrams * ratio;
+    // Weighed per ingredient rather than as a share of the total, because that
+    // is what you actually do: 190 g of pasta six times is 1140 g of pasta.
+    const ingredients: CookIngredient[] = parts.map((it) => {
+      const grams = (Number(it.grams) || 0) * servingCount;
       const p = profileFor(it.name, it);
       return {
         name: it.name,
@@ -293,6 +341,10 @@ export function cookPlan(
       averageServing: servingCount > 0 ? totalGrams / servingCount : 0,
       byDayType,
       ingredients,
+      fresh: freshParts(meal).map((it) => ({
+        name: it.name,
+        grams: Math.round(Number(it.grams) || 0),
+      })),
     };
   });
 

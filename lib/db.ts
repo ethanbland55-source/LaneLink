@@ -34,7 +34,7 @@ let schemaReady: Promise<void> | null = null;
  * a database stamped with an older number runs the whole migration again, and
  * every statement in it is `if not exists`, so running it again is harmless.
  */
-const SCHEMA_VERSION = "2026-09-03.3";
+const SCHEMA_VERSION = "2026-09-04.1";
 
 /**
  * Creates the tables if they don't exist, adds any columns a newer version
@@ -210,6 +210,9 @@ async function createSchema() {
   // Share of this ingredient's meal, by calories. Same idea as meals.share_pct
   // one level down: half the yoghurt bowl's calories in the yoghurt.
   await sql`alter table ingredients add column if not exists share_pct numeric`;
+  // Weighed, cooked and portioned into containers on prep day, rather than
+  // plated the morning you eat it. See lib/batch.ts.
+  await sql`alter table ingredients add column if not exists prepped boolean not null default false`;
 
   // --- Food knowledge, shopping ------------------------------------------
   // fibre_100 / fibre_estimated are still created for databases that predate

@@ -51,6 +51,15 @@ export type BoundedItem = Item & {
    */
   share_pct?: number | null;
   /**
+   * Weighed, cooked and divided into containers on prep day.
+   *
+   * Invisible to this module by design: when the plan is being built, nothing
+   * has been cooked yet and every portion is still yours to choose. It only
+   * bites on the day — see lib/cheat.ts, where a portion already sealed in a
+   * box cannot be re-weighed to pay for a meal out.
+   */
+  prepped?: boolean;
+  /**
    * Suppress whole-unit snapping. Set on a composite that stands in for a
    * cooked batch: a tray called "Bagel & eggs" is served by weight, and must
    * not inherit the bagel's "whole units only" rule.

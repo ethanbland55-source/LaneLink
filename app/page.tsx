@@ -31,7 +31,7 @@ import {
 } from "@/lib/supplements";
 import { GRADE_COLOUR } from "@/lib/evidence";
 import { appliesOn } from "@/lib/shopping";
-import { servingGrams } from "@/lib/batch";
+import { hasPrepped, servingGrams } from "@/lib/batch";
 
 import { normaliseProfile } from "@/lib/profile";
 import { CheatCard, CheatSheet } from "./cheat-ui";
@@ -640,7 +640,11 @@ export default function TodayPage() {
                         <span className="block truncate text-xs tabular-nums text-[var(--color-mut)]">
                           {Math.round(t.kcal)} kcal · {Math.round(t.protein)}P{" "}
                           {Math.round(t.carbs)}C {Math.round(t.fat)}F
-                          {m.batch && ` · weigh ${Math.round(servingGrams(m as any))} g`}
+                          {m.batch
+                            ? ` · weigh ${Math.round(servingGrams(m as any))} g`
+                            : hasPrepped(m as any)
+                              ? " · out of the fridge"
+                              : ""}
                         </span>
                       </span>
                       {used > 0 && (

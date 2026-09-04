@@ -178,7 +178,39 @@ check(
   sunday.spread.length === 0 && (sunday.spill === 0 || sunday.leftover === sunday.spill)
 );
 
-/* ---- 5. the weekly cost, stated plainly -------------------------------- */
+/* ---- 5. what's already in a box stays the size it is -------------------- */
+
+console.log("\n=== Case 5: the cooked-ahead portions hold ===");
+const PREPPED = new Set(
+  REAL_MEALS.flatMap((m) =>
+    m.ingredients.filter((i) => (i as any).prepped).map((i) => `${m.id}:${i.name}`)
+  )
+);
+console.log(`  cooked ahead: ${[...PREPPED].join(", ")}`);
+
+for (const kcal of [900, 1300, 1800]) {
+  const a = run({ day: FRIDAY, meal_id: 6, name: `${kcal} out`, ...completeCheat({ kcal }) });
+  const moved = a.meals.flatMap((m) =>
+    m.portions.filter((p) => PREPPED.has(`${m.mealId}:${p.name}`)).map((p) => `${p.name} ${p.from}→${p.to}`)
+  );
+  check(
+    `${kcal} kcal out — nothing in a container is re-weighed`,
+    moved.length === 0,
+    moved.length ? moved.join(", ") : "pasta, tuna, chicken and rice all held"
+  );
+}
+
+// And the parts you add on the day really are still free, or the day would
+// have nothing to give and every meal out would end in a dropped meal.
+const fresh = run({ day: FRIDAY, meal_id: 6, name: "Pub", ...completeCheat({ kcal: 1200 }) });
+const lunch = fresh.meals.find((m) => m.mealId === 2);
+check(
+  "the sweetcorn and the mayonnaise can still move",
+  lunch?.action !== "resized" || lunch.portions.every((p) => !PREPPED.has(`2:${p.name}`)),
+  lunch?.portions.map((p) => p.name).join(", ") || "lunch untouched"
+);
+
+/* ---- 6. the weekly cost, stated plainly -------------------------------- */
 
 console.log("\n=== What one a week actually costs ===\n");
 for (const kcal of [800, 1100, 1500, 2000]) {

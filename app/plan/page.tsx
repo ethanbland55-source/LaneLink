@@ -85,6 +85,7 @@ const BLANK: BoundedItem = {
   min_grams: null,
   max_grams: null,
   locked: false,
+  prepped: false,
   share_pct: null,
 };
 
@@ -727,7 +728,8 @@ export default function PlanPage() {
           </div>
           <p className="mt-1 text-xs leading-relaxed text-[var(--color-mut)]">
             The plan below is what is in the fridge this week. The shopping list is already
-            buying for these.
+            buying for these. They come in the evening before, as soon as that day&rsquo;s meals
+            are all ticked off — so what you cook on prep night is next week&rsquo;s numbers.
           </p>
           <ul className="mt-2.5 space-y-0.5">
             {pending.slice(0, 6).map((c) => (
@@ -2183,6 +2185,17 @@ function IngredientRow({
                 onClick={() => onPatch({ locked: !it.locked })}
               >
                 {it.locked ? "locked" : "lock"}
+              </button>
+              {/* Cooked and boxed on prep day. The plan still chooses the
+                  amount — nothing is cooked when the plan is written — but a
+                  cheat meal can't shrink it afterwards, and the cook list
+                  weighs it out for the whole week. */}
+              <button
+                className={it.prepped ? "text-[var(--color-accent)]" : "text-[#5b6270]"}
+                title="Weighed, cooked and divided into containers on prep day. A cheat meal can skip it but not shrink it."
+                onClick={() => onPatch({ prepped: !it.prepped })}
+              >
+                {it.prepped ? "cooked ahead" : "cook ahead"}
               </button>
             </>
           )}

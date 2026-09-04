@@ -41,7 +41,7 @@
  */
 
 import { sql } from "./db";
-import { dayKey } from "./nutrition";
+import { addDays, dayKey, WEEKDAYS } from "./nutrition";
 import { snapshot } from "./history";
 import { dowOf, nextRollDay } from "./weekly";
 
@@ -71,22 +71,85 @@ export function applyDayFor(rollDow: number, today: string = dayKey()): string {
 }
 
 /**
+ * Sunday evening, once the day is actually finished with.
+ *
+ * Roll day is Monday because Monday is the first day you eat the new numbers.
+ * But the cooking happens the night before, and you cannot cook to a plan the
+ * app is still refusing to show you: standing at the hob on Sunday with the
+ * scales out, "190 g of pasta" has to be next week's 190 g, not the one you
+ * have been eating all week.
+ *
+ * Waiting until midnight is the wrong answer and so is rolling at teatime —
+ * Sunday's own portions are still being eaten. What marks the boundary is
+ * finishing the day: once every meal on Sunday's menu is ticked off, nothing
+ * is left that the old numbers describe, and the new ones can come in early.
+ *
+ * Returns true when this day is the eve of roll day and has been eaten
+ * through. Only ever called when something is genuinely staged for tomorrow,
+ * so it costs nothing on the other three hundred days of the year.
+ */
+async function dayIsDoneBeforeRoll(day: string): Promise<boolean> {
+  const rows = (await sql`
+    select plan_roll_dow, shop_start_dow, week_ids from profile where id = 1`) as any[];
+  const p = rows[0];
+  if (!p) return false;
+
+  const rollDow = Number(p.plan_roll_dow ?? p.shop_start_dow ?? 1);
+  if (dowOf(addDays(day, 1)) !== rollDow) return false;
+
+  const weekday = WEEKDAYS[(dowOf(day) + 6) % 7];
+  const dayTypeId = Number((p.week_ids ?? {})[weekday]);
+  if (!Number.isFinite(dayTypeId) || dayTypeId <= 0) return false;
+
+  // The menu for the day, by the same rule the rest of the app uses: no list
+  // means every day, and a list naming every day type means the same thing.
+  const [menu] = (await sql`
+    select count(*)::int as n
+      from meals
+     where coalesce(array_length(day_type_ids, 1), 0) = 0
+        or ${dayTypeId} = any(day_type_ids)
+        or array_length(day_type_ids, 1) >= (select count(*) from day_types)`) as any[];
+
+  const [done] = (await sql`
+    select count(distinct meal_id)::int as n
+      from log_entries
+     where day = ${day}::date and confirmed and meal_id is not null`) as any[];
+
+  const need = Number(menu?.n ?? 0);
+  return need > 0 && Number(done?.n ?? 0) >= need;
+}
+
+/**
  * Swap in anything that has come due.
  *
- * Two statements, and only when there is something waiting — the count is the
+ * Two statements, and only when there is something waiting — the read is the
  * cheap query that keeps this off the critical path on every page load, and it
  * is an index-only scan on a table that is almost always empty.
+ *
+ * It looks one day ahead as well, because a change due on roll day may come
+ * into force the evening before once that evening's meals are done. See
+ * `dayIsDoneBeforeRoll`.
  *
  * Returns how many portions changed, which the caller may ignore.
  */
 export async function applyDuePortions(today?: string): Promise<number> {
   try {
     const day = today ?? dayKey();
-    const due = (await sql`
-      select meal_id, slot, name, grams
+    const soon = (await sql`
+      select meal_id, slot, name, grams, to_char(apply_on, 'YYYY-MM-DD') as apply_on
         from pending_portions
-       where apply_on <= ${day}::date`) as any[];
+       where apply_on <= ${day}::date + 1`) as any[];
+    if (!soon.length) return 0;
+
+    const ready = soon.filter((r) => String(r.apply_on) <= day);
+    const tomorrow = soon.filter((r) => String(r.apply_on) > day);
+
+    const due =
+      tomorrow.length && (await dayIsDoneBeforeRoll(day)) ? soon : ready;
     if (!due.length) return 0;
+
+    // Everything up to and including the latest date being applied.
+    const cutoff = due.reduce((a, r) => (String(r.apply_on) > a ? String(r.apply_on) : a), day);
 
     // What they were, before they stop being what they were.
     await snapshot("staged change", day);
@@ -108,7 +171,7 @@ export async function applyDuePortions(today?: string): Promise<number> {
       )
       select count(*)::int as n from moved`) as any[];
 
-    await sql`delete from pending_portions where apply_on <= ${day}::date`;
+    await sql`delete from pending_portions where apply_on <= ${cutoff}::date`;
     return Number(rows[0]?.n ?? 0);
   } catch (e) {
     // A page that can't apply a staged change should still render the plan it

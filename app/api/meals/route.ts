@@ -36,6 +36,8 @@ export async function GET() {
           min_grams: i.min_grams == null ? null : Number(i.min_grams),
           max_grams: i.max_grams == null ? null : Number(i.max_grams),
           share_pct: i.share_pct == null ? null : Number(i.share_pct),
+          locked: !!i.locked,
+          prepped: !!i.prepped,
         })),
     }))
   );
@@ -128,6 +130,8 @@ export async function PUT(req: Request) {
       min_grams: i.min_grams == null ? null : num(i.min_grams),
       max_grams: i.max_grams == null ? null : num(i.max_grams),
       locked: !!i.locked,
+      // Cooked and boxed on prep day. Free to the fit, fixed on the day.
+      prepped: !!i.prepped,
       share_pct: sharePct(i.share_pct),
       sort_order: n,
     };
@@ -138,16 +142,16 @@ export async function PUT(req: Request) {
       insert into ingredients
         (meal_id, name, grams, kcal_100, protein_100, carbs_100, fat_100,
          food_class, aisle, pack_grams, min_grams, max_grams, locked,
-         share_pct, sort_order)
+         prepped, share_pct, sort_order)
       select meal_id, name, grams, kcal_100, protein_100, carbs_100, fat_100,
              food_class, aisle, pack_grams, min_grams, max_grams, locked,
-             share_pct, sort_order
+             prepped, share_pct, sort_order
         from jsonb_to_recordset(${JSON.stringify(rows)}::jsonb)
           as t(meal_id int, name text, grams numeric, kcal_100 numeric,
                protein_100 numeric, carbs_100 numeric, fat_100 numeric,
                food_class text, aisle text, pack_grams numeric,
                min_grams numeric, max_grams numeric, locked boolean,
-               share_pct numeric, sort_order int)`;
+               prepped boolean, share_pct numeric, sort_order int)`;
   }
   return NextResponse.json({ ok: true });
 }
