@@ -35,6 +35,24 @@ import { useEffect, useRef } from "react";
  *
  * The interval is slow on purpose. This is a correctness backstop, not
  * telemetry, and the visibility trigger does most of the work.
+ *
+ * ## Reloading at most once per build
+ *
+ * The check assumes that reloading fixes the mismatch. When that assumption is
+ * wrong — the two ids are generated differently rather than the page being
+ * genuinely old — reloading does not fix it, the fresh page checks again, and
+ * the app spins forever at the speed of a page load. That is not a theoretical
+ * failure; it is what `String(Date.now())` in next.config.ts did to every
+ * local `next dev` and `next start` for weeks (see that file), and one absent
+ * environment variable would have done the same to the live site.
+ *
+ * So the build we reloaded *for* is written down first, in sessionStorage —
+ * per tab, cleared when the tab closes, which is exactly the scope of "have I
+ * already tried this". If the same server build is still disagreeing after a
+ * reload, the reload is not working and the honest thing is to stop and stay
+ * on the old code. Being a version behind is a small problem. An app that
+ * reloads forever is not a small problem, and it looks identical to the app
+ * being down.
  */
 
 /** How often to ask, while the tab is in front. */
@@ -42,6 +60,34 @@ const EVERY_MS = 5 * 60 * 1000;
 
 /** The build this bundle was compiled from. */
 const MINE = process.env.NEXT_PUBLIC_BUILD_ID ?? "dev";
+
+/** Where the last attempt is remembered. Per tab, and gone when it closes. */
+const TRIED_KEY = "mh:reloaded-for";
+
+/**
+ * Storage that cannot throw.
+ *
+ * Safari in private mode, and any browser set to block site data, raise on
+ * access rather than returning null. A staleness check that crashes the app it
+ * is meant to keep healthy would be a poor trade, so both directions swallow.
+ * Failing to read means we might reload one extra time; failing to write means
+ * the guard is off, which is where we started.
+ */
+function recall(): string | null {
+  try {
+    return sessionStorage.getItem(TRIED_KEY);
+  } catch {
+    return null;
+  }
+}
+
+function remember(build: string): void {
+  try {
+    sessionStorage.setItem(TRIED_KEY, build);
+  } catch {
+    // No storage, no guard. Nothing to be done about it from here.
+  }
+}
 
 export function Fresh() {
   const reloading = useRef(false);
@@ -61,6 +107,9 @@ export function Fresh() {
 
     let timer: ReturnType<typeof setInterval> | null = null;
 
+    /** The server build we most recently found ourselves behind. */
+    let seen: string | null = null;
+
     /** True when a reload would cost someone something they typed. */
     function busy(): boolean {
       const el = document.activeElement as HTMLElement | null;
@@ -71,7 +120,11 @@ export function Fresh() {
 
     function reloadIfAllowed() {
       if (!stale.current || reloading.current || busy()) return;
+      // Already came back from a reload for this exact build and it is still
+      // reporting a mismatch. Reloading did not help and will not help.
+      if (seen && recall() === seen) return;
       reloading.current = true;
+      if (seen) remember(seen);
       window.location.reload();
     }
 
@@ -86,6 +139,7 @@ export function Fresh() {
         if (!res.ok) return;
         const { build } = (await res.json()) as { build?: string };
         if (!build || build === MINE) return;
+        seen = build;
         stale.current = true;
         reloadIfAllowed();
       } catch {

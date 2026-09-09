@@ -18,7 +18,7 @@
 
 import { profileFor } from "./foods";
 import { normaliseSessions, sessionsKcal, type Session } from "./activities";
-import { assumedBodyFat, navyBodyFat, type BfEstimate } from "./bodyfat";
+import { SCAN_ERROR, assumedBodyFat, type BfEstimate } from "./bodyfat";
 import { carbBandFor, type CarbBand } from "./evidence";
 
 export type Goal = "cut" | "maintain" | "recomp" | "bulk";
@@ -100,20 +100,16 @@ export type Profile = {
   dob: string | null;
   height_cm: number;
   weight_kg: number;
-  body_fat_pct: number | null;
-  /** Where the body fat figure comes from: typed in, from the tape, or nowhere. */
   /**
-   * Where the body fat figure came from. "skinfold" belongs here as much as
-   * "tape" does — the app offers calipers as a method, and a profile that
-   * cannot record having used them makes the setting and the measurement
-   * disagree about what is being measured.
+   * A starting body fat figure, for an account that has not scanned yet.
+   *
+   * There is no "where did this come from" column any more. There used to be,
+   * because there used to be three ways to arrive at the number and they
+   * disagreed with each other; there is one now, and a setting that can only
+   * hold one value is a setting that should not exist. Once you scan, the
+   * weekly roll takes the figure off the scan and this stops being read.
    */
-  bf_source: "none" | "manual" | "tape" | "skinfold";
-  /** One-off tape measurements for the Navy estimate. */
-  neck_cm: number | null;
-  hip_cm: number | null;
-  /** Most recent waist reading, kept here so the estimate stays current. */
-  waist_cm: number | null;
+  body_fat_pct: number | null;
   /** Legacy all-in-one multiplier, used only when energy_model is "flat". */
   activity: number;
   /** Everything that isn't a logged session. Used when energy_model is "sessions". */
@@ -133,6 +129,12 @@ export type Profile = {
   /** Expenditure worked out from your own intake and weight trend. */
   calibrated_tdee: number | null;
   use_calibration: boolean;
+  /**
+   * The self-correcting part of the calorie target, as a fraction of
+   * maintenance. Written once a week by the roll, never by hand, and clamped
+   * to ±8%. See lib/steer.ts for what moves it and why so slowly.
+   */
+  recomp_adjust: number;
   calorie_override: number | null;
   carb_floor_per_kg: number;
   /**
@@ -330,60 +332,35 @@ export function phaseOf(p: Profile, today: string): Phase {
 }
 
 /**
- * A body fat percentage, however we can get one.
+ * A body fat percentage, if there is one.
  *
- * Typed in by hand if you've had it measured; otherwise estimated from a tape,
- * which most people can actually do. Neck is a one-off measurement and the
- * waist you're taking anyway, so the estimate keeps itself current as the
- * waist moves — which is the half of it worth trusting.
+ * Two places to look and no methods to choose between. The figure the weekly
+ * roll took off your last scan wins, because it came off a real measurement on
+ * a real day; the profile's own number is the fallback for an account that has
+ * not scanned yet. If neither is there, nothing here invents one — BMR falls
+ * back to height and age, and the protein target says out loud that lean mass
+ * is being assumed.
  */
 export function estimatedBodyFat(p: Profile): BfEstimate | null {
   const kg = planWeight(p);
+  const split = (pct: number, error: number, label: string): BfEstimate => ({
+    pct,
+    leanKg: Math.round(kg * (1 - pct / 100) * 10) / 10,
+    fatKg: Math.round(kg * (pct / 100) * 10) / 10,
+    error,
+    method: "scan",
+    label,
+  });
 
-  // The figure the weekly roll took off your measurements wins: it came from
-  // an actual tape or an actual set of calipers on an actual day, which beats
-  // re-deriving one from whatever happens to be in the settings.
+  // Deliberately says where the figure sits, not how it was taken. A profile
+  // rolled before this change is carrying a number the old tape estimate
+  // produced, and captioning that "scanned" would be the app telling itself a
+  // story. It stops being a question the first time a real scan rolls in.
   if (p.plan_bf_pct != null && p.plan_bf_pct > 0) {
-    const pct = p.plan_bf_pct;
-    return {
-      pct,
-      leanKg: Math.round(kg * (1 - pct / 100) * 10) / 10,
-      fatKg: Math.round(kg * (pct / 100) * 10) / 10,
-      error: 3,
-      method: "manual",
-      label: "measured this week",
-    };
+    return split(p.plan_bf_pct, SCAN_ERROR, "this week's figure");
   }
-
-  if (p.bf_source === "manual" && p.body_fat_pct != null && p.body_fat_pct > 0) {
-    const pct = p.body_fat_pct;
-    return {
-      pct,
-      leanKg: Math.round(kg * (1 - pct / 100) * 10) / 10,
-      fatKg: Math.round(kg * (pct / 100) * 10) / 10,
-      error: 0,
-      method: "manual",
-      label: "measured",
-    };
-  }
-  /**
-   * Calipers are recorded on the weigh-in, not the profile, so there is
-   * nothing to recompute here — the snapshot above has already used it. This
-   * branch exists so that choosing calipers does not silently fall through to
-   * the tape estimate, which reads high on a lean athlete and would quietly
-   * disagree with the figure the weigh-in produced.
-   */
-  if (p.bf_source === "skinfold") return null;
-
-  if (p.bf_source === "tape" && p.neck_cm && p.waist_cm) {
-    return navyBodyFat({
-      sex: p.sex,
-      heightCm: p.height_cm,
-      neckCm: p.neck_cm,
-      waistCm: p.waist_cm,
-      hipCm: p.hip_cm,
-      weightKg: kg,
-    });
+  if (p.body_fat_pct != null && p.body_fat_pct > 0) {
+    return split(p.body_fat_pct, SCAN_ERROR, "your starting figure");
   }
   return null;
 }
@@ -440,6 +417,9 @@ export function dayTypeCost(p: Profile, dt: DayType): number {
  */
 export const EA_OPTIMAL = 40;
 export const EA_FLOOR = 30;
+
+/** However the phase and the steer add up, the week never goes below this. */
+export const TOTAL_ADJUST_FLOOR = -0.15;
 
 export type Targets = Macros & {
   dayTypeId: number;
@@ -606,10 +586,20 @@ export function buildWeekPlan(
     calibrated = true;
   }
 
+  /**
+   * The target, with the week-by-week steer folded in.
+   *
+   * The phase curve says where the block intends to be; `recomp_adjust` says
+   * what your own body fat and lean mass have since had to say about that. The
+   * two add, and the sum is clamped — a phase drifting to −8% plus a steer at
+   * its own −8% limit would otherwise compound into a cut nobody asked for.
+   * A hand-typed override beats both, because you typed it.
+   */
+  const steered = Math.max(TOTAL_ADJUST_FLOOR, phase.adjust + (p.recomp_adjust ?? 0));
   const goalKcal =
     p.calorie_override != null && p.calorie_override > 0
       ? p.calorie_override
-      : maintenance * (1 + phase.adjust);
+      : maintenance * (1 + steered);
 
   // Balance: pinned days come out of the weekly pot, the rest share what's left
   // in proportion to what they cost.

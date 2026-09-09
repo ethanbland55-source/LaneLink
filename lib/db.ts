@@ -35,7 +35,7 @@ let schemaReady: Promise<void> | null = null;
  * a database stamped with an older number runs the whole migration again, and
  * every statement in it is `if not exists`, so running it again is harmless.
  */
-const SCHEMA_VERSION = "2026-09-04.2-accounts";
+const SCHEMA_VERSION = "2026-09-09.1-scan";
 
 /**
  * Creates the tables if they don't exist, adds any columns a newer version
@@ -258,6 +258,10 @@ async function createSchema() {
   await sql`alter table profile add column if not exists phase_end_adjust numeric`;
   await sql`alter table profile add column if not exists calibrated_tdee numeric`;
   await sql`alter table profile add column if not exists use_calibration boolean not null default false`;
+  // The self-correcting part of the calorie target, written once a week by the
+  // roll. Defaults to zero, so an account that has never scanned is exactly
+  // where it was — the steer can only move what it has evidence about.
+  await sql`alter table profile add column if not exists recomp_adjust numeric not null default 0`;
   await sql`alter table profile add column if not exists shop_days int not null default 7`;
   await sql`alter table profile add column if not exists shop_start_dow int not null default 6`;
   await sql`alter table profile add column if not exists plan_roll_dow int not null default 1`;

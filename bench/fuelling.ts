@@ -44,7 +44,6 @@ function profileWith(over: Partial<Profile>): Profile {
     calorie_override: null,
     body_fat_pct: 12,
     plan_bf_pct: 12,
-    bf_source: "skinfold",
     ...over,
   } as Profile;
 }
@@ -103,7 +102,7 @@ for (const adjust of [0, -0.05, -0.1, -0.2, -0.35]) {
 /* ---- 3. without a body-fat figure it does nothing, loudly -------------- */
 
 console.log("\n=== With no body composition figure ===\n");
-const blind = { ...REAL_PROFILE, calorie_override: null, body_fat_pct: null, plan_bf_pct: null, bf_source: "none" } as Profile;
+const blind = { ...REAL_PROFILE, calorie_override: null, body_fat_pct: null, plan_bf_pct: null } as Profile;
 const blindPlan = buildWeekPlan(blind, REAL_DAY_TYPES, { today: MONDAY });
 const blindEnergy = weekEnergy(blind, blindPlan);
 check(

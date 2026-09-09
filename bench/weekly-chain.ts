@@ -20,52 +20,57 @@ import {
   type Profile,
 } from "../lib/nutrition";
 import { applyRoll, rollState, planDayForShop } from "../lib/weekly";
-import { skinfoldBodyFat } from "../lib/bodyfat";
+import { steerRecomp } from "../lib/steer";
 import { buildShoppingList } from "../lib/shopping";
-import type { WeighIn } from "../lib/trend";
+import { composition, weightRate, type WeighIn } from "../lib/trend";
 
-const AGE = 21;
-
-/** Three weeks of weigh-ins at scattered times, with a caliper reading each Monday. */
-function history(startKg: number, weeklyLossKg: number, sfStart: number): any[] {
+/**
+ * Five weeks of weigh-ins at scattered times, with a scan every Monday and
+ * every Saturday — the two days the plan already turns on.
+ *
+ * The scans carry their own noise on purpose. Bioimpedance reads hydration, so
+ * the whole point of the machinery downstream is that it does not react to one
+ * of them, and a fixture with a perfectly clean slope would prove nothing.
+ */
+function history(startKg: number, weeklyLossKg: number, bfStart: number, bfPerWeek: number): any[] {
   const out: any[] = [];
   const times = ["06:45", "07:20", "09:10", "21:30", "07:05", "13:00", "07:40"];
-  for (let d = 0; d < 21; d++) {
-    const day = new Date(Date.UTC(2026, 7, 17 + d)).toISOString().slice(0, 10);
+  for (let d = 0; d < 35; d++) {
+    const date = new Date(Date.UTC(2026, 7, 3 + d));
+    const day = date.toISOString().slice(0, 10);
     const trueKg = startKg - (weeklyLossKg * d) / 7;
     const at = times[d % times.length];
     const hour = Number(at.slice(0, 2)) + Number(at.slice(3)) / 60;
     // What the scale would actually read at that hour, plus a little noise.
     const reading = trueKg + Math.max(0, Math.min(14, hour - 6)) * 0.085 + Math.sin(d * 2.3) * 0.25;
 
-    const e: any = { day, weight_kg: Math.round(reading * 10) / 10, waist_cm: null, at_time: at };
+    const e: any = { day, weight_kg: Math.round(reading * 10) / 10, at_time: at };
 
-    // Monday: calipers. Skinfolds shrink as the recomp works.
-    if (d % 7 === 0) {
-      const drop = (d / 7) * 1.2;
-      const sites = [sfStart - drop, sfStart + 6 - drop, sfStart + 2 - drop];
-      const bf = skinfoldBodyFat({ sex: "male", ageYears: AGE, sites, weightKg: trueKg });
-      e.bf_pct = bf?.pct ?? null;
-      e.bf_method = "skinfold";
-      e.sf_chest = sites[0];
-      e.sf_abdomen = sites[1];
-      e.sf_thigh = sites[2];
-      // The tape is still taken alongside, as the backup.
-      e.waist_cm = 81 - drop * 0.35;
-      e.neck_cm = 39;
+    const dow = date.getUTCDay();
+    if (dow === 1 || dow === 6) {
+      const trueBf = bfStart + (bfPerWeek * d) / 7;
+      e.bf_pct = Math.round((trueBf + Math.sin(d * 1.9) * 0.35) * 10) / 10;
+      e.bf_method = "scan";
     }
     out.push(e);
   }
   return out;
 }
 
-const entries = history(78.8, 0.15, 8);
+const entries = history(78.8, 0.15, 13.4, -0.22);
 
-console.log("=== 1. the measurement becomes a body fat figure ===");
-for (const e of entries.filter((x) => x.bf_pct != null)) {
+console.log("=== 1. the scans, and what they say you are made of ===");
+{
+  const comp = composition(entries as WeighIn[]);
+  for (const pt of comp?.points ?? []) {
+    console.log(
+      `  ${pt.day}  ${pt.bfPct}%  of ${pt.weightKg} kg trend  ->  ${pt.leanKg} kg lean, ${pt.fatKg} kg fat`
+    );
+  }
   console.log(
-    `  ${e.day}  calipers ${e.sf_chest.toFixed(1)}/${e.sf_abdomen.toFixed(1)}/${e.sf_thigh.toFixed(1)} mm` +
-      `  -> ${e.bf_pct}%   (tape also logged: waist ${e.waist_cm.toFixed(1)} cm)`
+    `  ${comp?.scans} scans over ${comp?.days} days: body fat ${comp?.bfPtsPerMonth.toFixed(2)} pts/month, ` +
+      `lean ${comp?.leanKgPerMonth.toFixed(2)} kg/month, fat ${comp?.fatKgPerMonth.toFixed(2)} kg/month ` +
+      `(settled: ${comp?.settled})`
   );
 }
 
@@ -79,12 +84,18 @@ for (const mon of mondays) {
     console.log(`  ${mon}  not enough readings yet`);
     continue;
   }
-  p = applyRoll(p, st.figures, st.dueOn);
+  const maintenance = buildWeekPlan(p, REAL_DAY_TYPES, { today: mon }).maintenance;
+  const steer = steerRecomp(p, weightRate(seen as WeighIn[]), composition(seen as WeighIn[]), maintenance);
+  p = applyRoll(p, st.figures, st.dueOn, steer);
   const bf = estimatedBodyFat(p);
   console.log(
     `  ${mon}  due=${String(st.due).padEnd(5)} plan weight ${planWeight(p)} kg  ` +
       `body fat ${bf?.pct ?? "—"}% (${bf?.label ?? "none"})  lean ${leanMass(p)?.toFixed(1) ?? "—"} kg  ` +
       `-> protein ${Math.round(proteinTarget(p))} g`
+  );
+  console.log(
+    `             steer: ${steer.headline}` +
+      (steer.moving ? ` (${steer.kcal > 0 ? "+" : ""}${steer.kcal} kcal, now ${steer.totalKcal})` : "")
   );
 }
 

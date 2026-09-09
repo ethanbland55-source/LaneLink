@@ -10,7 +10,7 @@ import {
   type WeighIn,
 } from "../lib/trend";
 import { lastShopDay, nextShopDay, rollFigures, rollState, applyRoll } from "../lib/weekly";
-import { navyBodyFat, skinfoldBodyFat } from "../lib/bodyfat";
+import { fromScan } from "../lib/bodyfat";
 import { doseSpacing } from "../lib/protein";
 import { REAL_DAY_TYPES, REAL_PROFILE } from "./real-plan";
 
@@ -34,11 +34,10 @@ for (let d = 0; d < 42; d++) {
   const noise = Math.sin(d * 2.1) * 0.3;
   const reading = Math.round((78 + noise + (h - 6) * TRUE_RISE) * 10) / 10;
   const hh = `${String(Math.floor(h)).padStart(2, "0")}:${String(Math.round((h % 1) * 60)).padStart(2, "0")}`;
-  timed.push({ day, weight_kg: reading, waist_cm: null, at_time: hh });
+  timed.push({ day, weight_kg: reading, at_time: hh });
   tagged.push({
     day,
     weight_kg: reading,
-    waist_cm: null,
     tag: h < 11 ? "morning" : h < 17 ? "other" : "evening",
   });
 }
@@ -58,13 +57,11 @@ console.log(`  ignoring the time  ${rNaive.current.toFixed(2)} kg, ${rNaive.kgPe
 console.log(`  (true weight 78.00 kg, true drift 0.000 kg/wk)`);
 
 /* ------------------------------------------------------------------ */
-console.log("\n=== 2. Body fat, both ways ===");
-const tape = navyBodyFat({ sex: "male", heightCm: 182.88, neckCm: 39, waistCm: 81, weightKg: 78.35 });
-console.log(`  tape    neck 39, waist 81 -> ${tape?.pct}% (${tape?.leanKg} kg lean, ±${tape?.error})`);
-const calip = skinfoldBodyFat({ sex: "male", ageYears: 21, sites: [8, 14, 11], weightKg: 78.35 });
-console.log(`  calipers 8/14/11 mm      -> ${calip?.pct}% (${calip?.leanKg} kg lean, ±${calip?.error})`);
-const leaner = navyBodyFat({ sex: "male", heightCm: 182.88, neckCm: 39, waistCm: 78, weightKg: 78.35 });
-console.log(`  waist 81 -> 78 cm at the same weight: ${tape?.pct}% -> ${leaner?.pct}%`);
+console.log("\n=== 2. What a scan splits a bodyweight into ===");
+const scan = fromScan(13.4, 78.35);
+console.log(`  13.4% of 78.35 kg -> ${scan?.leanKg} kg lean, ${scan?.fatKg} kg fat (±${scan?.error} pts)`);
+const leaner = fromScan(12.4, 78.35);
+console.log(`  one point off at the same weight: lean ${scan?.leanKg} -> ${leaner?.leanKg} kg, fat ${scan?.fatKg} -> ${leaner?.fatKg} kg`);
 
 /* ------------------------------------------------------------------ */
 console.log("\n=== 3. The plan rolls on shopping day, and only then ===");
@@ -83,7 +80,6 @@ for (let d = 0; d < 30; d++) {
   drifting.push({
     day,
     weight_kg: Math.round((79.2 - d * 0.03 + Math.sin(d * 1.7) * 0.25) * 10) / 10,
-    waist_cm: null,
     at_time: "07:00",
   });
 }

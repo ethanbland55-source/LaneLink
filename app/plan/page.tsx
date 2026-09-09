@@ -4,15 +4,7 @@ import { useEffect, useMemo, useState } from "react";
 import Link from "next/link";
 import { RecalculateDialog } from "../recalculate";
 import { applyDayFor, type PendingPortion } from "@/lib/pending";
-import { EA_FLOOR, EA_OPTIMAL } from "@/lib/nutrition";
-import {
-  balancedEa,
-  contextOf,
-  fatCheck,
-  lossRate,
-  proteinVerdict,
-  weekEnergy,
-} from "@/lib/fuelling";
+import { fatCheck, lossRate, proteinVerdict } from "@/lib/fuelling";
 import { lastRollDay, nextRollDay } from "@/lib/weekly";
 import { Bar, MACRO_COLOR, MACRO_LABEL, Segmented, Stat, type MacroKey } from "../macro-ui";
 import { type BoundedItem } from "@/lib/optimise";
@@ -21,7 +13,6 @@ import { dayVolume, volumeHeadline } from "@/lib/prep";
 import { profileFor } from "@/lib/foods";
 import { proteinDistribution } from "@/lib/protein";
 import { fixedMacros, type Supplement } from "@/lib/supplements";
-import { short } from "@/lib/evidence";
 import { AddSupplement, References, SupplementRow } from "../supplements-ui";
 import { NumberField } from "../number-field";
 import {
@@ -156,22 +147,18 @@ export default function PlanPage() {
 
   const todayKey = useMemo(() => dayKey(), []);
 
-  /** Energy availability, rate of loss and protein — the fuelling picture. */
-  const energy = useMemo(
-    () => (profile && plan ? weekEnergy(profile, plan) : []),
-    [profile, plan]
-  );
+  /**
+   * Rate of loss, fat share and protein — the three checks that can still stop
+   * the page. The energy-availability floor itself has not gone anywhere; it
+   * still lifts a two-session day above the deficit inside buildWeekPlan. What
+   * went is the permanent chart of it, which reported good news every day of
+   * the year and was therefore only ever read once.
+   */
   const rate = useMemo(
     () =>
       profile && plan
         ? lossRate(profile, plan)
         : { pctPerWeek: 0, kgPerWeek: 0, verdict: "maintaining" as const, note: "" },
-    [profile, plan]
-  );
-  /** Restricting, in balance, or in surplus — it changes what EA means. */
-  const balance = useMemo(() => (plan ? contextOf(plan) : "balanced"), [plan]);
-  const eaAtBalance = useMemo(
-    () => (profile && plan ? balancedEa(profile, plan) : null),
     [profile, plan]
   );
   const fats = useMemo(
@@ -274,6 +261,22 @@ export default function PlanPage() {
   const underFuelled = fuel.filter(
     (c) => c.verdict === "under_fuelled" && usedDayTypes.has(c.dayTypeId)
   );
+
+  /**
+   * Whether there is anything to say at all.
+   *
+   * Gate the whole card on this rather than each flag on its own, so a good
+   * week renders no heading, no border and no empty box — the absence of the
+   * card is the message.
+   */
+  const concerns =
+    !!plan &&
+    (plan.order.some((id) => targetsFor(plan, id).eaFloored) ||
+      lowFat.length > 0 ||
+      proteinCheck.verdict === "low" ||
+      proteinCheck.verdict === "very_high" ||
+      underFuelled.length > 0 ||
+      rate.verdict === "too_fast");
 
   /** Meals that share their days with another meal — the only ones a share means anything for. */
   const shareGroups = useMemo(() => {
@@ -768,73 +771,20 @@ export default function PlanPage() {
         </section>
       )}
 
-      {/* Lean, fuelled, fast — the three numbers that decide whether getting
-          leaner is costing you the swimming. Placed above the week because a
-          calorie average that looks fine can hide a day that isn't. */}
-      {plan && profile && energy.length > 0 && (
+      {/* Anything actually wrong.
+          This card used to be a permanent readout: a bar per day type for
+          energy availability, a carbohydrate band per day type below it, and a
+          strip of verdict words under both. All of it was true and almost none
+          of it was ever news — the targets at the top of this page and on
+          Today are what you actually eat to, and a second, slower way of
+          saying the same thing is a thing to scroll past rather than read.
+          What was worth keeping is the part that only appears when a number
+          has gone somewhere it shouldn't, so that is all this is now. On a
+          good week it renders nothing at all. */}
+      {plan && profile && concerns && (
         <section className="card px-5 py-5">
-          <SectionLabel
-            title="Fuelled enough to train"
-            info={
-              <>
-                What each day leaves you once the session is paid for, per kg of lean mass. Under{" "}
-                {EA_FLOOR} is where training and recovery start to go, and the scale won&rsquo;t
-                warn you — swimmers in that state have lost speed at perfectly steady bodyweight.
-                The plan holds every day above it.
-              </>
-            }
-          />
+          <p className="label">Worth knowing</p>
 
-          <div className="mt-3 space-y-1.5">
-            {energy
-              .filter((d) => d.days > 0)
-              .map((d) => {
-                const pctOf = Math.min(1, (d.ea ?? 0) / (EA_OPTIMAL * 1.25));
-                const colour =
-                  d.band === "low"
-                    ? "var(--color-fat)"
-                    : d.band === "reduced"
-                      ? "var(--color-carbs)"
-                      : "var(--color-accent)";
-                return (
-                  <div key={d.dayTypeId} className="flex items-center gap-3">
-                    <span className="w-24 shrink-0 truncate text-xs">{d.name}</span>
-                    <span className="h-1.5 flex-1 overflow-hidden rounded-full bg-[var(--color-surface)]">
-                      <span
-                        className="block h-full rounded-full"
-                        style={{ width: `${pctOf * 100}%`, background: colour }}
-                      />
-                    </span>
-                    <span
-                      className="w-10 shrink-0 text-right text-xs font-semibold tabular-nums"
-                      style={{ color: colour }}
-                    >
-                      {d.ea ?? "—"}
-                    </span>
-                  </div>
-                );
-              })}
-          </div>
-
-          {energy.some((d) => d.days > 0 && d.band === "reduced") && (
-            <Note label="What these numbers mean">
-              {balance === "restricting" ? (
-                <>
-                  Between {EA_FLOOR} and {EA_OPTIMAL} while eating under maintenance. Fine for a
-                  short, deliberate block; not where to spend a season.
-                </>
-              ) : (
-                <>
-                  These read between {EA_FLOOR} and {EA_OPTIMAL}, but you are eating at
-                  maintenance, so this is arithmetic rather than under-fuelling — at energy balance
-                  the figure is just your resting cost times your daily activity, divided by lean
-                  mass{eaAtBalance ? `, which comes to ${eaAtBalance}` : ""}. Eating more would not
-                  raise it without putting you in surplus. If it looks low, the number to question
-                  is your everyday activity setting, not your plate.
-                </>
-              )}
-            </Note>
-          )}
           {plan.order.some((id) => targetsFor(plan, id).eaFloored) && (
             <Flag
               className="mt-3"
@@ -853,7 +803,7 @@ export default function PlanPage() {
             <Flag
               className="mt-3"
               tone={lowFat.some((f) => f.verdict === "low") ? "bad" : "warn"}
-              title={`Fat is low on your lightest day`}
+              title="Fat is low on your lightest day"
               detail={`${Math.min(...lowFat.map((f) => f.grams))} g — ${(
                 Math.min(...lowFat.map((f) => f.pctKcal)) * 100
               ).toFixed(0)}% of calories. Athletes want 20–35%.`}
@@ -861,31 +811,11 @@ export default function PlanPage() {
               <Note label="Why it matters">
                 Under 20% buys no performance, and low-fat intakes in men track with lower
                 testosterone — which is the side of this doing the muscle-keeping. Raise fat per kg
-                on the block below.
+                in your numbers below.
               </Note>
             </Flag>
           )}
 
-          <div className="mt-3 flex flex-wrap gap-x-5 gap-y-1 border-t border-[#1c1f25] pt-3 text-xs">
-            <span className="text-[var(--color-mut)]">
-              Rate{" "}
-              <b className="text-[var(--color-fg)]">
-                {(rate.pctPerWeek * 100).toFixed(2)}%/wk
-              </b>{" "}
-              · {rate.verdict.replace("_", " ")}
-            </span>
-            <span className="text-[var(--color-mut)]">
-              Protein <b className="text-[var(--color-fg)]">{proteinCheck.perKg.toFixed(2)} g/kg</b>{" "}
-              · {proteinCheck.verdict.replace("_", " ")}
-            </span>
-          </div>
-          <Note label="What these mean">
-            {rate.note}
-            {proteinCheck.verdict === "in_range" ? "" : ` ${proteinCheck.note}`}
-          </Note>
-
-          {/* Out-of-range protein is a finding, not a footnote — the verdict
-              word above tells you it is off, this tells you which way. */}
           {(proteinCheck.verdict === "low" || proteinCheck.verdict === "very_high") && (
             <Flag
               className="mt-3"
@@ -900,6 +830,30 @@ export default function PlanPage() {
                   ? "Thin for holding lean mass at maintenance."
                   : "It is carbohydrate you aren't eating."
               }
+            />
+          )}
+
+          {underFuelled.length > 0 && (
+            <Flag
+              className="mt-3"
+              title={underFuelled.map((c) => `${c.name} is ${c.lowGrams - c.grams} g short`).join(", ")}
+              detail="Carbohydrate, against what the training asks for."
+            >
+              <Note label="What to do about it">
+                The bands assume energy balance, so in a deficit you can&rsquo;t clear them and
+                shouldn&rsquo;t try. What you can do is put the carbohydrate you do have around the
+                session rather than spreading it flat: a top-up before and a refill after buy more
+                training quality than the same grams at breakfast.
+              </Note>
+            </Flag>
+          )}
+
+          {rate.verdict === "too_fast" && (
+            <Flag
+              className="mt-3"
+              tone="bad"
+              title={`Losing ${Math.abs(rate.kgPerWeek).toFixed(2)} kg a week on paper`}
+              detail={rate.note}
             />
           )}
         </section>
@@ -1304,95 +1258,6 @@ export default function PlanPage() {
         <AddSupplement onAdd={addSupp} existing={supplements.map((s) => s.name)} />
       </section>
 
-      {/* Fuelling the work */}
-      <section className="card px-5 py-5">
-        <SectionLabel
-          title="Fuelling the work"
-          info={
-            <>
-              Carbohydrate need scales with the training a day holds, not with the size of its
-              calorie budget — which is the check a percentage-based macro split can never make,
-              and the one that matters most in a pool. Bands from {short("burke2011")}, applied to
-              swimming by {short("shaw2014")}.
-            </>
-          }
-        />
-
-        <div className="mt-4 space-y-1.5">
-          {fuel
-            .filter((c) => usedDayTypes.has(c.dayTypeId))
-            .map((c) => {
-              const colour =
-                c.verdict === "under_fuelled"
-                  ? "var(--color-carbs)"
-                  : c.verdict === "in"
-                    ? "var(--color-accent)"
-                    : "var(--color-mut)";
-              return (
-                <div key={c.dayTypeId} className="sunk px-3.5 py-2.5">
-                  <div className="flex flex-wrap items-baseline gap-x-2 gap-y-1">
-                    <span className="mr-auto text-sm font-medium">{c.name}</span>
-                    <span className="text-[0.68rem] text-[#5b6270]">
-                      {c.band.label.toLowerCase()} · {c.loadMinutes} min
-                    </span>
-                    <span className="num text-sm" style={{ color: colour }}>
-                      {c.perKg} g/kg
-                    </span>
-                  </div>
-                  <p className="mt-1 text-[0.68rem] text-[#5b6270]">
-                    {c.grams} g of a {c.lowGrams}–{c.highGrams} g band
-                    {c.verdict === "under_fuelled" && (
-                      <span style={{ color: "var(--color-carbs)" }}>
-                        {" "}
-                        — under-fuelled for the work
-                      </span>
-                    )}
-                    {c.verdict === "low_by_design" && " — low, which is the point on a light day"}
-                  </p>
-                </div>
-              );
-            })}
-        </div>
-
-        {underFuelled.length > 0 && (
-          <Flag
-            className="mt-3"
-            title={`${underFuelled
-              .map((c) => `${c.name} is ${c.lowGrams - c.grams} g short`)
-              .join(", ")}`}
-            detail="Carbohydrate, against what the training asks for."
-          >
-            <Note label="What to do about it">
-              The bands assume energy balance, so in a deficit you can&rsquo;t clear them and
-              shouldn&rsquo;t try. What you can do is put the carbohydrate you do have around the
-              session rather than spreading it flat: a top-up before and a refill after buy more
-              training quality than the same grams at breakfast.
-            </Note>
-          </Flag>
-        )}
-
-        <details className="mt-3">
-          <summary className="cursor-pointer text-xs text-[var(--color-mut)]">
-            Where these numbers come from
-          </summary>
-          <References
-            keys={[
-              "burke2011",
-              "thomas2016",
-              "shaw2014",
-              "impey2018",
-              "jager2017",
-              "morton2018",
-              "helms2014",
-              "barakat2020",
-              "areta2013",
-              "mifflin1990",
-              "ainsworth2011",
-            ]}
-          />
-        </details>
-      </section>
-
       {/* Your week */}
       <section className="card px-5 py-5">
         <div className="flex items-center gap-3">
@@ -1626,8 +1491,12 @@ export default function PlanPage() {
         </button>
       </section>
 
-      {/* Protein distribution */}
-      {protein && protein.meals.length > 0 && (
+      {/* Protein distribution.
+          Only when it is off. Six meals that all clear the per-dose threshold
+          is the normal state of this plan, and a chart that reports the normal
+          state every day is a chart nobody reads on the day it stops being
+          normal. */}
+      {protein && protein.meals.length > 0 && !protein.ok && (
         <section className="card px-5 py-5">
           <div className="flex items-baseline">
             <p className="label mr-auto">Protein, spread across the day</p>
@@ -1760,95 +1629,32 @@ export default function PlanPage() {
           </Field>
 
           <div className="sm:col-span-2">
-            <Field label="Body fat — optional, but it sharpens BMR and the protein target">
-              <div className="grid grid-cols-3 gap-2">
-                {(
-                  [
-                    ["none", "Don't use it"],
-                    ["tape", "From a tape"],
-                    ["manual", "I know it"],
-                  ] as const
-                ).map(([v, label]) => (
-                  <button
-                    key={v}
-                    className={profile.bf_source === v ? "btn btn-accent" : "btn"}
-                    onClick={() => set("bf_source", v)}
-                  >
-                    {label}
-                  </button>
-                ))}
-              </div>
+            <Field label="Body fat % — a starting figure, until you scan">
+              <NumberField
+                className="w-full"
+                allowEmpty
+                placeholder="from your scale, or leave it"
+                value={profile.body_fat_pct}
+                onCommit={(v) => set("body_fat_pct", v && v > 0 ? v : null)}
+              />
             </Field>
-
-            {profile.bf_source === "manual" && (
-              <div className="mt-3">
-                <Field label="Body fat %">
-                  <Num
-                    value={profile.body_fat_pct ?? 0}
-                    onChange={(v) => set("body_fat_pct", v > 0 ? v : null)}
-                    step={0.5}
-                  />
-                </Field>
-              </div>
-            )}
-
-            {profile.bf_source === "tape" && (
-              <div className="mt-3 grid gap-3 sm:grid-cols-2">
-                <Field label="Neck (cm) — just below the larynx, once">
-                  <Num
-                    value={profile.neck_cm ?? 0}
-                    onChange={(v) => set("neck_cm", v > 0 ? v : null)}
-                    step={0.5}
-                  />
-                </Field>
-                {profile.sex === "female" && (
-                  <Field label="Hips (cm) — widest point">
-                    <Num
-                      value={profile.hip_cm ?? 0}
-                      onChange={(v) => set("hip_cm", v > 0 ? v : null)}
-                      step={0.5}
-                    />
-                  </Field>
-                )}
-                <Field label="Waist (cm) — kept up to date from Progress">
-                  <Num
-                    value={profile.waist_cm ?? 0}
-                    onChange={(v) => set("waist_cm", v > 0 ? v : null)}
-                    step={0.5}
-                  />
-                </Field>
-              </div>
-            )}
 
             {(() => {
               const bf = estimatedBodyFat(profile);
-              if (profile.bf_source === "none") {
-                return (
-                  <p className="mt-2 text-xs leading-relaxed text-[var(--color-mut)]">
-                    Fine to leave off. BMR falls back to height and age, and a lean-mass protein
-                    target assumes a plausible body fat rather than guessing high.
-                  </p>
-                );
-              }
               if (!bf) {
                 return (
-                  <p className="mt-2 text-xs leading-relaxed" style={{ color: "var(--color-carbs)" }}>
-                    {profile.bf_source === "tape"
-                      ? "Needs a neck measurement and a waist reading. Neck is a one-off; the waist comes from the Progress page."
-                      : "Enter a percentage, or switch to the tape estimate."}
+                  <p className="mt-2 text-xs leading-relaxed text-[var(--color-mut)]">
+                    Fine to leave empty. BMR falls back to height and age, and a lean-mass protein
+                    target assumes a plausible body fat rather than guessing high. Log a scan on
+                    Progress and this stops mattering.
                   </p>
                 );
               }
               return (
                 <p className="mt-2 text-xs leading-relaxed text-[var(--color-mut)]">
-                  <b className="text-[#f2f4f7]">{bf.pct}%</b> body fat ·{" "}
-                  {bf.leanKg} kg lean
-                  {bf.error > 0 && (
-                    <>
-                      {" "}· ±{bf.error} points against a scan, so treat the number as approximate
-                      and the change over time as the real signal
-                    </>
-                  )}
+                  <b className="text-[#f2f4f7]">{bf.pct}%</b> body fat · {bf.leanKg} kg lean ·{" "}
+                  {bf.label}. Once you have scanned, the weekly roll takes this off the scan and
+                  the box above stops being read.
                 </p>
               );
             })()}
@@ -1995,6 +1801,30 @@ export default function PlanPage() {
         <button className="btn btn-accent mt-4 w-full" onClick={() => saveProfile()}>
           Save targets
         </button>
+
+        {/* The evidence, folded away. It costs one line of page and it is the
+            one thing here that could not be reconstructed by looking at the
+            code — every number above came from one of these. */}
+        <details className="mt-4 border-t border-[#1c1f25] pt-3">
+          <summary className="cursor-pointer text-xs text-[var(--color-mut)]">
+            Where these numbers come from
+          </summary>
+          <References
+            keys={[
+              "burke2011",
+              "thomas2016",
+              "shaw2014",
+              "impey2018",
+              "jager2017",
+              "morton2018",
+              "helms2014",
+              "barakat2020",
+              "areta2013",
+              "mifflin1990",
+              "ainsworth2011",
+            ]}
+          />
+        </details>
       </section>
     </div>
   );

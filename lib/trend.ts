@@ -40,11 +40,38 @@ export const TAGS: { value: Tag; label: string; hint: string }[] = [
 export type WeighIn = {
   day: string;
   weight_kg: number | null;
-  waist_cm: number | null;
   tag?: Tag | null;
   /** Clock time you stood on the scale, "HH:MM". Null on older readings. */
   at_time?: string | null;
+  /** Body fat from the scan, on the days there was one. */
+  bf_pct?: number | null;
+  /**
+   * How that figure was arrived at. "scan" from here on; older readings can
+   * still say "tape" or "skinfold", and those are deliberately not treated as
+   * scans — see `isScan`.
+   */
+  bf_method?: string | null;
 };
+
+/**
+ * Whether a stored body fat figure is one this app is willing to trend.
+ *
+ * The tape and caliper estimates are gone, but readings taken with them are
+ * still in the database, and they cannot be mixed with scans. It is not a
+ * question of which is more accurate: each method has its own fixed offset for
+ * a given body, so a series that switches method has a step in it that looks
+ * exactly like a month of progress and isn't. Two tape readings and two scans
+ * would also clear the four-scan gate and let the steer act on a change that
+ * was purely a change of instrument.
+ *
+ * So old estimates stay in their rows and out of the maths. Anything not
+ * explicitly one of the retired methods counts — a figure typed in from a DEXA
+ * report has no method recorded and is a perfectly good point.
+ */
+export function isScan(e: WeighIn): boolean {
+  if (e.bf_pct == null || !(Number(e.bf_pct) > 0)) return false;
+  return e.bf_method !== "tape" && e.bf_method !== "skinfold";
+}
 
 export type IntakeDay = { day: string; kcal: number };
 
@@ -89,9 +116,6 @@ export const DEFAULT_RISE_PER_HOUR = 0.085;
 /** Past this the day's intake is in and the curve flattens. */
 export const RISE_PLATEAU_HOURS = 14;
 
-/** The same for the tape — a waist reads fuller after a day of eating. */
-export const DEFAULT_WAIST_RISE_PER_HOUR = 0.09;
-
 /** The hour a tag stands for, when there's no clock time to use instead. */
 export const TAG_HOUR: Record<Tag, number> = { morning: 7, other: 14, evening: 21 };
 
@@ -119,10 +143,8 @@ export function hourOf(e: WeighIn): number {
 export type Offsets = {
   /** kg gained per hour awake, measured on you where possible. */
   risePerHour: number;
-  waistRisePerHour: number;
   /** What that comes to at each tag's hour — for display, and for old readings. */
   weight: Record<Tag, number>;
-  waist: Record<Tag, number>;
   /** True when the rate was measured on you rather than assumed. */
   learned: Tag[];
   measured: boolean;
@@ -221,19 +243,11 @@ export function learnOffsets(entries: WeighIn[]): Offsets {
     }
   }
 
-  // The waist follows the same food and fluid, so scale the population ratio
-  // between them rather than pretending to have measured it separately.
-  const waistRisePerHour =
-    (risePerHour / DEFAULT_RISE_PER_HOUR) * DEFAULT_WAIST_RISE_PER_HOUR;
-
   const at = (t: Tag) => riseAt(hoursAwake(TAG_HOUR[t]), risePerHour);
-  const atWaist = (t: Tag) => riseAt(hoursAwake(TAG_HOUR[t]), waistRisePerHour);
 
   return {
     risePerHour,
-    waistRisePerHour,
     weight: { morning: at("morning"), other: at("other"), evening: at("evening") },
-    waist: { morning: atWaist("morning"), other: atWaist("other"), evening: atWaist("evening") },
     learned,
     measured,
     timed,
@@ -249,7 +263,6 @@ export function normalise(entries: WeighIn[], offsets?: Offsets): WeighIn[] {
     return {
       ...e,
       weight_kg: e.weight_kg == null ? null : Number(e.weight_kg) - riseAt(h, o.risePerHour),
-      waist_cm: e.waist_cm == null ? null : Number(e.waist_cm) - riseAt(h, o.waistRisePerHour),
     };
   });
 }
@@ -335,45 +348,146 @@ export function weightRate(entries: WeighIn[], windowDays = 21): Rate | null {
   };
 }
 
+/* ------------------------------------------------------------------ */
+/* What the scale is actually made of                                  */
+/* ------------------------------------------------------------------ */
+
 /**
- * Same idea for the tape measure.
+ * Two scans a week, and the two numbers that matter under the one on the dial.
  *
- * Built to work off a handful of points spread over a month or two rather than
- * a daily habit — measuring a waist every morning is a habit almost nobody
- * keeps, and weekly is entirely enough to see the thing move.
+ * Bodyweight on its own cannot tell you whether a recomposition is working —
+ * that is the entire problem it has. Weight holding still is the *goal*, and
+ * it is also what failure looks like. The pair that separates them is fat mass
+ * and lean mass moving in opposite directions.
+ *
+ * The lean figure here is deliberately not the scale's raw one. A scan carries
+ * two sources of movement: a real change in tissue, and how hydrated you
+ * happened to be that morning — and bioimpedance reads hydration directly, so
+ * a heavy leg session on Friday makes Saturday look leaner than Monday did for
+ * no reason at all. So the percentage comes from the scan and the bodyweight
+ * it is applied to comes from the smoothed trend, which has already had the
+ * daily water swing taken out of it. Same measurement, less noise in it.
  */
-export function waistRate(
-  entriesRaw: WeighIn[],
-  windowDays = 56
-): { cmPerWeek: number; current: number; first: number; days: number; points: number } | null {
-  const entries = normalise(entriesRaw);
-  const pts = entries
-    .filter((e) => e.waist_cm != null && Number(e.waist_cm) > 0)
-    .map((e) => ({ day: e.day, v: Number(e.waist_cm) }))
-    .sort((a, b) => a.day.localeCompare(b.day));
-  if (pts.length < 3) return null;
+export type ScanPoint = {
+  day: string;
+  bfPct: number;
+  /** Trend bodyweight on the day of the scan, not the raw reading. */
+  weightKg: number;
+  leanKg: number;
+  fatKg: number;
+};
 
-  const last = pts[pts.length - 1];
-  const cutoff = isoDay(new Date(toDate(last.day).getTime() - windowDays * 86_400_000));
-  const window = pts.filter((p) => p.day >= cutoff);
-  if (window.length < 3) return null;
+/**
+ * How far two scans have to differ before the difference is real.
+ *
+ * Segmental bioimpedance repeats itself to well under a percentage point in
+ * standardised conditions, and to rather more than that in a bathroom. This
+ * sits at the pessimistic end on purpose: it is only ever used to stop the app
+ * announcing a trend that a glass of water could have produced.
+ */
+export const SCAN_NOISE_PTS = 0.8;
 
-  const t0 = toDate(window[0].day).getTime();
-  const slope = slopePerDay(
-    window.map((p) => ({ t: (toDate(p.day).getTime() - t0) / 86_400_000, v: p.v }))
+/** Fewer scans than this, or a shorter span, and no slope gets reported. */
+export const SCAN_MIN_POINTS = 4;
+export const SCAN_MIN_DAYS = 21;
+
+export type Composition = {
+  points: ScanPoint[];
+  scans: number;
+  /** Days from the first scan in the window to the last. */
+  days: number;
+  first: ScanPoint;
+  current: ScanPoint;
+  /** Slopes over 28 days. Negative body fat and positive lean is the goal. */
+  bfPtsPerMonth: number;
+  leanKgPerMonth: number;
+  fatKgPerMonth: number;
+  /** True when there are enough scans over enough time to read the slopes. */
+  settled: boolean;
+};
+
+/**
+ * Every scan in the window, with lean and fat mass worked out against the
+ * trend weight of the day it was taken.
+ */
+export function composition(entriesRaw: WeighIn[], windowDays = 84): Composition | null {
+  const line = trendLine(entriesRaw);
+  const trendByDay = new Map(line.map((p) => [p.day, p.trend]));
+  const corrected = normalise(entriesRaw);
+  const weightByDay = new Map(
+    corrected.filter((e) => e.weight_kg != null).map((e) => [e.day, Number(e.weight_kg)])
   );
-  const spanDays = (toDate(last.day).getTime() - t0) / 86_400_000;
-  // Three measurements taken in one week say nothing about a trend.
-  if (spanDays < 10) return null;
+
+  const scans = entriesRaw
+    .filter(isScan)
+    .map((e) => ({ day: e.day, bfPct: Number(e.bf_pct) }))
+    .sort((a, b) => a.day.localeCompare(b.day));
+  if (!scans.length) return null;
+
+  const last = scans[scans.length - 1].day;
+  const cutoff = isoDay(new Date(toDate(last).getTime() - windowDays * 86_400_000));
+
+  const points: ScanPoint[] = [];
+  for (const s of scans) {
+    if (s.day < cutoff) continue;
+    const kg = trendByDay.get(s.day) ?? weightByDay.get(s.day);
+    if (kg == null || !(kg > 20)) continue;
+    points.push({
+      day: s.day,
+      bfPct: Math.round(s.bfPct * 10) / 10,
+      weightKg: Math.round(kg * 10) / 10,
+      leanKg: Math.round(kg * (1 - s.bfPct / 100) * 10) / 10,
+      fatKg: Math.round(kg * (s.bfPct / 100) * 10) / 10,
+    });
+  }
+  if (!points.length) return null;
+
+  const first = points[0];
+  const current = points[points.length - 1];
+  const t0 = toDate(first.day).getTime();
+  const at = (p: ScanPoint) => (toDate(p.day).getTime() - t0) / 86_400_000;
+  const days = Math.round(at(current));
+
+  const perDay = (pick: (p: ScanPoint) => number) =>
+    slopePerDay(points.map((p) => ({ t: at(p), v: pick(p) })));
 
   return {
-    cmPerWeek: slope * 7,
-    current: last.v,
-    first: window[0].v,
-    days: Math.max(1, Math.round(spanDays)),
-    points: window.length,
+    points,
+    scans: points.length,
+    days,
+    first,
+    current,
+    bfPtsPerMonth: perDay((p) => p.bfPct) * 28,
+    leanKgPerMonth: perDay((p) => p.leanKg) * 28,
+    fatKgPerMonth: perDay((p) => p.fatKg) * 28,
+    settled: points.length >= SCAN_MIN_POINTS && days >= SCAN_MIN_DAYS,
   };
 }
+
+/**
+ * How much lean mass may drift down a month before it counts as being lost.
+ *
+ * Scan-to-scan noise puts a floor under this: at 67 kg of lean mass, a single
+ * point of body fat is about 0.7 kg, so a threshold much tighter than this
+ * would fire on hydration alone.
+ */
+export const LEAN_LOSS_PER_MONTH = -0.25;
+
+/** Fat mass coming off at least this fast a month is the thing working. */
+export const FAT_LOSS_PER_MONTH = -0.3;
+
+/**
+ * Fat mass going *on* faster than this a month is going on.
+ *
+ * It exists because of a trap in reading the two numbers separately. At a
+ * bodyweight that is not moving, lean and fat are the same measurement with
+ * the sign flipped — every kilo of fat gained is a kilo of lean "lost" whether
+ * or not any muscle went anywhere. So "lean mass is falling" cannot be allowed
+ * to mean "you are under-eating" on its own: it means that only when fat is
+ * falling too, and means the exact opposite when fat is climbing.
+ */
+export const FAT_RISE_PER_MONTH = 0.1;
+
 
 export type Calibration = {
   /** What your intake and weight change say your expenditure actually is. */
@@ -448,78 +562,123 @@ export type Verdict = {
 };
 
 /**
- * What the two numbers say together.
+ * What the scale and the scans say together.
  *
- * In a recomposition the scale is supposed to sit still. Weight flat with the
- * waist coming in is the whole objective, and it's also the case people most
- * often abandon, because the scale isn't rewarding them for it. Weight falling
- * fast is the failure mode worth flagging: past about 0.7% of bodyweight a
- * week you are giving back lean mass, and in a training block that shows up as
- * performance before it shows up anywhere else.
+ * Weight alone is ambiguous here, and ambiguous in the worst possible way:
+ * holding steady is both what a working recomposition looks like and what
+ * doing nothing looks like. That is the case people abandon, because the
+ * number they check every morning never rewards them for it.
+ *
+ * With two scans a week the ambiguity goes. Fat mass down and lean mass level
+ * or up, at a bodyweight that barely moves, is the objective — and it is now a
+ * thing the app can see rather than something you have to take on faith.
+ *
+ * The failure modes are read in order of what they cost. Losing lean mass
+ * comes first, because it is the expensive one and the only one you cannot get
+ * back quickly; in a training block it shows up in a session before it shows
+ * up anywhere else. Losing nothing at all comes second, because it is only a
+ * wasted month.
  */
-export function recompVerdict(rate: Rate | null, waist: ReturnType<typeof waistRate>): Verdict {
+export function recompVerdict(rate: Rate | null, comp: Composition | null): Verdict {
   if (!rate) {
     return {
       headline: "Not enough data yet",
       detail:
-        "Weigh in on most days for a couple of weeks and the trend appears. It doesn't have to be the same time each day — tag when you weighed and the reading is corrected before it counts.",
+        "Weigh in on most days for a couple of weeks and the trend appears. It doesn't have to be the same time each day — say when you weighed and the reading is corrected before it counts.",
       tone: "neutral",
     };
   }
 
   const pct = rate.pctPerWeek;
-  const waistDown = waist != null && waist.cmPerWeek < -0.05;
-  const waistUp = waist != null && waist.cmPerWeek > 0.05;
   const kg = Math.abs(rate.kgPerWeek).toFixed(2);
 
-  if (pct < -0.7) {
-    return {
-      headline: `Losing ${kg} kg a week — too fast for this`,
-      detail:
-        "Past about 0.7% of bodyweight a week you start giving back lean mass, and in a training block you'll feel it in a session before you see it anywhere else. Add a few hundred calories.",
-      tone: "watch",
-    };
-  }
+  // Under three weeks of scans there is nothing here that isn't hydration.
+  if (!comp || !comp.settled) {
+    const need = comp
+      ? `${Math.max(0, SCAN_MIN_POINTS - comp.scans)} more scan${
+          SCAN_MIN_POINTS - comp.scans === 1 ? "" : "s"
+        }`
+      : "a few scans";
+    const waiting = `Weight is the ambiguous half of this — flat is what working looks like and also what nothing looks like. ${
+      comp ? `Give it ${need}` : "Scan on Monday and Saturday"
+    } and this can tell you which.`;
 
-  if (Math.abs(pct) <= 0.25) {
-    if (waistDown) {
-      return {
-        headline: "Recomposition, working",
-        detail: `Weight is flat and the waist is down ${Math.abs(waist!.cmPerWeek * 4).toFixed(1)} cm a month. That's the whole objective — same weight, less of it fat. Don't let the scale talk you out of it.`,
-        tone: "good",
-      };
+    if (Math.abs(pct) <= 0.25) {
+      return { headline: "Holding steady", detail: waiting, tone: "neutral" };
     }
-    if (waistUp) {
+    if (pct < -0.7) {
       return {
-        headline: "Weight steady, waist creeping up",
+        headline: `Losing ${kg} kg a week — too fast for this`,
         detail:
-          "Holding weight while the tape goes the wrong way usually means the deficit isn't there. Let the block drift a little further, or check the logging is honest.",
+          "Past about 0.7% of bodyweight a week you start giving back lean mass. Add a few hundred calories.",
         tone: "watch",
       };
     }
     return {
-      headline: "Holding steady",
-      detail:
-        "Weight is flat, which is what maintenance should look like. One waist measurement a week is enough to tell you whether composition is moving — in a recomp it's the number that shifts first.",
+      headline: pct < 0 ? `Losing ${kg} kg a week` : `Gaining ${kg} kg a week`,
+      detail: waiting,
       tone: "neutral",
     };
   }
 
-  if (pct < 0) {
+  const fat = comp.fatKgPerMonth;
+  const lean = comp.leanKgPerMonth;
+  const bf = comp.bfPtsPerMonth;
+  const bfWord = `${bf >= 0 ? "+" : ""}${bf.toFixed(1)} points a month, ${comp.current.bfPct}% now`;
+
+  if (lean < LEAN_LOSS_PER_MONTH) {
     return {
-      headline: `Losing ${kg} kg a week`,
-      detail: waistDown
-        ? "A gentle drop with the waist coming in — good pace to hold."
-        : "A gentle drop. Keep protein up and keep the sessions hard and most of that will be fat.",
+      headline: `Lean mass is going the wrong way`,
+      detail: `Down ${Math.abs(lean).toFixed(1)} kg a month across ${comp.scans} scans. That is the expensive kind of loss and the one you feel in the pool first. Eat more — the plan will nudge itself up on Monday.`,
+      tone: "watch",
+    };
+  }
+
+  if (pct < -0.7) {
+    return {
+      headline: `Losing ${kg} kg a week — too fast for this`,
+      detail: `Fat is coming off (${bfWord}), but past about 0.7% of bodyweight a week the rest of it starts coming off too. The plan will ease up on Monday.`,
+      tone: "watch",
+    };
+  }
+
+  if (fat <= FAT_LOSS_PER_MONTH && lean >= 0) {
+    return {
+      headline: "Recomposition, working",
+      detail: `Fat down ${Math.abs(fat).toFixed(1)} kg a month, lean up ${lean.toFixed(1)} kg, at a weight that has barely moved. That is the whole objective — ${bfWord}. Don't let the scale talk you out of it.`,
       tone: "good",
     };
   }
 
+  if (fat <= FAT_LOSS_PER_MONTH) {
+    return {
+      headline: "Fat coming off, lean holding",
+      detail: `Down ${Math.abs(fat).toFixed(1)} kg of fat a month with lean mass level — ${bfWord}. Exactly the trade you want. Keep protein where it is.`,
+      tone: "good",
+    };
+  }
+
+  if (Math.abs(bf) <= SCAN_NOISE_PTS / 2) {
+    return {
+      headline: "Nothing is moving",
+      detail: `Body fat has sat at ${comp.current.bfPct}% for ${comp.days} days and weight is ${
+        Math.abs(pct) <= 0.25 ? "flat" : `${pct < 0 ? "down" : "up"} ${kg} kg a week`
+      }. Maintenance is probably a little higher than the plan thinks. Monday will take it down a notch.`,
+      tone: "watch",
+    };
+  }
+
+  if (bf > 0) {
+    return {
+      headline: "Body fat is creeping up",
+      detail: `${bfWord}. If this is meant to be toned maintenance, the target is too high — Monday's rebuild will bring it down gradually rather than all at once.`,
+      tone: "watch",
+    };
+  }
+
   return {
-    headline: `Gaining ${kg} kg a week`,
-    detail: waistUp
-      ? "Going up, and the waist with it. If this is meant to be maintenance, the target is too high — the calibration on this page will tell you by how much."
-      : "Going up. Fine in a build, worth a look if you meant to hold.",
-    tone: pct > 0.5 ? "watch" : "neutral",
+    headline: "Moving the right way, slowly",
+    detail: `${bfWord}, lean ${lean >= 0 ? "up" : "down"} ${Math.abs(lean).toFixed(1)} kg. Too gentle to celebrate and too gentle to worry about — give it another fortnight of scans.`,
+    tone: "neutral",
   };
 }

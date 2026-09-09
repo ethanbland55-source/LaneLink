@@ -113,7 +113,7 @@ for (let d = 0; d < 42; d++) {
   w -= (REAL_TDEE - EATEN) / KCAL_PER_KG;
   // Daily noise: water, glycogen, what you had for dinner.
   const noise = Math.sin(d * 2.3) * 0.45 + Math.cos(d * 1.1) * 0.3;
-  weighIns.push({ day, weight_kg: Math.round((w + noise) * 10) / 10, waist_cm: null });
+  weighIns.push({ day, weight_kg: Math.round((w + noise) * 10) / 10 });
   intake.push({ day, kcal: EATEN + Math.round(Math.sin(d) * 120) });
 }
 const rate = weightRate(weighIns);

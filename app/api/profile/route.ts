@@ -6,7 +6,9 @@ import { seedAccount } from "@/lib/accounts";
 import { applyRoll, rollState } from "@/lib/weekly";
 import { refitPlan, restagePlan } from "@/lib/refit";
 import { applyDayFor } from "@/lib/pending";
-import { dayKey } from "@/lib/nutrition";
+import { buildWeekPlan, dayKey, normaliseDayType } from "@/lib/nutrition";
+import { steerRecomp } from "@/lib/steer";
+import { composition, weightRate } from "@/lib/trend";
 import type { WeighIn } from "@/lib/trend";
 import type { Profile } from "@/lib/nutrition";
 
@@ -29,20 +31,38 @@ async function rollIfDue(userId: number, p: Profile): Promise<Profile> {
   if (!p.auto_roll) return p;
   try {
     const rows = (await sql`
-      select to_char(day, 'YYYY-MM-DD') as day, weight_kg, waist_cm, tag, at_time, bf_pct
+      select to_char(day, 'YYYY-MM-DD') as day, weight_kg, tag, at_time, bf_pct, bf_method
       from weigh_ins
       where user_id = ${userId} and day > current_date - 180
       order by day`) as any[];
 
-    const state = rollState(p, rows as WeighIn[]);
+    const entries = rows as WeighIn[];
+    const state = rollState(p, entries);
     if (!state.due || !state.figures) return p;
 
-    const next = applyRoll(p, state.figures, state.dueOn);
+    /**
+     * The roll is also where the target gets steered.
+     *
+     * Same moment, on purpose. The snapshot decides what bodyweight the week
+     * is built on and the steer decides how many calories that week gets, and
+     * both have to land before the portions are re-fitted — otherwise the fit
+     * runs against half a decision and Monday's numbers disagree with
+     * Monday's shopping list. Maintenance for the step is read off the plan
+     * as it stands *before* steering, so the size of a step never depends on
+     * the size of the last one.
+     */
+    const dayTypes = (await sql`
+      select * from day_types where user_id = ${userId} order by sort_order, id`) as any[];
+    const before = buildWeekPlan(p, dayTypes.map((d, n) => normaliseDayType(d, n)));
+    const steer = steerRecomp(p, weightRate(entries), composition(entries), before.maintenance);
+
+    const next = applyRoll(p, state.figures, state.dueOn, steer);
     await sql`
       update profile set
         plan_weight_kg = ${next.plan_weight_kg},
         plan_bf_pct = ${next.plan_bf_pct},
         plan_updated_on = ${next.plan_updated_on},
+        recomp_adjust = ${next.recomp_adjust},
         updated_at = now()
       where id = ${userId}`;
 
@@ -114,10 +134,6 @@ export async function PUT(req: Request) {
       height_cm = ${b.height_cm},
       weight_kg = ${b.weight_kg},
       body_fat_pct = ${b.body_fat_pct},
-      bf_source = ${b.bf_source},
-      neck_cm = ${b.neck_cm},
-      hip_cm = ${b.hip_cm},
-      waist_cm = ${b.waist_cm},
       activity = ${b.activity},
       goal = ${b.goal},
       protein_basis = ${b.protein_basis},
@@ -142,6 +158,7 @@ export async function PUT(req: Request) {
       plan_weight_kg = ${b.plan_weight_kg},
       plan_bf_pct = ${b.plan_bf_pct},
       plan_updated_on = ${b.plan_updated_on || null},
+      recomp_adjust = ${b.recomp_adjust},
       auto_roll = ${b.auto_roll},
       periodise = ${b.periodise},
       updated_at = now()
@@ -196,7 +213,6 @@ function targetSignature(p: Profile): string {
     p.height_cm,
     p.weight_kg,
     p.body_fat_pct,
-    p.bf_source,
     p.activity,
     p.base_activity,
     p.energy_model,
@@ -206,6 +222,7 @@ function targetSignature(p: Profile): string {
     p.fat_per_kg,
     p.carb_floor_per_kg,
     p.calorie_override,
+    p.recomp_adjust,
     p.cycling,
     p.periodise,
     p.week,

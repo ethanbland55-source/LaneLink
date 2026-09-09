@@ -1,45 +1,54 @@
 "use client";
 
 import { useCallback, useEffect, useMemo, useState } from "react";
-import { Segmented, Stat } from "../macro-ui";
+import { Stat } from "../macro-ui";
 import { TrendChart } from "../trend-chart";
 import { NumberField } from "../number-field";
 import {
-  ageFromDob,
   buildWeekPlan,
   dayKey,
   normaliseDayType,
-  planWeight,
   type DayType,
   type Profile,
 } from "@/lib/nutrition";
 import { DOW_LABELS, normaliseProfile } from "@/lib/profile";
-import {
-  BF_METHODS,
-  MEASURE_SITES,
-  navyBodyFat,
-  sitesFor,
-  skinfoldBodyFat,
-  type BfMethod,
-} from "@/lib/bodyfat";
+import { BF_MAX, BF_MIN, SCAN_ERROR, fromScan } from "@/lib/bodyfat";
 import { applyRoll, rollDelta, rollState } from "@/lib/weekly";
+import { steerRecomp } from "@/lib/steer";
 import { Note } from "../explain";
 import { Flag } from "../flag";
 import {
   DEFAULT_RISE_PER_HOUR,
+  SCAN_MIN_POINTS,
   calibrate,
+  composition,
   hoursAwake,
+  isScan,
   learnOffsets,
   parseClock,
   recompVerdict,
   riseAt,
   trendLine,
-  waistRate,
   weightRate,
   type IntakeDay,
   type WeighIn,
 } from "@/lib/trend";
 
+/**
+ * Two measurements, and everything is built out of them.
+ *
+ * Bodyweight every day, at any time, corrected for the hour you took it. Body
+ * fat twice a week off an eight-electrode scan, on the two days the plan
+ * already turns on. There used to be a tape measure, a set of calipers and a
+ * waist chart on this page as well; they are gone, and what replaced them is
+ * not more measurement but less — one number that is actually measured rather
+ * than three that were estimated from each other.
+ *
+ * The page reads top to bottom as one argument: here is what your weight is
+ * doing, here is what you are made of, here is whether that combination is the
+ * recomposition working, and here is the small thing the plan will do about it
+ * on Monday.
+ */
 export default function ProgressPage() {
   const [profile, setProfile] = useState<Profile | null>(null);
   const [dayTypes, setDayTypes] = useState<DayType[]>([]);
@@ -51,14 +60,7 @@ export default function ProgressPage() {
   const today = dayKey();
   const [weight, setWeight] = useState("");
   const [atTime, setAtTime] = useState("");
-  const [bfMethod, setBfMethod] = useState<BfMethod>("tape");
-  const [manualBf, setManualBf] = useState("");
-  /** Every tape and caliper reading for today, keyed by column name. */
-  const [sites, setSites] = useState<Record<string, string>>({});
-
-  function setSite(key: string, v: string) {
-    setSites((s) => ({ ...s, [key]: v }));
-  }
+  const [bf, setBf] = useState("");
 
   const load = useCallback(async () => {
     const [p, dt, w, i] = await Promise.all([
@@ -72,17 +74,11 @@ export default function ProgressPage() {
     setEntries(w);
     setIntake(i);
     // Reload today's entry into the form so a second save edits rather than
-    // silently wipes the measurements taken earlier.
+    // silently wipes what was taken earlier.
     const mine = (w as any[]).find((e) => e.day === dayKey());
     setWeight(mine?.weight_kg != null ? String(mine.weight_kg) : "");
     setAtTime(mine?.at_time ?? "");
-    const next: Record<string, string> = {};
-    for (const k of Object.keys(MEASURE_SITES)) {
-      if (mine?.[k] != null) next[k] = String(mine[k]);
-    }
-    setSites(next);
-    if (mine?.bf_method) setBfMethod(mine.bf_method as BfMethod);
-    if (mine?.bf_method === "manual" && mine?.bf_pct != null) setManualBf(String(mine.bf_pct));
+    setBf(mine?.bf_pct != null ? String(mine.bf_pct) : "");
     setLoading(false);
   }, []);
 
@@ -100,8 +96,13 @@ export default function ProgressPage() {
     [entries]
   );
   const rate = useMemo(() => weightRate(entries), [entries]);
-  const waistTrend = useMemo(() => waistRate(entries), [entries]);
-  const verdict = useMemo(() => recompVerdict(rate, waistTrend), [rate, waistTrend]);
+  const comp = useMemo(() => composition(entries), [entries]);
+  const verdict = useMemo(() => recompVerdict(rate, comp), [rate, comp]);
+
+  const steer = useMemo(
+    () => (profile && plan ? steerRecomp(profile, rate, comp, plan.maintenance) : null),
+    [profile, plan, rate, comp]
+  );
 
   const cal = useMemo(
     () => (plan ? calibrate(entries, intake, plan.maintenance) : null),
@@ -111,61 +112,39 @@ export default function ProgressPage() {
   const offsets = useMemo(() => learnOffsets(entries), [entries]);
 
   /**
-   * Body fat from what's in the form right now, so the number moves as you
-   * type rather than only after saving. Uses the same functions the API does,
-   * so the preview and the stored figure can never disagree.
+   * What the scan in the form would mean, worked out live off today's weight
+   * so lean and fat mass move as you type rather than only after saving.
    */
-  const liveBf = useMemo(() => {
-    if (!profile) return null;
-    const n = (k: string) => {
-      const v = Number(sites[k]);
-      return Number.isFinite(v) && v > 0 ? v : null;
-    };
-    const kg = Number(weight) > 20 ? Number(weight) : planWeight(profile);
+  const liveScan = useMemo(() => {
+    const kg = Number(weight) > 20 ? Number(weight) : (rate?.current ?? profile?.weight_kg ?? 0);
+    return fromScan(Number(bf), kg);
+  }, [bf, weight, rate, profile]);
 
-    if (bfMethod === "manual") {
-      const pct = Number(manualBf);
-      if (!(pct >= 3 && pct <= 60)) return null;
-      return {
-        pct: Math.round(pct * 10) / 10,
-        leanKg: Math.round(kg * (1 - pct / 100) * 10) / 10,
-        fatKg: Math.round(kg * (pct / 100) * 10) / 10,
-        error: 0,
-        label: "Your scan",
-      };
-    }
-    if (bfMethod === "skinfold") {
-      const keys = sitesFor("skinfold", profile.sex);
-      const vals = keys.map(n);
-      if (vals.some((v) => v == null)) return null;
-      const est = skinfoldBodyFat({
-        sex: profile.sex,
-        ageYears: ageFromDob(profile.dob),
-        sites: vals as number[],
-        weightKg: kg,
-      });
-      return est ? { ...est, label: "Calipers" } : null;
-    }
-    const est = navyBodyFat({
-      sex: profile.sex,
-      heightCm: profile.height_cm,
-      neckCm: n("neck_cm") ?? 0,
-      waistCm: n("waist_cm") ?? 0,
-      hipCm: n("hip_cm"),
-      weightKg: kg,
+  /**
+   * Body fat, one point per scan, with a gentle line through it.
+   *
+   * Half a dozen readings a month is far too few for the exponential average
+   * the weight chart uses, so this smooths at 0.5 — enough to stop one
+   * dehydrated Saturday putting a kink in the line, not so much that the line
+   * stops being the readings.
+   */
+  const bfPoints = useMemo(() => {
+    if (!comp) return [];
+    let t = comp.points[0]?.bfPct ?? 0;
+    return comp.points.map((p) => {
+      t = t + 0.5 * (p.bfPct - t);
+      return { day: p.day, value: p.bfPct, trend: t };
     });
-    return est ? { ...est, label: "Tape" } : null;
-  }, [profile, sites, weight, bfMethod, manualBf]);
+  }, [comp]);
 
-  /** Every body fat figure ever measured, oldest first. */
-  const bfHistory = useMemo(
-    () =>
-      (entries as any[])
-        .filter((e) => e.bf_pct != null)
-        .map((e) => ({ day: e.day as string, pct: Number(e.bf_pct) }))
-        .sort((a, b) => a.day.localeCompare(b.day)),
-    [entries]
-  );
+  const leanPoints = useMemo(() => {
+    if (!comp) return [];
+    let t = comp.points[0]?.leanKg ?? 0;
+    return comp.points.map((p) => {
+      t = t + 0.5 * (p.leanKg - t);
+      return { day: p.day, value: p.leanKg, trend: t };
+    });
+  }, [comp]);
 
   const roll = useMemo(
     () => (profile ? rollState(profile, entries, today) : null),
@@ -176,88 +155,76 @@ export default function ProgressPage() {
     [profile, roll]
   );
 
-  const waistPoints = useMemo(() => {
-    const pts = entries
-      .filter((e) => e.waist_cm != null && Number(e.waist_cm) > 0)
-      .map((e) => ({ day: e.day, value: Number(e.waist_cm), trend: Number(e.waist_cm) }))
-      .sort((a, b) => a.day.localeCompare(b.day));
-    // Light smoothing — the tape is measured weekly, so it needs far less.
-    let t = pts[0]?.value ?? 0;
-    return pts.map((p) => {
-      t = t + 0.4 * (p.value - t);
-      return { ...p, trend: t };
-    });
-  }, [entries]);
+  /**
+   * The two days to scan on are the two days the plan already turns on: the
+   * day it rolls, and the day you shop. Nothing new to remember, and it means
+   * the figure Monday's targets are built from was measured that morning
+   * rather than at some point in the previous week.
+   */
+  const scanDows = useMemo(() => {
+    if (!profile) return [] as number[];
+    const roll = profile.plan_roll_dow;
+    const shop = profile.shop_start_dow;
+    return roll === shop ? [roll] : [roll, shop];
+  }, [profile]);
+
+  const scanToday = scanDows.includes(new Date(today + "T12:00:00").getDay());
+  const lastScan = comp?.current ?? null;
 
   function say(msg: string) {
     setFlash(msg);
     setTimeout(() => setFlash(null), 1800);
   }
 
-  async function saveWeighIn() {
-    const body: Record<string, unknown> = {
-      day: today,
-      weight_kg: weight ? Number(weight) : null,
-      at_time: atTime || null,
-      bf_method: bfMethod,
-      bf_pct: bfMethod === "manual" && manualBf ? Number(manualBf) : null,
-    };
-    for (const [k, v] of Object.entries(sites)) body[k] = v === "" ? null : Number(v);
-
+  async function save() {
     await fetch("/api/weigh-ins", {
       method: "PUT",
       headers: { "content-type": "application/json" },
-      body: JSON.stringify(body),
+      body: JSON.stringify({
+        day: today,
+        weight_kg: weight ? Number(weight) : null,
+        at_time: atTime || null,
+        bf_pct: bf ? Number(bf) : null,
+      }),
     });
     await load();
-    say(liveBf ? `Logged — ${liveBf.pct}% body fat` : "Logged");
+    say(liveScan ? `Logged — ${liveScan.pct}% body fat` : "Logged");
   }
 
   /**
    * Rebuild this week's targets from the trend.
    *
-   * Stamped with the shopping day it is *for*, not today, so pressing it on a
+   * Stamped with the roll day it is *for*, not today, so pressing it on a
    * Tuesday still counts as this week's roll and it won't ask again until the
-   * next shopping day comes round.
+   * next one comes round. The steer rides along: the snapshot and the calorie
+   * step are one decision taken at one moment, never two that can disagree.
    */
   async function doRoll() {
     if (!profile || !roll?.figures) return;
-    const next = applyRoll(profile, roll.figures, roll.dueOn);
+    const next = applyRoll(profile, roll.figures, roll.dueOn, steer ?? undefined);
     setProfile(next);
     await fetch("/api/profile", {
       method: "PUT",
       headers: { "content-type": "application/json" },
       body: JSON.stringify(next),
     });
-    say(`Plan rebuilt on ${next.plan_weight_kg} kg`);
+    say(
+      steer?.moving
+        ? `Rebuilt on ${next.plan_weight_kg} kg, ${steer.kcal > 0 ? "+" : ""}${steer.kcal} kcal`
+        : `Plan rebuilt on ${next.plan_weight_kg} kg`
+    );
   }
 
-  async function setAutoRoll(on: boolean) {
+  async function patch(change: Partial<Profile>, msg: string) {
     if (!profile) return;
-    const next: Profile = { ...profile, auto_roll: on };
+    const next: Profile = { ...profile, ...change };
     setProfile(next);
     await fetch("/api/profile", {
       method: "PUT",
       headers: { "content-type": "application/json" },
       body: JSON.stringify(next),
     });
-    say(on ? "Will rebuild on shopping day" : "You'll rebuild it yourself");
-  }
-
-  async function acceptCalibration(on: boolean) {
-    if (!profile || !cal) return;
-    const next: Profile = {
-      ...profile,
-      calibrated_tdee: on ? cal.tdee : profile.calibrated_tdee,
-      use_calibration: on,
-    };
-    setProfile(next);
-    await fetch("/api/profile", {
-      method: "PUT",
-      headers: { "content-type": "application/json" },
-      body: JSON.stringify(next),
-    });
-    say(on ? "Using your own numbers" : "Back to the formula");
+    say(msg);
   }
 
   if (loading || !profile || !plan || !roll) {
@@ -330,7 +297,7 @@ export default function ProgressPage() {
         </div>
       </section>
 
-      {/* Today's weigh-in */}
+      {/* Today */}
       <section className="card px-5 py-5">
         <div className="flex items-baseline">
           <p className="label mr-auto">Weigh in</p>
@@ -338,20 +305,21 @@ export default function ProgressPage() {
         </div>
 
         <div className="mt-3 grid grid-cols-2 gap-3">
-          <Measure
-            label="Weight"
-            unit="kg"
-            value={weight}
-            onChange={setWeight}
-            step={0.1}
-          />
-          <Measure
-            label="Waist"
-            unit="cm"
-            value={sites.waist_cm ?? ""}
-            onChange={(v: string) => setSite("waist_cm", v)}
-            step={0.1}
-          />
+          <Measure label="Weight" unit="kg" value={weight} onChange={setWeight} />
+          <label className="block">
+            <span className="mb-1.5 block text-xs text-[var(--color-mut)]">Body fat (%)</span>
+            {/* The placeholder is short on purpose: at 375px this box is about
+                160 px wide, and a longer one is a clipped one. */}
+            <NumberField
+              step={0.1}
+              className="w-full"
+              allowEmpty
+              placeholder={scanToday ? "scan day" : "if scanned"}
+              aria-label="Body fat percent from the scan"
+              value={bf === "" ? null : Number(bf)}
+              onCommit={(v) => setBf(v == null ? "" : String(v))}
+            />
+          </label>
         </div>
 
         {/* When. A real clock time, because 09:00 and 11:30 are both "morning"
@@ -375,21 +343,51 @@ export default function ProgressPage() {
           </div>
         </div>
 
-        <button className="btn btn-accent mt-4 w-full" onClick={saveWeighIn}>
-          Save
+        <button className="btn btn-accent mt-4 w-full" onClick={save}>
+          {liveScan ? `Save — ${liveScan.pct}%, ${liveScan.leanKg} kg lean` : "Save"}
         </button>
+
+        {bf !== "" && !liveScan && (
+          <Flag
+            className="mt-3"
+            tone="bad"
+            title="That body fat figure won't save"
+            detail={`It has to be between ${BF_MIN} and ${BF_MAX}.`}
+          />
+        )}
+
+        {/* Scan day gets the attention colour rather than the quiet one. It is
+            a prompt rather than a problem, but it is the one thing on this
+            page that has to happen before you eat — and once the morning has
+            gone it cannot be done later. */}
+        <Flag
+          className="mt-3"
+          tone={scanToday ? "warn" : "info"}
+          title={
+            scanToday
+              ? "Scan day — do it before you eat"
+              : `Next scan ${scanDows.map((d) => DOW_LABELS[d]).join(" and ")}`
+          }
+          detail={
+            scanToday
+              ? "Same conditions every time: first thing, after the loo, nothing to drink yet."
+              : "Weight every day is plenty in between. Body fat only means something when the conditions match."
+          }
+        />
 
         <Note label="Weighed at an odd time?">
           You don&rsquo;t have to weigh at the same time every day — say when you did and the
           reading is corrected to what it would have been first thing before it touches the trend.
-          You gain about a kilo through the day and none of it is fat.
+          You gain about a kilo through the day and none of it is fat. The scan is the exception:
+          bioimpedance reads how hydrated you are, so it only compares to the last one if the
+          morning matched.
         </Note>
 
         {offsets.measured ? (
           <p className="mt-2 text-xs leading-relaxed text-[#5b6270]">
-            Measured on you: about{" "}
-            <b>{(offsets.risePerHour * 1000).toFixed(0)} g an hour</b> awake
-            {offsets.timed > 0 && `, from ${offsets.timed} timed reading${offsets.timed === 1 ? "" : "s"}`}
+            Measured on you: about <b>{(offsets.risePerHour * 1000).toFixed(0)} g an hour</b> awake
+            {offsets.timed > 0 &&
+              `, from ${offsets.timed} timed reading${offsets.timed === 1 ? "" : "s"}`}
             . That&rsquo;s taken off before the trend sees them.
           </p>
         ) : (
@@ -400,112 +398,119 @@ export default function ProgressPage() {
         )}
       </section>
 
-      {/* Body fat from measurements */}
+      {/* What you're made of */}
       <section className="card px-5 py-5">
         <div className="flex items-baseline">
-          <p className="label mr-auto">Body fat</p>
-          {liveBf && (
-            <p className="num text-lg" style={{ color: "var(--color-accent)" }}>
-              {liveBf.pct}%
-            </p>
+          <p className="label mr-auto">What you&rsquo;re made of</p>
+          {lastScan && (
+            <p className="text-xs text-[var(--color-mut)]">{prettyDay(lastScan.day)}</p>
           )}
         </div>
 
-        <div className="mt-3">
-          <Segmented
-            size="sm"
-            value={bfMethod}
-            onChange={(v) => setBfMethod(v)}
-            options={BF_METHODS.map((m) => ({ value: m.value, label: m.label, hint: m.blurb }))}
-          />
-          <p className="mt-2 text-xs text-[var(--color-mut)]">
-            {BF_METHODS.find((m) => m.value === bfMethod)?.blurb}
-          </p>
-        </div>
-
-        {bfMethod === "manual" ? (
-          <div className="mt-4 max-w-[10rem]">
-            <Measure
-              label="Body fat"
-              unit="%"
-              value={manualBf}
-              onChange={setManualBf}
-              step={0.1}
-            />
-          </div>
-        ) : (
-          <div className="mt-4 space-y-2.5">
-            {sitesFor(bfMethod, profile.sex).map((key) => {
-              const site = MEASURE_SITES[key];
-              if (!site) return null;
-              return (
-                <div key={key} className="sunk px-3.5 py-3">
-                  <div className="flex items-center gap-3">
-                    <span className="mr-auto text-sm font-medium">{site.label}</span>
-                    <NumberField
-                      step={0.1}
-                      allowEmpty
-                      aria-label={`${site.label} in ${site.unit}`}
-                      className="w-24 text-right"
-                      value={sites[key] === undefined || sites[key] === "" ? null : Number(sites[key])}
-                      onCommit={(v) => setSite(key, v == null ? "" : String(v))}
-                    />
-                    <span className="w-6 text-xs text-[var(--color-mut)]">{site.unit}</span>
-                  </div>
-                  <p className="mt-1.5 text-[0.7rem] leading-relaxed text-[#5b6270]">{site.where}</p>
-                </div>
-              );
-            })}
-          </div>
-        )}
-
-        <button className="btn btn-accent mt-4 w-full" onClick={saveWeighIn}>
-          {liveBf ? `Save ${liveBf.pct}%` : "Save measurements"}
-        </button>
-
-        {liveBf ? (
+        {lastScan && comp ? (
           <>
-            <div className="mt-4 grid grid-cols-3 gap-3">
-              <Stat label="Lean" value={`${liveBf.leanKg} kg`} accent />
-              <Stat label="Fat" value={`${liveBf.fatKg} kg`} />
+            <div className="mt-3 flex items-start">
+              <div className="mr-auto">
+                <p className="num-hero text-[3rem]">
+                  {lastScan.bfPct}
+                  <span className="ml-1 text-lg font-semibold text-[var(--color-mut)]">%</span>
+                </p>
+              </div>
+              {comp.settled && (
+                <div className="pt-1 text-right">
+                  <p className="label">Per month</p>
+                  <p
+                    className="num mt-2 text-2xl"
+                    style={{
+                      color:
+                        comp.bfPtsPerMonth < -0.1
+                          ? "var(--color-accent)"
+                          : comp.bfPtsPerMonth > 0.1
+                            ? "var(--color-carbs)"
+                            : "var(--color-mut)",
+                    }}
+                  >
+                    {comp.bfPtsPerMonth >= 0 ? "+" : ""}
+                    {comp.bfPtsPerMonth.toFixed(1)}
+                  </p>
+                  <p className="mt-1 text-xs text-[var(--color-mut)]">
+                    {comp.scans} scans · {comp.days}d
+                  </p>
+                </div>
+              )}
+            </div>
+
+            {bfPoints.length >= 2 && (
+              <div className="mt-4">
+                <TrendChart points={bfPoints} color="var(--color-carbs)" unit="%" decimals={1} />
+              </div>
+            )}
+
+            <div className="mt-4 grid grid-cols-2 gap-3">
               <Stat
-                label="From"
-                value={liveBf.label}
-                sub={liveBf.error > 0 ? `±${liveBf.error} pts` : undefined}
+                label="Lean"
+                value={`${lastScan.leanKg} kg`}
+                accent
+                sub={
+                  comp.settled
+                    ? `${comp.leanKgPerMonth >= 0 ? "+" : ""}${comp.leanKgPerMonth.toFixed(1)} kg a month`
+                    : undefined
+                }
+              />
+              <Stat
+                label="Fat"
+                value={`${lastScan.fatKg} kg`}
+                sub={
+                  comp.settled
+                    ? `${comp.fatKgPerMonth >= 0 ? "+" : ""}${comp.fatKgPerMonth.toFixed(1)} kg a month`
+                    : undefined
+                }
               />
             </div>
-            <Note label="How accurate is this?">
-              Worth ±{liveBf.error} points against a scan, but most of that error is a fixed offset
-              for your build — so treat the percentage as approximate and the direction it moves as
-              real. It also can&rsquo;t tell muscle from water: a smaller waist at the same weight
-              reads as lean mass up whether or not any appeared.
+
+            {leanPoints.length >= 2 && comp.settled && (
+              <div className="mt-4">
+                <p className="label mb-2">Lean mass</p>
+                <TrendChart points={leanPoints} color="var(--color-accent)" unit="kg" decimals={1} />
+              </div>
+            )}
+
+            {!comp.settled && (
+              <Flag
+                className="mt-3"
+                tone="info"
+                title={`${comp.scans} of ${SCAN_MIN_POINTS} scans`}
+                detail="Two a week for three weeks, then this starts reporting a direction rather than a number."
+              />
+            )}
+
+            <Note label="How much to trust this">
+              The percentage is worth about ±{SCAN_ERROR} points against a lab method, and most of
+              that is a fixed offset for your body and your scale — so the number is approximate
+              and the way it moves is real. Lean mass here is your trend weight times what the scan
+              said, not the figure on the display: the scale reads hydration, and using the
+              smoothed weight keeps a salty Friday out of Saturday&rsquo;s answer.
             </Note>
           </>
         ) : (
-          <Flag
-            className="mt-3"
-            tone="info"
-            title={
-              bfMethod === "manual"
-                ? "Type the percentage from your scan"
-                : `Fill in ${sitesFor(bfMethod, profile.sex)
-                    .map((k) => MEASURE_SITES[k]?.label.toLowerCase())
-                    .filter(Boolean)
-                    .join(", ")}`
-            }
-            detail={bfMethod === "manual" ? undefined : "It works the rest out."}
-          />
-        )}
-
-        {bfHistory.length >= 2 && (
-          <p className="mt-3 text-xs text-[#5b6270]">
-            {bfHistory.length} measurements since {prettyDay(bfHistory[0].day)} —{" "}
-            {bfHistory[0].pct}% to {bfHistory[bfHistory.length - 1].pct}%.
-          </p>
+          <>
+            <p className="mt-3 text-sm leading-relaxed text-[var(--color-mut)]">
+              Nothing scanned yet. Stand on the scale with the handle first thing on{" "}
+              {scanDows.map((d) => DOW_LABELS[d]).join(" and ")}, and type the body fat percentage
+              into the box above.
+            </p>
+            <Note label="Why this and not a tape measure">
+              A tape has no way to tell a smaller waist from a bigger back, and against DXA its
+              agreement gets <i>worse</i> over a training block — which is exactly the window that
+              matters here. Calipers need a repeatability nobody has on themselves. Eight
+              electrodes put current through your arms and trunk as well as your legs, which is
+              what makes the difference between two scans mean something.
+            </Note>
+          </>
         )}
       </section>
 
-      {/* What this week's plan is built on */}
+      {/* What this week's plan is built on, and what it's about to do */}
       <section className="card px-5 py-5">
         <p className="label">This week&rsquo;s plan</p>
         <div className="mt-2 flex flex-wrap items-baseline gap-x-3 gap-y-1">
@@ -519,7 +524,7 @@ export default function ProgressPage() {
         <Note label="Where this figure comes from">
           {roll.current.fromSnapshot
             ? `Taken from your trend on ${prettyDay(roll.lastRolled ?? roll.dueOn)}. Every target, the shopping list and the cook list are built on this figure, and it holds still until ${prettyDay(roll.nextOn)} — so what you buy on shopping day is what you eat all week.`
-            : `Your typed-in weight, until there are enough weigh-ins for a trend. From then on this updates itself every ${DOW_LABELS[profile.shop_start_dow]}.`}
+            : `Your typed-in weight, until there are enough weigh-ins for a trend. From then on this updates itself every ${DOW_LABELS[profile.plan_roll_dow]}.`}
         </Note>
 
         {roll.due && roll.figures ? (
@@ -527,7 +532,7 @@ export default function ProgressPage() {
             className="mt-4"
             title="This week's targets are out of date"
             detail={
-              `Shopping day was ${prettyDay(roll.dueOn)}. You're now ` +
+              `Roll day was ${prettyDay(roll.dueOn)}. You're now ` +
               `${roll.figures.weightKg.toFixed(1)} kg` +
               `${rollMove.kg !== 0 ? ` (${rollMove.kg > 0 ? "+" : ""}${rollMove.kg} kg)` : ""}` +
               `${roll.figures.bodyFatPct != null ? ` at ${roll.figures.bodyFatPct}% body fat` : ""}.`
@@ -540,7 +545,7 @@ export default function ProgressPage() {
           />
         ) : (
           <p className="mt-3 text-xs text-[#5b6270]">
-            Next update {prettyDay(roll.nextOn)}, your shopping day.
+            Next update {prettyDay(roll.nextOn)}.
             {roll.figures &&
               ` Your trend is ${roll.figures.weightKg.toFixed(1)} kg right now, from ${roll.figures.readings} weigh-ins.`}
           </p>
@@ -551,35 +556,121 @@ export default function ProgressPage() {
             className="tick"
             data-on={profile.auto_roll}
             aria-pressed={profile.auto_roll}
-            onClick={() => setAutoRoll(!profile.auto_roll)}
+            onClick={() => patch({ auto_roll: !profile.auto_roll }, profile.auto_roll ? "You'll rebuild it yourself" : "Will rebuild on roll day")}
           >
             {profile.auto_roll ? "✓" : ""}
           </button>
-          <span className="text-sm">Rebuild it for me on shopping day</span>
+          <span className="text-sm">Rebuild it for me on {DOW_LABELS[profile.plan_roll_dow]}</span>
         </label>
       </section>
 
-      {/* Waist */}
-      {waistPoints.length >= 3 && waistTrend && (
+      {/* Keeping you on track */}
+      {steer && (
         <section className="card px-5 py-5">
           <div className="flex items-baseline">
-            <p className="label mr-auto">Waist</p>
-            <span className="num text-lg">{waistTrend.current.toFixed(1)} cm</span>
+            <p className="label mr-auto">Keeping you on track</p>
+            {profile.recomp_adjust !== 0 && (
+              <span className="num text-sm text-[var(--color-mut)]">
+                {steer.totalKcal > 0 ? "+" : ""}
+                {steer.totalKcal} kcal
+              </span>
+            )}
           </div>
-          <div className="mt-3">
-            <TrendChart points={waistPoints} color="var(--color-fibre)" unit="cm" decimals={1} />
-          </div>
-          <p className="mt-1 text-[0.7rem] text-[#5b6270]">
-            {waistTrend.points} measurement{waistTrend.points === 1 ? "" : "s"} over{" "}
-            {waistTrend.days} days — weekly is plenty for this to mean something.
+
+          <p
+            className="mt-3 text-sm font-semibold"
+            style={{
+              color:
+                steer.tone === "good"
+                  ? "var(--color-accent)"
+                  : steer.tone === "watch"
+                    ? "var(--color-carbs)"
+                    : "var(--color-fg)",
+            }}
+          >
+            {steer.headline}
+            {steer.moving && (
+              <span className="num ml-2 text-[var(--color-mut)]">
+                {steer.kcal > 0 ? "+" : ""}
+                {steer.kcal} kcal on {DOW_LABELS[profile.plan_roll_dow]}
+              </span>
+            )}
           </p>
-          <p className="mt-2 text-xs leading-relaxed text-[var(--color-mut)]">
-            {waistTrend.cmPerWeek <= -0.05
-              ? `Down ${Math.abs(waistTrend.cmPerWeek * 4).toFixed(1)} cm a month. In a recomposition this is the number that moves first — the scale can sit still for weeks while this doesn't.`
-              : waistTrend.cmPerWeek >= 0.05
-                ? `Up ${(waistTrend.cmPerWeek * 4).toFixed(1)} cm a month.`
-                : "Holding steady."}
-          </p>
+          <p className="mt-1.5 text-xs leading-relaxed text-[var(--color-mut)]">{steer.detail}</p>
+
+          <Note label="How the adjusting works">
+            Your scans say whether fat is coming off and muscle is staying on. If they do, nothing
+            changes. If they don&rsquo;t, the seven-day calorie average moves by about 1.5% — 45
+            kcal or so — once a week, on {DOW_LABELS[profile.plan_roll_dow]}, at the same moment
+            the plan rebuilds and the portions are re-fitted. It never accounts for more than 8%
+            either way: past that, something you typed in is wrong and hiding it under a bigger
+            correction would only make it harder to find.
+          </Note>
+
+          {/* Maintenance itself, measured. The steer sets the offset from
+              maintenance; this sets maintenance. Kept together because
+              otherwise they read like two rival opinions about calories. */}
+          <details className="mt-3 border-t border-[#1c1f25] pt-3">
+            <summary className="cursor-pointer text-xs text-[var(--color-mut)]">
+              What your maintenance actually is
+            </summary>
+            {cal ? (
+              <>
+                <div className="mt-3 grid grid-cols-3 gap-3">
+                  <Stat label="Formula" value={plan.maintenance} sub="BMR + sessions" />
+                  <Stat
+                    label="Your data"
+                    value={cal.tdee}
+                    accent
+                    sub={`${cal.confidence} confidence`}
+                  />
+                  <Stat
+                    label="Difference"
+                    value={`${cal.tdee - plan.maintenance >= 0 ? "+" : ""}${cal.tdee - plan.maintenance}`}
+                    sub={`${Math.round((cal.factor - 1) * 100)}%`}
+                  />
+                </div>
+
+                <p className="mt-3 text-xs leading-relaxed text-[var(--color-mut)]">
+                  Over {cal.days} days you ate {cal.intake.toLocaleString()} kcal a day across{" "}
+                  {cal.intakeDays} logged days and the trend moved{" "}
+                  {cal.kgPerWeek >= 0 ? "+" : ""}
+                  {cal.kgPerWeek.toFixed(2)} kg a week. What you ate minus what you stored is what
+                  you burned.
+                </p>
+
+                {cal.confidence === "low" && (
+                  <Flag
+                    className="mt-2"
+                    title="Thin data so far"
+                    detail="More logged days before it's worth acting on."
+                  />
+                )}
+
+                <button
+                  className={`mt-3 w-full ${profile.use_calibration ? "btn" : "btn btn-accent"}`}
+                  onClick={() =>
+                    patch(
+                      {
+                        calibrated_tdee: profile.use_calibration ? profile.calibrated_tdee : cal.tdee,
+                        use_calibration: !profile.use_calibration,
+                      },
+                      profile.use_calibration ? "Back to the formula" : "Using your own numbers"
+                    )
+                  }
+                >
+                  {profile.use_calibration
+                    ? "Stop using it, go back to the formula"
+                    : "Use this instead of the formula"}
+                </button>
+              </>
+            ) : (
+              <p className="mt-3 text-xs leading-relaxed text-[var(--color-mut)]">
+                Needs about two weeks of daily weigh-ins and confirmed food logs in the same
+                window. Then this works out what you actually burn from what you actually ate.
+              </p>
+            )}
+          </details>
         </section>
       )}
 
@@ -604,8 +695,14 @@ export default function ProgressPage() {
             </div>
             <p className="mt-3 text-xs leading-relaxed text-[var(--color-mut)]">
               Started at {pct(phase.startAdjust)} and ends at {pct(phase.endAdjust)} of
-              maintenance. Today you're at <b className="text-[#f2f4f7]">{pct(phase.adjust)}</b>,
-              which is {plan.goalKcal.toLocaleString()} kcal as a seven-day average.
+              maintenance. Today you&rsquo;re at <b className="text-[#f2f4f7]">{pct(phase.adjust)}</b>
+              {profile.recomp_adjust !== 0 && (
+                <>
+                  {" "}
+                  plus {pct(profile.recomp_adjust)} from your scans
+                </>
+              )}
+              , which is {plan.goalKcal.toLocaleString()} kcal as a seven-day average.
               {phase.daysLeft != null && phase.daysLeft > 0 && ` ${phase.daysLeft} days to go.`}
             </p>
           </>
@@ -614,64 +711,6 @@ export default function ProgressPage() {
             Open-ended at {pct(phase.adjust)} of maintenance —{" "}
             {plan.goalKcal.toLocaleString()} kcal as a seven-day average. Give the phase a start
             date and a length on the Plan page if you want the target to drift over the block.
-          </p>
-        )}
-      </section>
-
-      {/* Calibration */}
-      <section className="card px-5 py-5">
-        <p className="label">What your maintenance actually is</p>
-
-        {cal ? (
-          <>
-            <div className="mt-4 grid grid-cols-3 gap-3">
-              <Stat label="Formula says" value={plan.maintenance} sub="from BMR + sessions" />
-              <Stat label="Your data says" value={cal.tdee} accent sub={`${cal.confidence} confidence`} />
-              <Stat
-                label="Difference"
-                value={`${cal.tdee - plan.maintenance >= 0 ? "+" : ""}${cal.tdee - plan.maintenance}`}
-                sub={`${Math.round((cal.factor - 1) * 100)}%`}
-              />
-            </div>
-
-            <Note label="How this is worked out">
-              Over the last {cal.days} days you ate {cal.intake.toLocaleString()} kcal a day on
-              average across {cal.intakeDays} logged days, and the trend moved{" "}
-              {cal.kgPerWeek >= 0 ? "+" : ""}
-              {cal.kgPerWeek.toFixed(2)} kg a week. What you ate minus what you stored is what you
-              burned — which is measured on you, rather than predicted from a population.
-            </Note>
-
-            {cal.confidence === "low" && (
-              <Flag
-                className="mt-2"
-                title="Thin data so far"
-                detail="More logged days and daily weigh-ins before it's worth acting on."
-              />
-            )}
-
-            <button
-              className={`mt-4 w-full ${profile.use_calibration ? "btn" : "btn btn-accent"}`}
-              onClick={() => acceptCalibration(!profile.use_calibration)}
-            >
-              {profile.use_calibration
-                ? "Stop using it, go back to the formula"
-                : "Use this instead of the formula"}
-            </button>
-
-            {profile.use_calibration && (
-              <p className="mt-2 text-xs leading-relaxed text-[var(--color-mut)]">
-                Every day type is scaled by the same factor, so the shape of your week — which came
-                from your sessions — is unchanged. Come back and press it again after a few more
-                weeks to re-fit.
-              </p>
-            )}
-          </>
-        ) : (
-          <p className="mt-3 text-xs leading-relaxed text-[var(--color-mut)]">
-            Needs about two weeks of daily weigh-ins and confirmed food logs in the same window.
-            Then this works out what you actually burn from what you actually ate, which beats any
-            prediction equation — they're fitted to populations, and you're one person.
           </p>
         )}
       </section>
@@ -687,7 +726,7 @@ export default function ProgressPage() {
                   <th className="pb-2 pr-4 font-semibold">Day</th>
                   <th className="pb-2 pr-4 font-semibold">Weight</th>
                   <th className="pb-2 pr-4 font-semibold">Trend</th>
-                  <th className="pb-2 pr-4 font-semibold">Waist</th>
+                  <th className="pb-2 pr-4 font-semibold">Body fat</th>
                   <th className="pb-2 font-semibold">When</th>
                 </tr>
               </thead>
@@ -701,17 +740,30 @@ export default function ProgressPage() {
                       <tr key={e.day} className="border-t border-[#1c1f25]">
                         <td className="py-1.5 pr-4">{e.day}</td>
                         <td className="py-1.5 pr-4">
-                          {e.weight_kg != null ? e.weight_kg.toFixed(1) : "—"}
+                          {e.weight_kg != null ? Number(e.weight_kg).toFixed(1) : "—"}
                         </td>
                         <td className="py-1.5 pr-4 text-[var(--color-mut)]">
                           {t ? t.trend.toFixed(2) : "—"}
                         </td>
-                        <td className="py-1.5 pr-4">
-                          {e.waist_cm != null ? e.waist_cm.toFixed(1) : "—"}
+                        <td
+                          className="py-1.5 pr-4"
+                          style={
+                            e.bf_pct != null && !isScan(e)
+                              ? { color: "#5b6270" }
+                              : undefined
+                          }
+                        >
+                          {e.bf_pct != null
+                            ? `${Number(e.bf_pct).toFixed(1)}%${isScan(e) ? "" : "*"}`
+                            : "—"}
                         </td>
                         <td className="py-1.5 text-[var(--color-mut)]">
-                          {(e as any).at_time ??
-                            (e.tag === "evening" ? "evening" : e.tag === "other" ? "daytime" : "morning")}
+                          {e.at_time ??
+                            (e.tag === "evening"
+                              ? "evening"
+                              : e.tag === "other"
+                                ? "daytime"
+                                : "morning")}
                         </td>
                       </tr>
                     );
@@ -719,6 +771,13 @@ export default function ProgressPage() {
               </tbody>
             </table>
           </div>
+          {entries.some((e) => e.bf_pct != null && !isScan(e)) && (
+            <p className="mt-2 text-[0.7rem] leading-relaxed text-[#5b6270]">
+              * from the old tape estimate. Kept because it happened, left out of the chart and the
+              slope because a tape and a scan have different offsets — a series that switches
+              between them has a step in it that looks like progress and isn&rsquo;t.
+            </p>
+          )}
         </section>
       )}
     </div>
@@ -755,7 +814,7 @@ function riseNote(at: string, perHour: number): string {
   return `reads about ${rise.toFixed(1)} kg heavy at this hour, corrected out`;
 }
 
-/** One labelled number box. Used for weight, waist and every measurement site. */
+/** One labelled number box. */
 function Measure({
   label,
   unit,

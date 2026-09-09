@@ -16,7 +16,7 @@ import {
 } from "../lib/nutrition";
 import { collapse, cookPlan, expand, servingGrams } from "../lib/batch";
 import { optimisePortions } from "../lib/optimise";
-import { navyBodyFat } from "../lib/bodyfat";
+import { fromScan } from "../lib/bodyfat";
 import { learnOffsets, trendLine, weightRate, type WeighIn } from "../lib/trend";
 
 const dayTypes: DayType[] = SEED_DAY_TYPES.map((d, i) =>
@@ -30,7 +30,7 @@ const profile: Profile = normaliseProfile({
   protein_basis: "lean", protein_per_kg: 2.8, fat_per_kg: 0.8,
   cycling: true, phase_start: "2026-08-31", phase_weeks: 10,
   phase_start_adjust: 0, phase_end_adjust: -0.08,
-  neck_cm: 39, bf_source: "tape", waist_cm: 81,
+  body_fat_pct: 13.4,
   week_ids: {
     mon: id("Swim only"), tue: id("Swim + gym"), wed: id("Gym only"),
     thu: id("Swim only"), fri: id("Swim + gym"), sat: id("Double swim"), sun: id("Rest"),
@@ -112,7 +112,6 @@ for (let d = 0; d < 28; d++) {
   mixed.push({
     day,
     weight_kg: Math.round((78 + noise + (evening ? 1.2 : 0)) * 10) / 10,
-    waist_cm: null,
     tag: evening ? "evening" : "morning",
   });
 }
@@ -133,11 +132,11 @@ console.log(`  87.2 typed instead of 78.2 moves the trend by ${(
   (weightRate(typo)?.current ?? 0) - (corrected?.current ?? 0)
 ).toFixed(2)} kg (capped, not 9)`);
 
-console.log("\n=== 6. Body fat from a tape ===");
-const bf = navyBodyFat({ sex: "male", heightCm: 183, neckCm: 39, waistCm: 81, weightKg: 78 });
-console.log(`  183 cm, 39 cm neck, 81 cm waist -> ${bf?.pct}% (${bf?.leanKg} kg lean, ±${bf?.error} pts)`);
-const slimmer = navyBodyFat({ sex: "male", heightCm: 183, neckCm: 39, waistCm: 78, weightKg: 78 });
-console.log(`  waist 81 -> 78 cm at the same weight: ${bf?.pct}% -> ${slimmer?.pct}%, lean ${bf?.leanKg} -> ${slimmer?.leanKg} kg`);
-console.log(`  protein target with the tape estimate: ${Math.round(proteinTarget(profile))} g`);
-const noTape = normaliseProfile({ ...profile, bf_source: "none", neck_cm: null, body_fat_pct: null });
-console.log(`  with no body fat figure at all:        ${Math.round(proteinTarget(noTape))} g (was 218 g before this fix)`);
+console.log("\n=== 6. Body fat from the scan ===");
+const bf = fromScan(13.4, 78);
+console.log(`  13.4% of 78 kg -> ${bf?.leanKg} kg lean, ${bf?.fatKg} kg fat (±${bf?.error} pts)`);
+const slimmer = fromScan(12.0, 78);
+console.log(`  13.4% -> 12.0% at the same weight: lean ${bf?.leanKg} -> ${slimmer?.leanKg} kg, fat ${bf?.fatKg} -> ${slimmer?.fatKg} kg`);
+console.log(`  protein target with a scan:     ${Math.round(proteinTarget(profile))} g`);
+const noScan = normaliseProfile({ ...profile, body_fat_pct: null });
+console.log(`  with no body fat figure at all: ${Math.round(proteinTarget(noScan))} g (was 218 g before this fix)`);

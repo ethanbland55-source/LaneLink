@@ -319,7 +319,7 @@ async function main() {
            (2, 'Swim', 1, '[{"activity":"swim","level":"moderate","met":8.3,"minutes":90}]'::jsonb)`;
   await sql`
     update profile set sex='male', dob='2007-01-01', height_cm=182.9, weight_kg=78,
-      body_fat_pct=12, bf_source='skinfold', energy_model='sessions', base_activity=1.25,
+      body_fat_pct=12, energy_model='sessions', base_activity=1.25,
       cycling=true, protein_basis='lean', protein_per_kg=2.45, fat_per_kg=0.65,
       carb_floor_per_kg=1, calorie_override=null,
       week_ids='{"mon":2,"tue":2,"wed":1,"thu":2,"fri":2,"sat":1,"sun":1}'::jsonb,

@@ -14,6 +14,7 @@ import {
   type WeekMap,
   type Weekday,
 } from "./nutrition";
+import { STEER_LIMIT } from "./steer";
 
 function num(v: unknown, fallback: number): number {
   const n = Number(v);
@@ -84,19 +85,6 @@ export function normaliseProfile(p: any): Profile {
     height_cm: num(p?.height_cm, 180),
     weight_kg: num(p?.weight_kg, 75),
     body_fat_pct: optionalNum(p?.body_fat_pct),
-    // A body fat figure typed in by hand wins; otherwise the tape estimate is
-    // used if there's a neck measurement to go with the waist.
-    bf_source:
-      p?.bf_source === "manual" || p?.bf_source === "tape" || p?.bf_source === "skinfold"
-        ? p.bf_source
-        : optionalNum(p?.body_fat_pct) != null
-          ? "manual"
-          : p?.neck_cm
-            ? "tape"
-            : "none",
-    neck_cm: optionalNum(p?.neck_cm),
-    hip_cm: optionalNum(p?.hip_cm),
-    waist_cm: optionalNum(p?.waist_cm),
     activity: num(p?.activity, 1.725),
     base_activity: Math.min(1.8, Math.max(1.05, num(p?.base_activity, 1.3))),
     energy_model: model,
@@ -111,6 +99,10 @@ export function normaliseProfile(p: any): Profile {
     phase_end_adjust: adj(p?.phase_end_adjust, def.end),
     calibrated_tdee: optionalNum(p?.calibrated_tdee),
     use_calibration: p?.use_calibration === undefined ? false : !!p.use_calibration,
+    // Clamped here as well as in the steer, because this is the boundary a
+    // stored value crosses on its way back in — and an out-of-range one in the
+    // database would otherwise quietly become an out-of-range calorie target.
+    recomp_adjust: Math.max(-STEER_LIMIT, Math.min(STEER_LIMIT, num(p?.recomp_adjust, 0))),
     calorie_override: optionalNum(p?.calorie_override),
     carb_floor_per_kg: num(p?.carb_floor_per_kg, 1),
     // The weekly snapshot. Absent on a new profile, which is why every target

@@ -19,7 +19,8 @@
  */
 
 import { WEEKDAYS, addDays, dayKey, type Profile, type Weekday } from "./nutrition";
-import { trendLine, type WeighIn } from "./trend";
+import { isScan, trendLine, type WeighIn } from "./trend";
+import type { Steer } from "./steer";
 
 /** Sunday = 0 … Saturday = 6, matching `profile.shop_start_dow`. */
 export function dowOf(day: string): number {
@@ -103,9 +104,12 @@ export function rollFigures(entries: WeighIn[], today: string = dayKey()): RollF
   const point = (upTo.length ? upTo : line)[Math.max(0, (upTo.length || line.length) - 1)];
   if (!point || !Number.isFinite(point.trend)) return null;
 
-  // The most recent body fat figure, whichever method produced it.
+  // The most recent scan. A retired tape or caliper estimate is left where it
+  // is: `applyRoll` falls back to whatever the plan already held, so an
+  // account that has not scanned yet keeps the figure it has been using rather
+  // than losing its body fat number the day this shipped.
   const withBf = entries
-    .filter((e) => e.day <= today && (e as any).bf_pct != null)
+    .filter((e) => e.day <= today && isScan(e))
     .sort((a, b) => a.day.localeCompare(b.day));
   const last = withBf[withBf.length - 1] as any;
 
@@ -178,13 +182,27 @@ export function planningBodyFat(p: Profile): number | null {
   return p.body_fat_pct != null && p.body_fat_pct > 0 ? p.body_fat_pct : null;
 }
 
-/** The profile as it would be after rolling. Pure — the caller does the writing. */
-export function applyRoll(p: Profile, figures: RollFigures, dueOn: string): Profile {
+/**
+ * The profile as it would be after rolling. Pure — the caller does the writing.
+ *
+ * Two things move on roll day and they are separate decisions. The snapshot
+ * says what body the week is planned for; the steer says how many calories
+ * that week is worth, given what the last month of scans actually did. Passing
+ * the steer is optional so that the tests, and anything that only wants the
+ * snapshot, can roll without one.
+ */
+export function applyRoll(
+  p: Profile,
+  figures: RollFigures,
+  dueOn: string,
+  steer?: Steer
+): Profile {
   return {
     ...p,
     plan_weight_kg: figures.weightKg,
     plan_bf_pct: figures.bodyFatPct ?? p.plan_bf_pct,
     plan_updated_on: dueOn,
+    recomp_adjust: steer ? steer.next : p.recomp_adjust,
   };
 }
 
