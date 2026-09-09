@@ -70,12 +70,19 @@ export async function GET(req: Request) {
 }
 
 /**
- * One entry per day; writing again replaces it.
+ * One entry per day, and a write only touches the fields it actually sends.
  *
- * Weight most days, body fat on the two you scan. They share a row because
- * they were taken in the same moment on the same scale — and because lean mass
- * is one multiplied by the other, so storing them apart would let them end up
- * describing different mornings.
+ * Weight and body fat share a row — lean mass is one multiplied by the other,
+ * so storing them apart would let them end up describing different mornings —
+ * but they are entered in two different places, on two different rhythms.
+ * Weight is daily and can be any hour; a scan is Monday and Saturday, first
+ * thing, and only means anything under those conditions.
+ *
+ * That makes a full-row replace the wrong shape. Saving Monday's scan would
+ * blank the weight typed at breakfast, and saving Tuesday's weight would blank
+ * a scan that never gets retaken. So a key absent from the body leaves that
+ * column exactly as it was, and a key present as null clears it — which is
+ * what emptying the box on its own card should do, and only that.
  */
 export async function PUT(req: Request) {
   await ensureSchema();
@@ -88,13 +95,43 @@ export async function PUT(req: Request) {
     return NextResponse.json({ ok: false }, { status: 400 });
   }
 
-  const w = num(b?.weight_kg, 20, 400);
-  const at = clock(b?.at_time);
+  const sent = (k: string) => Object.prototype.hasOwnProperty.call(b ?? {}, k);
+
+  // Whatever is already there. The merge happens here rather than in SQL
+  // because "leave this one alone" written as a conditional upsert is the kind
+  // of query nobody can read twice and be sure of.
+  const before = (await sql`
+    select weight_kg, tag, at_time, bf_pct, bf_method, note
+      from weigh_ins where user_id = ${who.id} and day = ${day}`) as any[];
+  const had = before[0];
+
+  const w = sent("weight_kg")
+    ? num(b.weight_kg, 20, 400)
+    : had?.weight_kg == null
+      ? null
+      : Number(had.weight_kg);
+
+  const at = sent("at_time") ? clock(b.at_time) : (had?.at_time ?? null);
+
   // A typed tag still wins when there's no clock time; with one, the time
   // decides, so the two can never contradict each other.
-  const tag: Tag = at ? tagForHour(parseClock(at) ?? 7) : TAGS.includes(b?.tag) ? b.tag : "morning";
-  const bfPct = plausibleBf(b?.bf_pct);
+  const tag: Tag = at
+    ? tagForHour(parseClock(at) ?? 7)
+    : TAGS.includes(b?.tag)
+      ? b.tag
+      : TAGS.includes(had?.tag)
+        ? had.tag
+        : "morning";
 
+  const bfPct = sent("bf_pct")
+    ? plausibleBf(b.bf_pct)
+    : had?.bf_pct == null
+      ? null
+      : Number(had.bf_pct);
+
+  const note = sent("note") ? (b.note ?? null) : (had?.note ?? null);
+
+  // Nothing left in the row at all, so there is no row.
   if (w == null && bfPct == null) {
     await sql`delete from weigh_ins where user_id = ${who.id} and day = ${day}`;
     return NextResponse.json({ ok: true, removed: true });
@@ -103,24 +140,40 @@ export async function PUT(req: Request) {
   const rows = await sql`
     insert into weigh_ins (user_id, day, weight_kg, tag, at_time, bf_pct, bf_method, note)
     values (${who.id}, ${day}, ${w}, ${tag}, ${at}, ${bfPct},
-            ${bfPct == null ? null : "scan"}, ${b?.note ?? null})
+            ${bfPct == null ? null : "scan"}, ${note})
     on conflict (user_id, day) do update set
       weight_kg = ${w}, tag = ${tag}, at_time = ${at}, bf_pct = ${bfPct},
-      bf_method = ${bfPct == null ? null : "scan"}, note = ${b?.note ?? null}
+      bf_method = ${bfPct == null ? null : "scan"}, note = ${note}
     returning to_char(day, 'YYYY-MM-DD') as day, weight_kg, tag, at_time, bf_pct, bf_method, note`;
 
-  // Mirror the scan onto the profile so a brand new account has a body fat
-  // figure to build a protein target from before its first weekly roll. Only
-  // ever moves forward: a reading typed in for an older day can't overwrite
-  // what a newer one already said.
-  if (bfPct != null) {
+  /**
+   * Keep the profile's figure pointed at the newest scan.
+   *
+   * It exists so a brand new account has something to build a protein target
+   * from before its first weekly roll, after which `plan_bf_pct` takes over
+   * and this stops being read.
+   *
+   * Recomputed from the table rather than written from `bfPct`, because the
+   * write that needs handling most is the one that removes a figure. Mirroring
+   * only on the way in meant a mistyped 34%, noticed and cleared ten seconds
+   * later, stayed on the profile and went on setting the protein target until
+   * the next roll — the correction had nowhere to land. Asking the table for
+   * its latest scan answers every case the same way: a new scan, an older day
+   * typed in late, a scan deleted.
+   *
+   * The coalesce is the one deliberate asymmetry. With no scans left at all it
+   * keeps whatever is there, because that is the hand-typed starting figure on
+   * the Plan page and clearing a weigh-in is not a request to erase it.
+   */
+  if (sent("bf_pct")) {
     await sql`
-      update profile set body_fat_pct = ${bfPct}
-      where id = ${who.id}
-        and not exists (
-          select 1 from weigh_ins
-           where user_id = ${who.id} and bf_method = 'scan' and day > ${day}::date
-        )`;
+      update profile set body_fat_pct = coalesce(
+        (select w.bf_pct from weigh_ins w
+          where w.user_id = ${who.id} and w.bf_method = 'scan'
+          order by w.day desc limit 1),
+        body_fat_pct
+      )
+      where id = ${who.id}`;
   }
 
   return NextResponse.json(row(rows[0]));

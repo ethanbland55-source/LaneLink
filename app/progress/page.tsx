@@ -112,11 +112,17 @@ export default function ProgressPage() {
   const offsets = useMemo(() => learnOffsets(entries), [entries]);
 
   /**
-   * What the scan in the form would mean, worked out live off today's weight
-   * so lean and fat mass move as you type rather than only after saving.
+   * What the scan in the form would mean, live, as you type.
+   *
+   * Against the *trend* weight, which is the same basis `composition` uses —
+   * not the number on the scale this morning. That is not a detail: the two
+   * differ by most of a kilo on any given day, and showing one figure above
+   * the Save button and a different one for the same scan in the panel below
+   * it would read as a bug. Today's reading is the fallback for a first scan
+   * logged before there is enough weighing history to have a trend at all.
    */
   const liveScan = useMemo(() => {
-    const kg = Number(weight) > 20 ? Number(weight) : (rate?.current ?? profile?.weight_kg ?? 0);
+    const kg = rate?.current ?? (Number(weight) > 20 ? Number(weight) : profile?.weight_kg ?? 0);
     return fromScan(Number(bf), kg);
   }, [bf, weight, rate, profile]);
 
@@ -168,27 +174,58 @@ export default function ProgressPage() {
     return roll === shop ? [roll] : [roll, shop];
   }, [profile]);
 
-  const scanToday = scanDows.includes(new Date(today + "T12:00:00").getDay());
+  const todayDow = new Date(today + "T12:00:00").getDay();
+  const scanToday = scanDows.includes(todayDow);
+  const scannedToday = entries.some((e) => e.day === today && e.bf_pct != null);
   const lastScan = comp?.current ?? null;
+
+  /** The soonest scan day still ahead, named. */
+  const nextScanLabel = useMemo(() => {
+    if (!scanDows.length) return "";
+    const ahead = scanDows
+      .map((d) => ({ d, days: (d - todayDow + 7) % 7 || 7 }))
+      .sort((a, b) => a.days - b.days)[0];
+    return ahead.days === 1 ? `tomorrow, ${DOW_LABELS[ahead.d]}` : DOW_LABELS[ahead.d];
+  }, [scanDows, todayDow]);
 
   function say(msg: string) {
     setFlash(msg);
     setTimeout(() => setFlash(null), 1800);
   }
 
-  async function save() {
+  /**
+   * Each card writes only what it owns.
+   *
+   * They land in the same database row — lean mass is weight times body fat,
+   * so the two have to describe the same morning — but they are saved from two
+   * places on two rhythms, and a full-row write from either would blank the
+   * other. Sending only the keys this card is responsible for means Monday's
+   * scan cannot erase the weight typed at breakfast, and Tuesday's weight
+   * cannot erase a scan that will not be retaken until Saturday. The API
+   * leaves absent keys alone and treats an explicit null as "clear this".
+   */
+  async function put(body: Record<string, unknown>, msg: string) {
     await fetch("/api/weigh-ins", {
       method: "PUT",
       headers: { "content-type": "application/json" },
-      body: JSON.stringify({
-        day: today,
-        weight_kg: weight ? Number(weight) : null,
-        at_time: atTime || null,
-        bf_pct: bf ? Number(bf) : null,
-      }),
+      body: JSON.stringify({ day: today, ...body }),
     });
     await load();
-    say(liveScan ? `Logged — ${liveScan.pct}% body fat` : "Logged");
+    say(msg);
+  }
+
+  async function saveWeight() {
+    await put(
+      { weight_kg: weight ? Number(weight) : null, at_time: atTime || null },
+      weight ? `Logged ${weight} kg` : "Weight cleared"
+    );
+  }
+
+  async function saveScan() {
+    await put(
+      { bf_pct: bf ? Number(bf) : null },
+      liveScan ? `Logged — ${liveScan.pct}% body fat` : "Scan cleared"
+    );
   }
 
   /**
@@ -297,90 +334,53 @@ export default function ProgressPage() {
         </div>
       </section>
 
-      {/* Today */}
+      {/* Weigh in — every day, whenever.
+          Its own card, and deliberately so. Weight and body fat used to sit in
+          one row of boxes because they land in one database row, which is a
+          reason about storage and not a reason about people. They are two
+          different habits: one is daily and can be any hour because the
+          reading is corrected for the hour; the other is twice a week, first
+          thing, and is worthless if the conditions drift. Putting them side by
+          side made the second look optional-daily rather than fixed-twice-a-
+          week, and made an empty box on a Tuesday look like a missed task. */}
       <section className="card px-5 py-5">
         <div className="flex items-baseline">
           <p className="label mr-auto">Weigh in</p>
           <p className="text-xs text-[var(--color-mut)]">{prettyDay(today)}</p>
         </div>
+        <p className="mt-1 text-xs text-[var(--color-mut)]">Every day, any time.</p>
 
         <div className="mt-3 grid grid-cols-2 gap-3">
           <Measure label="Weight" unit="kg" value={weight} onChange={setWeight} />
           <label className="block">
-            <span className="mb-1.5 block text-xs text-[var(--color-mut)]">Body fat (%)</span>
-            {/* The placeholder is short on purpose: at 375px this box is about
-                160 px wide, and a longer one is a clipped one. */}
-            <NumberField
-              step={0.1}
-              className="w-full"
-              allowEmpty
-              placeholder={scanToday ? "scan day" : "if scanned"}
-              aria-label="Body fat percent from the scan"
-              value={bf === "" ? null : Number(bf)}
-              onCommit={(v) => setBf(v == null ? "" : String(v))}
-            />
+            <span className="mb-1.5 block text-xs text-[var(--color-mut)]">What time</span>
+            <div className="flex gap-2">
+              <input
+                type="time"
+                className="field min-w-0 flex-1"
+                aria-label="Time you weighed in"
+                value={atTime}
+                onChange={(e) => setAtTime(e.target.value)}
+              />
+              <button className="btn btn-sm shrink-0" onClick={() => setAtTime(nowClock())}>
+                Now
+              </button>
+            </div>
           </label>
         </div>
 
-        {/* When. A real clock time, because 09:00 and 11:30 are both "morning"
-            and are not the same reading. */}
-        <div className="mt-4">
-          <p className="label mb-2">What time</p>
-          <div className="flex flex-wrap items-center gap-2">
-            <input
-              type="time"
-              className="field w-32"
-              aria-label="Time you weighed in"
-              value={atTime}
-              onChange={(e) => setAtTime(e.target.value)}
-            />
-            <button className="btn btn-sm" onClick={() => setAtTime(nowClock())}>
-              Now
-            </button>
-            <span className="text-xs text-[var(--color-mut)]">
-              {atTime ? riseNote(atTime, offsets.risePerHour) : "so it can be corrected"}
-            </span>
-          </div>
-        </div>
+        <p className="mt-2 text-xs text-[var(--color-mut)]">
+          {atTime ? riseNote(atTime, offsets.risePerHour) : "so it can be corrected"}
+        </p>
 
-        <button className="btn btn-accent mt-4 w-full" onClick={save}>
-          {liveScan ? `Save — ${liveScan.pct}%, ${liveScan.leanKg} kg lean` : "Save"}
+        <button className="btn btn-accent mt-4 w-full" onClick={saveWeight}>
+          Save weight
         </button>
-
-        {bf !== "" && !liveScan && (
-          <Flag
-            className="mt-3"
-            tone="bad"
-            title="That body fat figure won't save"
-            detail={`It has to be between ${BF_MIN} and ${BF_MAX}.`}
-          />
-        )}
-
-        {/* Scan day gets the attention colour rather than the quiet one. It is
-            a prompt rather than a problem, but it is the one thing on this
-            page that has to happen before you eat — and once the morning has
-            gone it cannot be done later. */}
-        <Flag
-          className="mt-3"
-          tone={scanToday ? "warn" : "info"}
-          title={
-            scanToday
-              ? "Scan day — do it before you eat"
-              : `Next scan ${scanDows.map((d) => DOW_LABELS[d]).join(" and ")}`
-          }
-          detail={
-            scanToday
-              ? "Same conditions every time: first thing, after the loo, nothing to drink yet."
-              : "Weight every day is plenty in between. Body fat only means something when the conditions match."
-          }
-        />
 
         <Note label="Weighed at an odd time?">
           You don&rsquo;t have to weigh at the same time every day — say when you did and the
           reading is corrected to what it would have been first thing before it touches the trend.
-          You gain about a kilo through the day and none of it is fat. The scan is the exception:
-          bioimpedance reads how hydrated you are, so it only compares to the last one if the
-          morning matched.
+          You gain about a kilo through the day and none of it is fat.
         </Note>
 
         {offsets.measured ? (
@@ -398,20 +398,92 @@ export default function ProgressPage() {
         )}
       </section>
 
-      {/* What you're made of */}
+      {/* Body composition — the scan, and everything it produces.
+          The input sits with its own results rather than up in the weigh-in,
+          because what you type here is a different measurement on a different
+          schedule, and because seeing the lean and fat figures move as you type
+          is the fastest way to know you typed the right number. */}
       <section className="card px-5 py-5">
         <div className="flex items-baseline">
-          <p className="label mr-auto">What you&rsquo;re made of</p>
-          {lastScan && (
-            <p className="text-xs text-[var(--color-mut)]">{prettyDay(lastScan.day)}</p>
-          )}
+          <p className="label mr-auto">Body composition</p>
+          {lastScan && <p className="text-xs text-[var(--color-mut)]">{prettyDay(lastScan.day)}</p>}
+        </div>
+        <p className="mt-1 text-xs text-[var(--color-mut)]">
+          {scanDows.map((d) => DOW_LABELS[d]).join(" and ")} mornings, before you eat.
+        </p>
+
+        {/* Scan day gets the attention colour. It is a prompt rather than a
+            problem, but it is the one thing on this page that cannot be done
+            later — once the morning has gone, the conditions have gone. */}
+        <Flag
+          className="mt-3"
+          tone={scanToday && !scannedToday ? "warn" : "info"}
+          title={
+            scannedToday
+              ? "Scanned today"
+              : scanToday
+                ? "Scan day — before food or drink"
+                : `Next scan ${nextScanLabel}`
+          }
+          detail={
+            scannedToday
+              ? "Logged. Nothing else to do until the next one."
+              : scanToday
+                ? "First thing, after the loo, nothing drunk yet. Same conditions every time or the numbers aren't comparable."
+                : "Weight on its own is plenty in between."
+          }
+        />
+
+        <div className="mt-4 flex items-end gap-3">
+          <label className="block w-32">
+            <span className="mb-1.5 block text-xs text-[var(--color-mut)]">Body fat (%)</span>
+            <NumberField
+              step={0.1}
+              className="w-full"
+              allowEmpty
+              placeholder={scanToday ? "scan day" : "if scanned"}
+              aria-label="Body fat percent from the scan"
+              value={bf === "" ? null : Number(bf)}
+              onCommit={(v) => setBf(v == null ? "" : String(v))}
+            />
+          </label>
+          <button className="btn btn-accent flex-1" onClick={saveScan}>
+            {liveScan ? `Save ${liveScan.pct}%` : "Save scan"}
+          </button>
         </div>
 
+        {bf !== "" && !liveScan ? (
+          <Flag
+            className="mt-3"
+            tone="bad"
+            title="That figure won't save"
+            detail={`Body fat has to be between ${BF_MIN} and ${BF_MAX}%.`}
+          />
+        ) : (
+          liveScan && (
+            <p className="mt-2 text-xs text-[var(--color-mut)]">
+              {liveScan.pct}% of your {(liveScan.leanKg + liveScan.fatKg).toFixed(1)} kg trend
+              weight is <b className="text-[#f2f4f7]">{liveScan.leanKg} kg lean</b> and{" "}
+              {liveScan.fatKg} kg fat.
+            </p>
+          )
+        )}
+
+        <Note label="Which number off the scale?">
+          The whole-body one — the single percentage for all of you. Your scale also breaks fat and
+          muscle down per arm, per leg and trunk, and those are worth a look but not worth typing:
+          the segments are the least repeatable part of a bioimpedance reading, and every target in
+          this app is built from the one total. Lean and fat mass in kilograms don&rsquo;t need
+          entering either. This works those out from the percentage and your trend weight, so they
+          can never end up describing a different morning from the one you weighed on.
+        </Note>
+
         {lastScan && comp ? (
-          <>
-            <div className="mt-3 flex items-start">
+          <div className="mt-4 border-t border-[#1c1f25] pt-4">
+            <div className="flex items-start">
               <div className="mr-auto">
-                <p className="num-hero text-[3rem]">
+                <p className="label">Body fat</p>
+                <p className="num-hero mt-1 text-[3rem]">
                   {lastScan.bfPct}
                   <span className="ml-1 text-lg font-semibold text-[var(--color-mut)]">%</span>
                 </p>
@@ -480,7 +552,7 @@ export default function ProgressPage() {
                 className="mt-3"
                 tone="info"
                 title={`${comp.scans} of ${SCAN_MIN_POINTS} scans`}
-                detail="Two a week for three weeks, then this starts reporting a direction rather than a number."
+                detail="Twice a week for three weeks, then this reports a direction rather than a number."
               />
             )}
 
@@ -488,16 +560,16 @@ export default function ProgressPage() {
               The percentage is worth about ±{SCAN_ERROR} points against a lab method, and most of
               that is a fixed offset for your body and your scale — so the number is approximate
               and the way it moves is real. Lean mass here is your trend weight times what the scan
-              said, not the figure on the display: the scale reads hydration, and using the
-              smoothed weight keeps a salty Friday out of Saturday&rsquo;s answer.
+              said, not the figure on the display: bioimpedance reads how hydrated you are, and
+              using the smoothed weight keeps a salty Friday out of Saturday&rsquo;s answer.
             </Note>
-          </>
+          </div>
         ) : (
-          <>
-            <p className="mt-3 text-sm leading-relaxed text-[var(--color-mut)]">
-              Nothing scanned yet. Stand on the scale with the handle first thing on{" "}
-              {scanDows.map((d) => DOW_LABELS[d]).join(" and ")}, and type the body fat percentage
-              into the box above.
+          <div className="mt-4 border-t border-[#1c1f25] pt-4">
+            <p className="text-sm leading-relaxed text-[var(--color-mut)]">
+              Nothing scanned yet. Stand on the scale holding the handle, first thing on{" "}
+              {scanDows.map((d) => DOW_LABELS[d]).join(" or ")}, and put the overall percentage in
+              the box above.
             </p>
             <Note label="Why this and not a tape measure">
               A tape has no way to tell a smaller waist from a bigger back, and against DXA its
@@ -506,7 +578,7 @@ export default function ProgressPage() {
               electrodes put current through your arms and trunk as well as your legs, which is
               what makes the difference between two scans mean something.
             </Note>
-          </>
+          </div>
         )}
       </section>
 
