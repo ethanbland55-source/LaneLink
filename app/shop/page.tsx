@@ -18,17 +18,18 @@ import { planDayForShop } from "@/lib/weekly";
 import { overlayPending, type PendingPortion } from "@/lib/pending";
 import { normaliseProfile, SHOP_DAY_OPTIONS } from "@/lib/profile";
 import { NumberField, scrollIntoViewSoon } from "../number-field";
+import type { Stock } from "@/lib/stock";
 import { Note, SectionLabel } from "../explain";
 import { Flag } from "../flag";
-
-type PantryRow = { name: string; grams: number };
 
 export default function ShopPage() {
   const [profile, setProfile] = useState<Profile | null>(null);
   const [meals, setMeals] = useState<PlanMeal[]>([]);
-  const [pantry, setPantry] = useState<PantryRow[]>([]);
+  /** What's in the cupboard now — the last count, less everything logged since. */
+  const [stock, setStock] = useState<Stock[]>([]);
   const [dayTypes, setDayTypes] = useState<DayType[]>([]);
-  const [checked, setChecked] = useState<Set<string>>(new Set());
+  /** Lines in the trolley, and how much of each went into the cupboard. */
+  const [checked, setChecked] = useState<Map<string, number>>(new Map());
   const [days, setDays] = useState<number | null>(null);
   const [start, setStart] = useState(dayKey());
   const [loading, setLoading] = useState(true);
@@ -74,8 +75,8 @@ export default function ShopPage() {
             : m
         );
         setDayTypes((dt as any[]).map((x, i) => normaliseDayType(x, i)));
-        setPantry(pan);
-        setChecked(new Set(ch));
+        setStock(pan);
+        setChecked(new Map((ch as { key: string; bought: number }[]).map((c) => [c.key, c.bought])));
         setDays(prof.shop_days);
       } catch {
         setError("Can't reach the database.");
@@ -103,14 +104,29 @@ export default function ShopPage() {
     [profile, dayTypes, planDay]
   );
 
+  /**
+   * The cupboard as it was before this shop.
+   *
+   * Ticking a line puts what you bought into the cupboard straight away, so
+   * the stock figure goes up mid-shop. The list must not see that — otherwise
+   * ticking the chicken would turn "buy 1 kg" into "buy nothing" under your
+   * thumb. What this trip has bought is taken back off before the list reads
+   * it, and the line keeps saying what it said when you walked in.
+   */
+  const haveBefore = useMemo(
+    () =>
+      stock.map((s) => ({ name: s.name, grams: Math.max(0, s.grams - (checked.get(s.key) ?? 0)) })),
+    [stock, checked]
+  );
+
   const list = useMemo(() => {
     if (!profile || !plan) return null;
     return buildShoppingList(meals, profile, plan, {
       days: days ?? profile.shop_days,
       startDay: start,
-      pantry,
+      pantry: haveBefore,
     });
-  }, [meals, profile, plan, days, start, pantry]);
+  }, [meals, profile, plan, days, start, haveBefore]);
 
   /** What to cook once the shopping is done — same window, same day types. */
   const cook = useMemo(() => {
@@ -138,37 +154,56 @@ export default function ShopPage() {
     });
   }
 
-  async function toggle(key: string) {
-    const on = !checked.has(key);
-    setChecked((s) => {
-      const n = new Set(s);
-      if (on) n.add(key);
-      else n.delete(key);
+  async function reloadStock() {
+    try {
+      setStock(await fetch("/api/pantry").then((r) => r.json()));
+    } catch {
+      /* the list still works on the figures it has */
+    }
+  }
+
+  /**
+   * Tick a line into the trolley — and into the cupboard.
+   *
+   * `bought` defaults to what the list said to buy. Change it on the line
+   * afterwards if the shop only had the big bag.
+   */
+  async function mark(line: ShopLine, on: boolean, bought = line.buyGrams) {
+    setChecked((m) => {
+      const n = new Map(m);
+      if (on) n.set(line.key, bought);
+      else n.delete(line.key);
       return n;
     });
     await fetch("/api/checks", {
       method: "PUT",
       headers: { "content-type": "application/json" },
-      body: JSON.stringify({ key, checked: on }),
+      body: JSON.stringify({
+        key: line.key,
+        checked: on,
+        name: line.name,
+        bought: on ? bought : 0,
+        day: dayKey(),
+      }),
     });
+    await reloadStock();
   }
 
   async function clearChecks() {
-    setChecked(new Set());
+    setChecked(new Map());
     await fetch("/api/checks", { method: "DELETE" });
-    say("New shop started");
+    say("New shop started — what you bought is in the cupboard");
   }
 
+  /** You looked, and this is what's there. Replaces the running figure. */
   async function setHave(name: string, grams: number) {
-    setPantry((p) => {
-      const rest = p.filter((x) => x.name !== name);
-      return grams > 0 ? [...rest, { name, grams }] : rest;
-    });
     await fetch("/api/pantry", {
       method: "PUT",
       headers: { "content-type": "application/json" },
-      body: JSON.stringify({ name, grams }),
+      body: JSON.stringify({ name, grams, day: dayKey() }),
     });
+    await reloadStock();
+    say(grams > 0 ? `${name}: ${fmt(grams)} in the cupboard` : `${name} cleared`);
   }
 
   async function copy() {
@@ -194,6 +229,8 @@ export default function ShopPage() {
 
   const total = list.lines.length;
   const done = list.lines.filter((l) => checked.has(l.key)).length;
+  const stockByKey = new Map(stock.map((x) => [x.key, x]));
+  const shelf = stock.filter((x) => x.grams > 0 || x.counted > 0);
 
   return (
     <div className="space-y-3">
@@ -336,7 +373,10 @@ export default function ShopPage() {
                     key={l.key}
                     line={l}
                     checked={checked.has(l.key)}
-                    onToggle={() => toggle(l.key)}
+                    bought={checked.get(l.key) ?? 0}
+                    inCupboard={stockByKey.get(l.key)?.grams ?? 0}
+                    onToggle={() => mark(l, !checked.has(l.key))}
+                    onBought={(g) => mark(l, true, g)}
                     onHave={(g) => setHave(l.name, g)}
                   />
                 ))}
@@ -368,11 +408,36 @@ export default function ShopPage() {
             </section>
           )}
 
+          {/* The cupboard. Runs itself down as meals are logged, so next
+              week's list starts from what's actually left. Anything can be
+              corrected by hand — food goes off, friends come round. */}
+          {shelf.length > 0 && (
+            <section className="card px-4 py-4 sm:px-5">
+              <SectionLabel
+                title="In the cupboard"
+                info="What you bought, less every meal you've logged since. Next week's list takes it off before it tells you what to buy. If something's gone off or run out, change it here."
+              />
+              {shelf.some((x) => !x.tracking) && (
+                <p className="mt-2 text-xs leading-relaxed" style={{ color: "var(--color-carbs)" }}>
+                  Figures marked &ldquo;not tracking yet&rdquo; are ones you typed in before the
+                  cupboard kept itself up to date. Check them once and correct any that are off —
+                  from then on, and for anything you tick in a shop, they run down as you log meals.
+                </p>
+              )}
+              <div className="mt-3 space-y-1.5">
+                {shelf.map((x) => (
+                  <Shelf key={x.key} item={x} onSet={(g) => setHave(x.name, g)} />
+                ))}
+              </div>
+            </section>
+          )}
+
           <div className="px-1 pb-4 text-center">
             <Note label="How these amounts are worked out">
-              Rounded up to the nearest pack, with anything you already have taken off first.
-              Weights are as you&rsquo;d weigh them for the plan — raw for meat, dry for rice and
-              pasta.
+              Rounded up to the nearest pack, with what&rsquo;s already in the cupboard taken off
+              first. Ticking a line adds what you bought to the cupboard, and every meal you log
+              takes its share back out, so the figure keeps itself up to date. Weights are as
+              you&rsquo;d weigh them for the plan — raw for meat, dry for rice and pasta.
             </Note>
           </div>
         </>
@@ -384,22 +449,35 @@ export default function ShopPage() {
 function Line({
   line,
   checked,
+  bought,
+  inCupboard,
   onToggle,
+  onBought,
   onHave,
 }: {
   line: ShopLine;
   checked: boolean;
+  /** What ticking this line put in the cupboard. */
+  bought: number;
+  /** The cupboard figure now, bought included. */
+  inCupboard: number;
   onToggle: () => void;
+  onBought: (grams: number) => void;
   onHave: (grams: number) => void;
 }) {
-  const [editing, setEditing] = useState(false);
-  const [have, setHaveLocal] = useState(String(Math.round(line.haveGrams) || ""));
+  const [editing, setEditing] = useState<"have" | "bought" | null>(null);
+  const [draft, setDraft] = useState("");
 
   const amount = line.unit
     ? `${line.unit.count} ${line.unit.name}${line.unit.count === 1 ? "" : "s"}`
     : line.buyGrams >= 1000
       ? `${(line.buyGrams / 1000).toFixed(line.buyGrams % 1000 === 0 ? 0 : 2)} kg`
       : `${Math.round(line.buyGrams)} g`;
+
+  function open(which: "have" | "bought") {
+    setDraft(String(Math.round(which === "have" ? inCupboard : bought) || ""));
+    setEditing(which);
+  }
 
   return (
     <div className={`sunk px-3 py-2.5 ${checked ? "done" : ""}`}>
@@ -443,39 +521,138 @@ function Line({
 
       <div className="no-print mt-1.5 pl-[2.6rem]">
         {editing ? (
-          <span className="flex items-center gap-1.5">
+          <span className="flex flex-wrap items-center gap-1.5">
+            <span className="text-[0.68rem] text-[var(--color-mut)]">
+              {editing === "bought" ? "Bought" : "In the cupboard now"}
+            </span>
             <input
               type="number"
               inputMode="decimal"
               autoFocus
               className="field w-24 px-2 py-1 text-right text-xs"
-              value={have}
+              value={draft}
               placeholder="grams"
               onFocus={(e) => scrollIntoViewSoon(e.currentTarget)}
-              onChange={(e) => setHaveLocal(e.target.value)}
+              onChange={(e) => setDraft(e.target.value)}
             />
+            <span className="text-[0.68rem] text-[var(--color-mut)]">g</span>
             <button
               className="btn btn-sm"
               onClick={() => {
-                onHave(Number(have) || 0);
-                setEditing(false);
+                const g = Math.max(0, Number(draft) || 0);
+                if (editing === "bought") onBought(g);
+                else onHave(g);
+                setEditing(null);
               }}
             >
               Save
             </button>
-            <button className="btn btn-sm btn-quiet" onClick={() => setEditing(false)}>
+            <button className="btn btn-sm btn-quiet" onClick={() => setEditing(null)}>
               Cancel
             </button>
           </span>
+        ) : checked ? (
+          // Only when there's a figure to correct. A line ticked with nothing
+          // to buy — or ticked before the cupboard tracked purchases — has
+          // nothing to say here, and a prompt on every one of them was noise.
+          bought > 0 && (
+            <button
+              className="hit text-[0.68rem] text-[#5b6270] underline decoration-dotted"
+              onClick={() => open("bought")}
+            >
+              bought {fmt(bought)} — change
+            </button>
+          )
         ) : (
           <button
             className="hit text-[0.68rem] text-[#5b6270] underline decoration-dotted"
-            onClick={() => setEditing(true)}
+            onClick={() => open("have")}
           >
-            {line.haveGrams > 0 ? "change what I have in" : "I already have some"}
+            {inCupboard > 0 ? `${fmt(inCupboard)} in the cupboard — change` : "I already have some"}
           </button>
         )}
       </div>
+    </div>
+  );
+}
+
+/** One cupboard shelf: what's left, where the figure came from, and a way to correct it. */
+function Shelf({ item, onSet }: { item: Stock; onSet: (grams: number) => void }) {
+  const [editing, setEditing] = useState(false);
+  const [draft, setDraft] = useState("");
+  const since = item.counted_on ? pretty(item.counted_on) : null;
+  const typed = item.counted_at ? pretty(item.counted_at.slice(0, 10)) : null;
+
+  return (
+    <div className="sunk px-3 py-2.5">
+      <div className="flex items-center gap-3">
+        <div className="mr-auto min-w-0">
+          <p className="truncate text-sm font-semibold">{item.name}</p>
+          <p className="mt-0.5 text-[0.68rem] text-[#5b6270]">
+            {item.tracking ? (
+              <>
+                {since ? `${fmt(item.counted)} on ${since}` : fmt(item.counted)}
+                {item.used > 0 && ` · ${fmt(item.used)} eaten since`}
+              </>
+            ) : (
+              `typed in${typed ? ` ${typed}` : ""} · not tracking yet`
+            )}
+          </p>
+        </div>
+        <span
+          className="num shrink-0 text-sm"
+          style={{ color: item.grams > 0 ? "var(--color-fg)" : "var(--color-mut)" }}
+        >
+          {item.grams > 0 ? fmt(item.grams) : "used up"}
+        </span>
+        {!editing && (
+          <button
+            className="btn btn-sm btn-quiet shrink-0"
+            onClick={() => {
+              setDraft(String(item.grams || ""));
+              setEditing(true);
+            }}
+          >
+            Change
+          </button>
+        )}
+      </div>
+      {editing && (
+        <span className="mt-2 flex flex-wrap items-center gap-1.5">
+          <input
+            type="number"
+            inputMode="decimal"
+            autoFocus
+            className="field w-24 px-2 py-1 text-right text-xs"
+            value={draft}
+            placeholder="grams"
+            onFocus={(e) => scrollIntoViewSoon(e.currentTarget)}
+            onChange={(e) => setDraft(e.target.value)}
+          />
+          <span className="text-[0.68rem] text-[var(--color-mut)]">g left</span>
+          <button
+            className="btn btn-sm"
+            onClick={() => {
+              onSet(Math.max(0, Number(draft) || 0));
+              setEditing(false);
+            }}
+          >
+            Save
+          </button>
+          <button
+            className="btn btn-sm btn-quiet"
+            onClick={() => {
+              onSet(0);
+              setEditing(false);
+            }}
+          >
+            None left
+          </button>
+          <button className="btn btn-sm btn-quiet" onClick={() => setEditing(false)}>
+            Cancel
+          </button>
+        </span>
+      )}
     </div>
   );
 }

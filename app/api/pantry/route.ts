@@ -1,39 +1,45 @@
 import { NextResponse } from "next/server";
 import { sql, ensureSchema } from "@/lib/db";
 import { requireUser } from "@/lib/session";
+import { dayKey } from "@/lib/nutrition";
+import { adjustStock, listStock, setStock } from "@/lib/stock";
 
 export const dynamic = "force-dynamic";
 
-/** What you already have in, so the shopping list can subtract it. */
+/**
+ * What's in the cupboard right now — the last count, less everything logged
+ * since. See lib/stock.ts. `grams` is the figure the shopping list subtracts.
+ */
 export async function GET() {
   await ensureSchema();
   const who = await requireUser();
   if ("res" in who) return who.res;
 
-  const rows = await sql`select * from pantry where user_id = ${who.id} order by name`;
-  return NextResponse.json(rows.map((r: any) => ({ ...r, grams: Number(r.grams) })));
+  return NextResponse.json(await listStock(who.id));
 }
 
+/**
+ * `{ name, grams }` replaces the count; `{ name, add }` adds to what's there
+ * (negative takes away). `day` is the client's logging day, so a meal from
+ * earlier in the week logged late isn't taken off a count made after it.
+ */
 export async function PUT(req: Request) {
   await ensureSchema();
   const who = await requireUser();
   if ("res" in who) return who.res;
 
-  const { name, grams } = await req.json();
-  const clean = String(name ?? "").trim();
+  const b = await req.json();
+  const clean = String(b?.name ?? "").trim();
   if (!clean) return NextResponse.json({ ok: false }, { status: 400 });
+  const day = /^\d{4}-\d{2}-\d{2}$/.test(String(b?.day ?? "")) ? String(b.day) : dayKey();
 
-  const g = Number(grams);
-  if (!Number.isFinite(g) || g <= 0) {
-    await sql`delete from pantry where user_id = ${who.id} and name = ${clean}`;
-    return NextResponse.json({ ok: true, removed: true });
+  if (b?.add != null) {
+    await adjustStock(who.id, clean, Number(b.add), day);
+  } else {
+    const g = Number(b?.grams);
+    await setStock(who.id, clean, Number.isFinite(g) ? g : 0, day);
   }
-
-  const rows = await sql`
-    insert into pantry (user_id, name, grams) values (${who.id}, ${clean}, ${g})
-    on conflict (user_id, name) do update set grams = ${g}, updated_at = now()
-    returning *`;
-  return NextResponse.json({ ...rows[0], grams: Number(rows[0].grams) });
+  return NextResponse.json({ ok: true, stock: await listStock(who.id) });
 }
 
 export async function DELETE(req: Request) {
