@@ -116,27 +116,33 @@ export type Profile = {
   base_activity: number;
   energy_model: EnergyModel;
   goal: Goal;
+  /**
+   * How hard to push toward the goal. With the goal it sets what the weight
+   * and the body fat are each aiming to do a week — see `aimFor`.
+   *
+   * This replaced a "block": a start date, a length in weeks and a calorie
+   * target that walked from one percentage of maintenance to another. Nobody
+   * knows their starting point as a percentage of maintenance, and a block
+   * with an end date is the wrong shape for "as long as I feel like going".
+   * A pace is a rate you can picture, and the plan finds the calories that
+   * produce it from what the scale and the scans actually do.
+   */
+  pace: Pace;
   protein_basis: ProteinBasis;
   protein_per_kg: number;
   fat_per_kg: number;
-  /** A named block of training with a start, a length and a drifting target. */
-  phase_name: string;
-  phase_start: string | null;
-  /** 0 means open-ended: the starting adjustment simply holds. */
-  phase_weeks: number;
-  phase_start_adjust: number;
-  phase_end_adjust: number;
   /** Expenditure worked out from your own intake and weight trend. */
   calibrated_tdee: number | null;
   use_calibration: boolean;
   /**
    * The self-correcting part of the calorie target, as a fraction of
-   * maintenance. Written once a week by the roll, never by hand, and clamped
-   * to ±8%. See lib/steer.ts for what moves it and why so slowly.
+   * maintenance, on top of where the goal starts you. Written once a week by
+   * the roll, never by hand, and clamped to ±12%. See lib/steer.ts for what
+   * moves it and why so slowly. The column name is historical — it steers
+   * every goal now, not only a recomposition.
    */
   recomp_adjust: number;
   calorie_override: number | null;
-  carb_floor_per_kg: number;
   /**
    * The figures this week's targets are built on, snapshotted on shopping day.
    * Separate from weight_kg on purpose: the plan must not move under you every
@@ -181,60 +187,116 @@ export const ACTIVITY_LEVELS = [
   { value: 1.9, label: "Extra active", hint: "twice-a-day training" },
 ];
 
+export type Pace = "gentle" | "steady" | "faster";
+
+export const PACES: { value: Pace; label: string }[] = [
+  { value: "gentle", label: "Gentle" },
+  { value: "steady", label: "Steady" },
+  { value: "faster", label: "Faster" },
+];
+
 /**
- * A goal is really a *shape over time*, not a single percentage. Each one sets
- * where the phase starts and where it ends up; a phase with a length walks
- * between the two.
+ * What a goal is actually asking the body to do, week by week.
+ *
+ * Two rates, because one is never enough. Weight alone cannot tell a
+ * recomposition that is working from one that is doing nothing — both hold
+ * roughly still — and body fat alone cannot tell losing fat from losing the
+ * muscle around it. Together they can, and the steer in lib/steer.ts reads
+ * both against these bands every roll day.
+ *
+ * `adjust` is only where the calories *start*. It is a first guess at the
+ * surplus or deficit that produces the rates, made before the app has seen a
+ * single weigh-in, and the steer corrects it from there.
+ *
+ * The bands are wide on purpose. A trend weight is good to about 0.1 kg a
+ * week and a month of scans to about half a point of body fat, and a band
+ * narrower than that would have the plan chasing noise every Monday.
  */
+export type Aim = {
+  /** Starting calorie target, as a fraction of maintenance. */
+  adjust: number;
+  /** Weekly weight change aimed for, % of bodyweight: [low, high]. */
+  weight: [number, number];
+  /** Body fat change aimed for, percentage points a month: [low, high]. */
+  bf: [number, number];
+};
+
 export const GOALS: {
   value: Goal;
   label: string;
-  start: number;
-  end: number;
   protein: { basis: ProteinBasis; perKg: number };
   fatPerKg: number;
   blurb: string;
+  /** Whether a pace means anything. Holding still has no speed. */
+  paced: boolean;
+  aims: Record<Pace, Aim>;
 }[] = [
   {
     value: "cut",
     label: "Cutting",
-    start: -0.2,
-    end: -0.2,
     protein: { basis: "bodyweight", perKg: 2.2 },
     fatPerKg: 0.7,
-    blurb: "20% below maintenance throughout",
+    blurb: "Lose fat, keep the muscle. Weight comes down.",
+    paced: true,
+    // 0.7% a week is where the elite-athlete trial kept its lean mass and its
+    // strength; past 1% it kept neither (Garthe et al. 2011). So even
+    // "faster" stops short of it.
+    aims: {
+      gentle: { adjust: -0.1, weight: [-0.5, -0.25], bf: [-1.2, -0.3] },
+      steady: { adjust: -0.15, weight: [-0.75, -0.4], bf: [-1.6, -0.5] },
+      faster: { adjust: -0.2, weight: [-1.0, -0.6], bf: [-2.2, -0.7] },
+    },
   },
   {
     value: "maintain",
     label: "Maintaining",
-    start: 0,
-    end: 0,
     protein: { basis: "bodyweight", perKg: 2.0 },
     fatPerKg: 0.8,
-    blurb: "at maintenance",
+    blurb: "Hold weight and body fat where they are.",
+    paced: false,
+    aims: {
+      gentle: { adjust: 0, weight: [-0.1, 0.1], bf: [-0.4, 0.3] },
+      steady: { adjust: 0, weight: [-0.1, 0.1], bf: [-0.4, 0.3] },
+      faster: { adjust: 0, weight: [-0.1, 0.1], bf: [-0.4, 0.3] },
+    },
   },
   {
     value: "recomp",
     label: "Toned maintenance",
-    start: 0,
-    end: -0.08,
     protein: { basis: "lean", perKg: 2.8 },
     fatPerKg: 0.8,
-    blurb: "starts at maintenance and drifts gently under, protein by lean mass",
+    blurb: "Body fat slowly down while weight slowly climbs — muscle replacing fat.",
+    paced: true,
+    // The scale cannot go up while body fat comes down unless the extra is
+    // muscle, and muscle is slow: a trained body adds a few hundred grams a
+    // month at best. Hence weight bands that barely leave zero.
+    aims: {
+      gentle: { adjust: 0, weight: [0, 0.12], bf: [-0.6, -0.15] },
+      steady: { adjust: 0, weight: [0.05, 0.2], bf: [-0.8, -0.2] },
+      faster: { adjust: 0.02, weight: [0.1, 0.3], bf: [-1.0, -0.25] },
+    },
   },
   {
     value: "bulk",
     label: "Bulking",
-    start: 0.12,
-    end: 0.12,
     protein: { basis: "bodyweight", perKg: 1.8 },
     fatPerKg: 0.8,
-    blurb: "12% above maintenance",
+    blurb: "Build muscle, accept a little fat. Weight goes up.",
+    paced: true,
+    aims: {
+      gentle: { adjust: 0.05, weight: [0.1, 0.25], bf: [-0.3, 0.3] },
+      steady: { adjust: 0.1, weight: [0.2, 0.4], bf: [-0.2, 0.5] },
+      faster: { adjust: 0.14, weight: [0.3, 0.6], bf: [-0.1, 0.8] },
+    },
   },
 ];
 
 export function goalDef(g: Goal) {
   return GOALS.find((x) => x.value === g) ?? GOALS[1];
+}
+
+export function aimFor(goal: Goal, pace: Pace): Aim {
+  return goalDef(goal).aims[pace] ?? goalDef(goal).aims.steady;
 }
 
 /**
@@ -260,75 +322,75 @@ export function ageFromDob(dob: string | null | undefined): number {
 }
 
 /* ------------------------------------------------------------------ */
-/* Phase                                                               */
+/* The calorie target                                                  */
 /* ------------------------------------------------------------------ */
 
-export type Phase = {
-  name: string;
-  /** 0 at the start of the block, 1 at the end. Null when open-ended. */
-  progress: number | null;
-  week: number | null;
-  weeks: number;
-  /** The energy adjustment in force today. */
-  adjust: number;
-  startAdjust: number;
-  endAdjust: number;
-  daysIn: number | null;
-  daysLeft: number | null;
+/**
+ * However the goal and the steer add up, the week stays inside this.
+ *
+ * The floor is below the deepest goal on purpose — a "faster" cut starts at
+ * −20% and the steer must still be able to take it a little lower if the scale
+ * says maintenance was overestimated. It is still a floor: past a quarter under
+ * maintenance there is nothing left for training, and the energy-availability
+ * floor per day catches the rest.
+ */
+export const TOTAL_ADJUST_FLOOR = -0.25;
+export const TOTAL_ADJUST_CEILING = 0.25;
+
+export type AimState = {
+  goal: Goal;
+  pace: Pace;
+  /** Where the goal starts the calories, as a fraction of maintenance. */
+  base: number;
+  /** What the steer has since added or taken away. */
+  steer: number;
+  /** The two together, clamped — what the week is actually built on. */
+  total: number;
+  aim: Aim;
 };
 
-/**
- * Where you are in the block, and therefore how hard today is.
- *
- * A phase that ramps is the point of "toned maintenance": you start level with
- * maintenance so nothing about training suffers while you settle in, and the
- * deficit arrives so slowly that the scale barely reacts while body
- * composition does. Ending eight weeks later a few per cent under is a
- * different experience from starting there, even though the average is
- * similar.
- */
-export function phaseOf(p: Profile, today: string): Phase {
-  const weeks = Math.max(0, Math.round(p.phase_weeks || 0));
-  const start = p.phase_start;
-  const base = {
-    name: p.phase_name || goalDef(p.goal).label,
-    weeks,
-    startAdjust: p.phase_start_adjust,
-    endAdjust: p.phase_end_adjust,
-  };
-
-  if (!start || weeks <= 0) {
-    return { ...base, progress: null, week: null, adjust: p.phase_start_adjust, daysIn: null, daysLeft: null };
-  }
-
-  const msPerDay = 86_400_000;
-  const daysIn = Math.floor(
-    (new Date(today + "T12:00:00").getTime() - new Date(start + "T12:00:00").getTime()) / msPerDay
-  );
-  const total = weeks * 7;
-  const clamped = Math.min(total, Math.max(0, daysIn));
-
-  /**
-   * The drift steps once a week, not once a day.
-   *
-   * A target that slides every morning means the containers you portioned on
-   * Sunday are wrong by Wednesday and the shopping list disagrees with the
-   * plan it was built from. Holding it flat for the whole week and stepping on
-   * roll day is both easier to live with and easier to trust — and across the
-   * block the average adjustment comes out the same either way.
-   */
-  const weeksIn = Math.floor(clamped / 7);
-  const steppedDays = Math.min(total, weeksIn * 7);
-  const progress = total > 0 ? steppedDays / total : 1;
-
+export function aimState(p: Profile): AimState {
+  const aim = aimFor(p.goal, p.pace);
+  const steer = p.recomp_adjust ?? 0;
   return {
-    ...base,
-    progress,
-    week: weeksIn + 1,
-    adjust: p.phase_start_adjust + (p.phase_end_adjust - p.phase_start_adjust) * progress,
-    daysIn,
-    daysLeft: total - clamped,
+    goal: p.goal,
+    pace: p.pace,
+    base: aim.adjust,
+    steer,
+    total: Math.min(TOTAL_ADJUST_CEILING, Math.max(TOTAL_ADJUST_FLOOR, aim.adjust + steer)),
+    aim,
   };
+}
+
+/**
+ * What the retired block was adding on a given day, read off its raw columns.
+ *
+ * Kept for one job: moving an account off the block without its calories
+ * jumping. The profile route reads this once, the first time it sees a profile
+ * with no pace, and folds the difference into the steer. After that nothing
+ * calls it. The clamp to −15% reproduces the old total floor, so the figure is
+ * the one the plan was really built on rather than the one the block asked for.
+ */
+export function legacyBlockAdjust(raw: any, today: string): number {
+  const startAdj = Number(raw?.phase_start_adjust);
+  const endAdj = Number(raw?.phase_end_adjust);
+  const s = Number.isFinite(startAdj) && Math.abs(startAdj) <= 0.4 ? startAdj : 0;
+  const e = Number.isFinite(endAdj) && Math.abs(endAdj) <= 0.4 ? endAdj : s;
+  const weeks = Math.max(0, Math.round(Number(raw?.phase_weeks) || 0));
+  const start = raw?.phase_start ? String(raw.phase_start).slice(0, 10) : null;
+
+  let adjust = s;
+  if (start && /^\d{4}-\d{2}-\d{2}$/.test(start) && weeks > 0) {
+    const daysIn = Math.floor(
+      (new Date(today + "T12:00:00").getTime() - new Date(start + "T12:00:00").getTime()) /
+        86_400_000
+    );
+    const total = weeks * 7;
+    const stepped = Math.min(total, Math.floor(Math.min(total, Math.max(0, daysIn)) / 7) * 7);
+    adjust = s + (e - s) * (total > 0 ? stepped / total : 1);
+  }
+  const old = Number(raw?.recomp_adjust);
+  return Math.max(-0.15, adjust + (Number.isFinite(old) ? old : 0));
 }
 
 /**
@@ -418,8 +480,17 @@ export function dayTypeCost(p: Profile, dt: DayType): number {
 export const EA_OPTIMAL = 40;
 export const EA_FLOOR = 30;
 
-/** However the phase and the steer add up, the week never goes below this. */
-export const TOTAL_ADJUST_FLOOR = -0.15;
+/**
+ * A safety net under carbohydrate, in g per kg — not a setting.
+ *
+ * Carbohydrate is simply whatever the day has left once protein and fat are
+ * paid for, which is how the plan is meant to work and why the old "carb
+ * floor" box went: on any real day the remainder is several times this. It
+ * only ever binds when calories are so low that protein and fat would eat the
+ * whole day, and then fat gives way (down to a hard hormonal floor) rather than
+ * leaving someone to swim on nothing.
+ */
+const CARB_SAFETY_PER_KG = 1.0;
 
 export type Targets = Macros & {
   dayTypeId: number;
@@ -427,7 +498,7 @@ export type Targets = Macros & {
   /** Fat as a share of the day's calories. */
   fatPct: number;
   /**
-   * Fat in g per kg bodyweight, after the carb floor has had its say. This is
+   * Fat in g per kg bodyweight, after the carb safety net has had its say. This is
    * the number that matters for hormonal health — the *share* of calories
    * naturally falls on a big training day without the grams changing, which is
    * exactly what you want, so it makes a poor warning signal.
@@ -452,7 +523,8 @@ export type WeekPlan = {
   bmr: number;
   method: string;
   baseline: number;
-  phase: Phase;
+  /** Where the goal starts the calories and what the steer has done since. */
+  aim: AimState;
   /** True when maintenance came from your own data rather than the formula. */
   calibrated: boolean;
   /** Mean daily cost across the seven days you've mapped. */
@@ -500,12 +572,13 @@ export function proteinIsAssumed(p: Profile): boolean {
 function macrosFor(p: Profile, kcal: number, mul = { protein: 1, fat: 1 }): Macros {
   const protein = proteinTarget(p) * mul.protein;
   let fat = p.fat_per_kg * planWeight(p) * mul.fat;
-  const carbFloor = (p.carb_floor_per_kg ?? 1) * planWeight(p);
+  const carbFloor = CARB_SAFETY_PER_KG * planWeight(p);
 
   let carbs = (kcal - protein * 4 - fat * 9) / 4;
 
-  // On a low day, protect carbohydrate before fat — you still have to train on
-  // it. Fat gives way down to a hard 0.45 g/kg hormonal floor.
+  // Only on a day so small that protein and fat would take all of it: protect
+  // carbohydrate before fat — you still have to train on it. Fat gives way
+  // down to a hard 0.45 g/kg hormonal floor.
   if (carbs < carbFloor) {
     const fatFloor = 0.45 * planWeight(p);
     const needed = (carbFloor - carbs) * 4;
@@ -534,10 +607,12 @@ function macrosFor(p: Profile, kcal: number, mul = { protein: 1, fat: 1 }): Macr
 export function buildWeekPlan(
   p: Profile,
   dayTypes: DayType[],
-  opts: { today?: string } = {}
+  // Nothing in the week depends on the date any more — it used to, when a
+  // block walked the target along a calendar. Still accepted so the callers
+  // that say which week they mean keep saying it.
+  _opts: { today?: string } = {}
 ): WeekPlan {
-  const today = opts.today ?? dayKey();
-  const phase = phaseOf(p, today);
+  const aim = aimState(p);
 
   // Never end up with no day types at all. If seeding hasn't run yet, or the
   // fetch failed, or someone deleted the last one, fall back to a single
@@ -589,17 +664,14 @@ export function buildWeekPlan(
   /**
    * The target, with the week-by-week steer folded in.
    *
-   * The phase curve says where the block intends to be; `recomp_adjust` says
-   * what your own body fat and lean mass have since had to say about that. The
-   * two add, and the sum is clamped — a phase drifting to −8% plus a steer at
-   * its own −8% limit would otherwise compound into a cut nobody asked for.
-   * A hand-typed override beats both, because you typed it.
+   * The goal says where the calories start; `recomp_adjust` says what your own
+   * weight and body fat have since had to say about that. The two add, and the
+   * sum is clamped. A hand-typed override beats both, because you typed it.
    */
-  const steered = Math.max(TOTAL_ADJUST_FLOOR, phase.adjust + (p.recomp_adjust ?? 0));
   const goalKcal =
     p.calorie_override != null && p.calorie_override > 0
       ? p.calorie_override
-      : maintenance * (1 + steered);
+      : maintenance * (1 + aim.total);
 
   // Balance: pinned days come out of the weekly pot, the rest share what's left
   // in proportion to what they cost.
@@ -698,7 +770,7 @@ export function buildWeekPlan(
     bmr: Math.round(bmr(p)),
     method: bmrMethod(p),
     baseline: Math.round(baseline(p)),
-    phase,
+    aim,
     calibrated,
     maintenance: Math.round(maintenance),
     goalKcal: Math.round(goalKcal),

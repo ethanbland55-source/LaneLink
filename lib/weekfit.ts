@@ -357,6 +357,8 @@ export function fitWeek(
     supplements?: Supplement[];
     /** "keep_close" adjusts the plan you have; "free" builds the best one. */
     drift?: Drift;
+    /** Take a calorie change off every meal evenly first. See solveRows. */
+    even?: boolean;
   } = {}
 ): WeekFitResult {
   const fit = buildWeekFit(meals, plan, opts.supplements);
@@ -365,6 +367,7 @@ export function fitWeek(
     continuous: opts.continuous,
     shares: fit.shares,
     drift: opts.drift,
+    even: opts.even,
   });
 
   // Expand over the same meals the fit was built on, so a batch whose recipe

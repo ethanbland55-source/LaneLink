@@ -311,9 +311,8 @@ export async function seedAccount(userId: number): Promise<void> {
    * the 20–35% guidance, and is still a modest amount of fat.
    */
   await sql`
-    insert into profile (id, goal, protein_basis, protein_per_kg, fat_per_kg,
-                         phase_start_adjust, phase_end_adjust)
-    values (${userId}, 'maintain', 'bodyweight', 2.0, 0.9, 0, 0)
+    insert into profile (id, goal, pace, protein_basis, protein_per_kg, fat_per_kg)
+    values (${userId}, 'maintain', 'steady', 'bodyweight', 2.0, 0.9)
     on conflict (id) do nothing`;
 
   const existing = (await sql`

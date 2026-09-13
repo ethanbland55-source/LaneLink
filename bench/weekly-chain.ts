@@ -20,7 +20,7 @@ import {
   type Profile,
 } from "../lib/nutrition";
 import { applyRoll, rollState, planDayForShop } from "../lib/weekly";
-import { steerRecomp } from "../lib/steer";
+import { steerPlan } from "../lib/steer";
 import { buildShoppingList } from "../lib/shopping";
 import { composition, weightRate, type WeighIn } from "../lib/trend";
 
@@ -85,7 +85,7 @@ for (const mon of mondays) {
     continue;
   }
   const maintenance = buildWeekPlan(p, REAL_DAY_TYPES, { today: mon }).maintenance;
-  const steer = steerRecomp(p, weightRate(seen as WeighIn[]), composition(seen as WeighIn[]), maintenance);
+  const steer = steerPlan(p, weightRate(seen as WeighIn[]), composition(seen as WeighIn[]), maintenance);
   p = applyRoll(p, st.figures, st.dueOn, steer);
   const bf = estimatedBodyFat(p);
   console.log(

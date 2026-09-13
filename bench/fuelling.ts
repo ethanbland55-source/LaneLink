@@ -79,9 +79,9 @@ check(
 /* ---- 2. the floor beats the deficit ------------------------------------ */
 
 console.log("\n=== Pushing the deficit — the floor should win ===\n");
-console.log("phase adjust".padEnd(14) + "weekly".padStart(8) + "lightest EA".padStart(13) + "  floored");
+console.log("adjust".padEnd(14) + "weekly".padStart(8) + "lightest EA".padStart(13) + "  floored");
 for (const adjust of [0, -0.05, -0.1, -0.2, -0.35]) {
-  const p = profileWith({ phase_start_adjust: adjust, phase_end_adjust: adjust });
+  const p = profileWith({ goal: "maintain", recomp_adjust: adjust });
   const pl = buildWeekPlan(p, REAL_DAY_TYPES, { today: MONDAY });
   const e = weekEnergy(p, pl).filter((d) => d.days > 0);
   const lowest = e.reduce((a, b) => ((a.ea ?? 99) < (b.ea ?? 99) ? a : b));
@@ -116,9 +116,9 @@ check(
 
 /* ---- 4. rate of loss --------------------------------------------------- */
 
-console.log("\n=== How fast the phase is actually moving ===\n");
+console.log("\n=== How fast the plan is actually moving ===\n");
 for (const adjust of [0.02, 0, -0.03, -0.08, -0.15]) {
-  const p = profileWith({ phase_start_adjust: adjust, phase_end_adjust: adjust });
+  const p = profileWith({ goal: "maintain", recomp_adjust: adjust });
   const pl = buildWeekPlan(p, REAL_DAY_TYPES, { today: MONDAY });
   const r = lossRate(p, pl);
   console.log(
@@ -135,7 +135,7 @@ for (const adjust of [0.02, 0, -0.03, -0.08, -0.15]) {
  * actually happens stays inside what the evidence supports. Worth asserting
  * explicitly, because it is the difference between a warning and a guardrail.
  */
-const brisk = profileWith({ phase_start_adjust: -0.2, phase_end_adjust: -0.2 });
+const brisk = profileWith({ goal: "maintain", recomp_adjust: -0.2 });
 const briskPlan = buildWeekPlan(brisk, REAL_DAY_TYPES, { today: MONDAY });
 const briskRate = lossRate(brisk, briskPlan);
 console.log(
@@ -179,11 +179,11 @@ check("every band is reachable", CARB_BANDS.length === 4);
 /* ---- 6. balance context, and the fat floor ----------------------------- */
 
 console.log("\n=== Reduced EA at maintenance is arithmetic, not restriction ===\n");
-const balanced = profileWith({ phase_start_adjust: 0, phase_end_adjust: 0 });
+const balanced = profileWith({ goal: "maintain", recomp_adjust: 0 });
 const balancedPlan = buildWeekPlan(balanced, REAL_DAY_TYPES, { today: MONDAY });
 console.log(`  at maintenance: context ${contextOf(balancedPlan)}, EA floor of the arithmetic ${balancedEa(balanced, balancedPlan)}`);
 check("a maintenance week reads as balanced", contextOf(balancedPlan) === "balanced");
-const cutting = profileWith({ phase_start_adjust: -0.08, phase_end_adjust: -0.08 });
+const cutting = profileWith({ goal: "maintain", recomp_adjust: -0.08 });
 check(
   "an 8% deficit reads as restricting",
   contextOf(buildWeekPlan(cutting, REAL_DAY_TYPES, { today: MONDAY })) === "restricting"

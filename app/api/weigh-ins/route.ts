@@ -3,6 +3,7 @@ import { sql, ensureSchema } from "@/lib/db";
 import { requireUser } from "@/lib/session";
 import { parseClock, type Tag } from "@/lib/trend";
 import { plausibleBf } from "@/lib/bodyfat";
+import { EXTRA_KEYS, plausible } from "@/lib/scan";
 
 export const dynamic = "force-dynamic";
 
@@ -42,18 +43,24 @@ function row(r: any) {
     // `isScan` in lib/trend.ts.
     bf_method: r.bf_method ?? null,
     note: r.note ?? null,
+    ...Object.fromEntries(
+      EXTRA_KEYS.map((k) => [k, r[k] == null ? null : Number(r[k])])
+    ),
   };
 }
 
 /**
- * A weigh-in is two numbers now, and on most days only one of them.
+ * A weigh-in is a weight on most days, and a scan on two of them.
  *
- * It used to be nine: a waist, a neck, a set of hips and five skinfold sites,
+ * It used to carry a waist, a neck, a set of hips and five skinfold sites,
  * because the app was trying to derive a body fat percentage from measurements
  * anyone could take. It derives nothing now — the scale measures it, you type
  * what it says, and everything downstream reads that. The old columns are
  * still on the table and old readings still hold whatever they held; nothing
  * writes to them any more and nothing reads them.
+ *
+ * A scan is body fat plus whatever else the scale showed that morning — see
+ * lib/scan.ts for the list and for which of them the app actually reads.
  */
 export async function GET(req: Request) {
   await ensureSchema();
@@ -62,7 +69,9 @@ export async function GET(req: Request) {
 
   const days = Math.min(365, Math.max(7, Number(new URL(req.url).searchParams.get("days")) || 120));
   const rows = await sql`
-    select to_char(day, 'YYYY-MM-DD') as day, weight_kg, tag, at_time, bf_pct, bf_method, note
+    select to_char(day, 'YYYY-MM-DD') as day, weight_kg, tag, at_time, bf_pct, bf_method, note,
+           muscle_kg, water_pct, bone_kg, visceral_fat, subq_fat_pct, skeletal_pct,
+           protein_pct, bmr_kcal, body_age
     from weigh_ins
     where user_id = ${who.id} and day > current_date - ${days}::int
     order by day`;
@@ -101,7 +110,9 @@ export async function PUT(req: Request) {
   // because "leave this one alone" written as a conditional upsert is the kind
   // of query nobody can read twice and be sure of.
   const before = (await sql`
-    select weight_kg, tag, at_time, bf_pct, bf_method, note
+    select weight_kg, tag, at_time, bf_pct, bf_method, note,
+           muscle_kg, water_pct, bone_kg, visceral_fat, subq_fat_pct, skeletal_pct,
+           protein_pct, bmr_kcal, body_age
       from weigh_ins where user_id = ${who.id} and day = ${day}`) as any[];
   const had = before[0];
 
@@ -131,20 +142,45 @@ export async function PUT(req: Request) {
 
   const note = sent("note") ? (b.note ?? null) : (had?.note ?? null);
 
+  // The rest of the scan, key by key on the same rule. And none of it
+  // survives without body fat: the extras describe a scan, and a scan with no
+  // body fat on it isn't one — clearing the percentage clears the lot.
+  const x: Record<string, number | null> = {};
+  for (const k of EXTRA_KEYS) {
+    x[k] =
+      bfPct == null
+        ? null
+        : sent(k)
+          ? plausible(k, b[k])
+          : had?.[k] == null
+            ? null
+            : Number(had[k]);
+  }
+
   // Nothing left in the row at all, so there is no row.
   if (w == null && bfPct == null) {
     await sql`delete from weigh_ins where user_id = ${who.id} and day = ${day}`;
     return NextResponse.json({ ok: true, removed: true });
   }
 
+  const method = bfPct == null ? null : "scan";
   const rows = await sql`
-    insert into weigh_ins (user_id, day, weight_kg, tag, at_time, bf_pct, bf_method, note)
-    values (${who.id}, ${day}, ${w}, ${tag}, ${at}, ${bfPct},
-            ${bfPct == null ? null : "scan"}, ${note})
+    insert into weigh_ins (user_id, day, weight_kg, tag, at_time, bf_pct, bf_method, note,
+                           muscle_kg, water_pct, bone_kg, visceral_fat, subq_fat_pct,
+                           skeletal_pct, protein_pct, bmr_kcal, body_age)
+    values (${who.id}, ${day}, ${w}, ${tag}, ${at}, ${bfPct}, ${method}, ${note},
+            ${x.muscle_kg}, ${x.water_pct}, ${x.bone_kg}, ${x.visceral_fat}, ${x.subq_fat_pct},
+            ${x.skeletal_pct}, ${x.protein_pct}, ${x.bmr_kcal}, ${x.body_age})
     on conflict (user_id, day) do update set
       weight_kg = ${w}, tag = ${tag}, at_time = ${at}, bf_pct = ${bfPct},
-      bf_method = ${bfPct == null ? null : "scan"}, note = ${note}
-    returning to_char(day, 'YYYY-MM-DD') as day, weight_kg, tag, at_time, bf_pct, bf_method, note`;
+      bf_method = ${method}, note = ${note},
+      muscle_kg = ${x.muscle_kg}, water_pct = ${x.water_pct}, bone_kg = ${x.bone_kg},
+      visceral_fat = ${x.visceral_fat}, subq_fat_pct = ${x.subq_fat_pct},
+      skeletal_pct = ${x.skeletal_pct}, protein_pct = ${x.protein_pct},
+      bmr_kcal = ${x.bmr_kcal}, body_age = ${x.body_age}
+    returning to_char(day, 'YYYY-MM-DD') as day, weight_kg, tag, at_time, bf_pct, bf_method, note,
+              muscle_kg, water_pct, bone_kg, visceral_fat, subq_fat_pct, skeletal_pct,
+              protein_pct, bmr_kcal, body_age`;
 
   /**
    * Keep the profile's figure pointed at the newest scan.
@@ -162,8 +198,8 @@ export async function PUT(req: Request) {
    * typed in late, a scan deleted.
    *
    * The coalesce is the one deliberate asymmetry. With no scans left at all it
-   * keeps whatever is there, because that is the hand-typed starting figure on
-   * the Plan page and clearing a weigh-in is not a request to erase it.
+   * keeps whatever is there — a figure from before scans existed — because
+   * clearing a weigh-in is not a request to erase it.
    */
   if (sent("bf_pct")) {
     await sql`

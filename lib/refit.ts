@@ -133,7 +133,7 @@ async function fitFromDb(userId: number, profile: Profile, today?: string) {
   })) as unknown as Supplement[];
 
   const plan = buildWeekPlan(profile, dayTypes, today ? { today } : {});
-  return fitWeek(meals, plan, { mode: "balanced", supplements, drift: "keep_close" });
+  return fitWeek(meals, plan, { mode: "balanced", supplements, drift: "keep_close", even: true });
 }
 
 export type RefitResult = {
@@ -207,12 +207,18 @@ export async function refitPlan(
     })) as unknown as Supplement[];
 
     const plan = buildWeekPlan(profile, dayTypes, today ? { today } : {});
-    // "keep_close", always. A weekly roll moves the targets by a percent or
-    // two, and a free fit is entitled to answer a 2 % change by halving the
-    // banana — same calories, different breakfast, and you'd find out at 6am
-    // on Monday. Spreading it is the only behaviour that makes an automatic
-    // re-fit safe to leave switched on.
-    const res = fitWeek(meals, plan, { mode: "balanced", supplements, drift: "keep_close" });
+    // "keep_close", always, and even. A weekly roll moves the targets by a
+    // percent or two, and a free fit is entitled to answer a 2 % change by
+    // halving the banana — same calories, different breakfast, and you'd find
+    // out at 6am on Monday. Taking the same share off every meal first, then
+    // letting the fit correct the macros from there, is what makes an
+    // automatic re-fit safe to leave switched on.
+    const res = fitWeek(meals, plan, {
+      mode: "balanced",
+      supplements,
+      drift: "keep_close",
+      even: true,
+    });
 
     const before = new Map<number, number>();
     for (const m of meals) {

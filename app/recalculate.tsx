@@ -91,7 +91,9 @@ export function RecalculateDialog({
   );
 
   const result = useMemo(
-    () => fitWeek(draft, plan, { mode, supplements, drift }),
+    // Adjusting the plan you have takes a calorie change off every meal
+    // evenly before anything else moves; building a fresh one doesn't.
+    () => fitWeek(draft, plan, { mode, supplements, drift, even: drift === "keep_close" }),
     [draft, plan, mode, supplements, drift]
   );
 

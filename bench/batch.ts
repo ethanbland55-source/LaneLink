@@ -28,8 +28,7 @@ const profile: Profile = normaliseProfile({
   sex: "male", dob: "2005-03-14", height_cm: 183, weight_kg: 78,
   base_activity: 1.35, energy_model: "sessions", goal: "recomp",
   protein_basis: "lean", protein_per_kg: 2.8, fat_per_kg: 0.8,
-  cycling: true, phase_start: "2026-08-31", phase_weeks: 10,
-  phase_start_adjust: 0, phase_end_adjust: -0.08,
+  cycling: true, pace: "steady",
   body_fat_pct: 13.4,
   week_ids: {
     mon: id("Swim only"), tue: id("Swim + gym"), wed: id("Gym only"),

@@ -365,6 +365,48 @@ function rowTotals(ctx: Ctx, row: DayRow, grams: number[]): Macros {
   return out;
 }
 
+/**
+ * The calorie gap, shared out evenly across every meal's carbohydrate. See
+ * `Options.even`.
+ *
+ * Not a flat scale of everything, which is the obvious reading of "take it off
+ * every meal equally" and the wrong one. A change in the calorie target lands
+ * almost entirely in carbohydrate — protein is set by lean mass and fat by
+ * bodyweight, and neither moves when the steer does — so scaling the chicken
+ * and the tuna down 3% alongside the rice asks for protein the target never
+ * gave up, and the fit then spends its effort undoing the anchor instead of
+ * following it.
+ *
+ * So each free portion moves by the same fraction *of the carbohydrate in it*:
+ * rice, honey, dates, pasta and rice cakes all give up the same share, a
+ * yoghurt that is a quarter carbohydrate gives a quarter of that, and a chicken
+ * breast doesn't move. Every meal takes part in proportion to the carbohydrate
+ * it carries, which is as equal as a change in carbohydrate can be.
+ *
+ * Weighted by how often each kind of day comes round, so the share answers the
+ * weekly question rather than whichever day is listed first. Clamped to ±30%:
+ * a gap bigger than that is a plan being built, not adjusted.
+ */
+function evenShare(ctx: Ctx, items: BoundedItem[], start: number[]): number[] {
+  const free = items.map((it) => !it.locked);
+  let gap = 0;
+  let carbKcal = 0;
+  for (const row of ctx.rows) {
+    gap += (row.target.kcal - rowTotals(ctx, row, start).kcal) * row.weight;
+    for (let i = 0; i < start.length; i++) {
+      if (!free[i] || !row.counts[i]) continue;
+      carbKcal += ctx.ds[i].carbs * 4 * (start[i] || 0) * row.counts[i] * row.weight;
+    }
+  }
+  if (!(carbKcal > 0)) return start.slice();
+  const k = Math.min(0.3, Math.max(-0.3, gap / carbKcal));
+  return start.map((g, i) => {
+    if (!free[i] || !(ctx.ds[i].kcal > 0)) return g;
+    const carbShare = Math.min(1, (ctx.ds[i].carbs * 4) / ctx.ds[i].kcal);
+    return g * (1 + k * carbShare);
+  });
+}
+
 function anchorCost(ctx: Ctx, grams: number[]): number {
   let f = 0;
   let n = 0;
@@ -634,6 +676,21 @@ export type Options = {
   drift?: Drift;
   /** Overrides `drift`. Exists so the benches can sweep it; the app uses drift. */
   anchorWeight?: number;
+  /**
+   * Share a change in calories out evenly before fitting anything.
+   *
+   * `keep_close` alone minimises the *squared* relative move of every
+   * portion, and the cheapest way to find 60 kcal under that measure is to
+   * lean hardest on whatever carries the most calories — the rice goes down
+   * 5% while the fruit goes down 1%. That is gentle, but it is not even, and
+   * "take it off every meal a little" is what anyone doing this by hand would
+   * do. So with `even` every free portion is first scaled by one shared
+   * factor to close the calorie gap across the week, and the fit anchors on
+   * *that*: it only moves a portion away from its fair share to put protein,
+   * carbohydrate and fat back where they belong. Locked portions, and
+   * anything held at a limit, simply don't take part.
+   */
+  even?: boolean;
 };
 
 const emptyMacros = (): Macros => ({ ...ZERO_MACROS });
@@ -687,12 +744,15 @@ export function solveRows(items: BoundedItem[], rows: DayRow[], opts: Options = 
   const project = (x: number[]) =>
     x.map((v, i) => Math.min(bounds[i].max, Math.max(bounds[i].min, v)));
 
+  if (opts.even) ctx.anchor = project(evenShare(ctx, items, start));
+
   // --- Several starting points, because the discrete pass afterwards is what
   // --- actually decides the answer and it is sensitive to where it begins.
   const heaviest = usable.reduce((a, r) => (r.weight > a.weight ? r : a), usable[0]);
   const nowKcal = rowTotals(ctx, heaviest, start).kcal || 1;
   const scale = heaviest.target.kcal / nowKcal;
   const starts: number[][] = [
+    project(ctx.anchor),
     project(start),
     project(start.map((v) => v * scale)),
     project(bounds.map((b) => (b.min + b.max) / 2)),

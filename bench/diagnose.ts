@@ -7,7 +7,7 @@ const plan = buildWeekPlan(REAL_PROFILE, REAL_DAY_TYPES, { today: "2026-08-31" }
 
 console.log("BMR", plan.bmr, plan.method, "| baseline", plan.baseline);
 console.log("maintenance", plan.maintenance, "| goal", plan.goalKcal, "| balance", plan.balance.toFixed(4));
-console.log("phase adjust", plan.phase.adjust.toFixed(4), "week", plan.phase.week, "of", plan.phase.weeks);
+console.log("goal adjust", plan.aim.base.toFixed(4), "| steer", plan.aim.steer.toFixed(4), "| total", plan.aim.total.toFixed(4));
 console.log();
 
 const used = new Map<number, number>();

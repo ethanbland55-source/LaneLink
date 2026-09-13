@@ -26,14 +26,13 @@ import {
 import {
   ACTIVITY_LEVELS,
   GOALS,
+  PACES,
   WEEKDAYS,
-  addDays,
   WEEKDAY_LABEL,
   ageFromDob,
   buildWeekPlan,
   carbCheck,
   dayKey,
-  estimatedBodyFat,
   goalDef,
   proteinIsAssumed,
   proteinTarget,
@@ -47,6 +46,7 @@ import {
   totalFor,
   type DayType,
   type Goal,
+  type Pace,
   type Profile,
   type ProteinBasis,
   type Weekday,
@@ -327,26 +327,21 @@ export default function PlanPage() {
   }
 
   /**
-   * Choosing a goal sets the whole shape of the block, not just a percentage:
-   * where it starts, where it ends, and how protein and fat are worked out.
-   * All of it stays editable underneath.
+   * Choosing a goal sets where the calories start and how protein and fat are
+   * worked out. The protein and fat figures only reset when the goal actually
+   * changes — tapping the one you're already on must not throw away numbers
+   * you tuned by hand.
    */
   function pickGoal(g: Goal) {
     const d = goalDef(g);
     setProfile((p) =>
-      p
+      p && p.goal !== g
         ? {
             ...p,
             goal: g,
-            phase_start_adjust: d.start,
-            phase_end_adjust: d.end,
             protein_basis: d.protein.basis,
             protein_per_kg: d.protein.perKg,
             fat_per_kg: d.fatPerKg,
-            phase_name: p.phase_name || d.label,
-            // A drifting goal is meaningless without a block to drift across.
-            phase_start: d.start !== d.end ? p.phase_start ?? dayKey() : p.phase_start,
-            phase_weeks: d.start !== d.end && !p.phase_weeks ? 10 : p.phase_weeks,
           }
         : p
     );
@@ -726,48 +721,47 @@ export default function PlanPage() {
 
       {/* Staged, not yet in force. The one thing you must be able to see at a
           glance, because otherwise the plan on screen and the plan the shop
-          bought for disagree with nothing to explain why. */}
+          bought for disagree with nothing to explain why. One line, with the
+          detail folded away — it only needs to say that it's there. */}
       {pending.length > 0 && (
         <section className="card border border-[var(--color-carbs)]/30 px-5 py-4">
-          <div className="flex items-baseline gap-3">
-            <p className="mr-auto text-sm font-bold">
-              {pending.length} portion{pending.length === 1 ? "" : "s"} waiting for{" "}
-              {new Date(pending[0].apply_on + "T12:00:00").toLocaleDateString(undefined, {
+          <div className="flex items-center gap-3">
+            <p className="mr-auto min-w-0 text-sm font-bold">
+              {pending.length} portion{pending.length === 1 ? "" : "s"} change on{" "}
+              {new Date(pending[0].apply_on + "T12:00:00").toLocaleDateString("en-GB", {
                 weekday: "long",
-                day: "numeric",
-                month: "short",
               })}
             </p>
             <button className="btn btn-sm shrink-0" onClick={discardStaged}>
               Discard
             </button>
           </div>
-          <Note label="When these land">
-            The plan below is what is in the fridge this week; the shopping list is already buying
-            for these. They come in the evening before, as soon as that day&rsquo;s meals are all
-            ticked off — so what you cook on prep night is next week&rsquo;s numbers.
-          </Note>
-          <ul className="mt-2.5 space-y-0.5">
-            {pending.slice(0, 6).map((c) => (
-              <li
-                key={`${c.meal_id}:${c.slot}`}
-                className="flex items-baseline gap-2 text-xs text-[var(--color-mut)]"
-              >
-                <span className="truncate">
-                  {c.meal_name} · {c.name}
-                </span>
-                <span className="ml-auto shrink-0 tabular-nums">
-                  {c.was_grams != null ? `${Math.round(c.was_grams)} → ` : ""}
-                  {Math.round(c.grams)} g
-                </span>
-              </li>
-            ))}
-          </ul>
-          {pending.length > 6 && (
-            <p className="mt-1 text-[0.7rem] text-[var(--color-mut)]">
-              and {pending.length - 6} more
+          <details className="mt-1.5">
+            <summary className="cursor-pointer text-[0.7rem] text-[#5b6270]">
+              What changes, and when
+            </summary>
+            <ul className="mt-2 space-y-0.5">
+              {pending.map((c) => (
+                <li
+                  key={`${c.meal_id}:${c.slot}`}
+                  className="flex items-baseline gap-2 text-xs text-[var(--color-mut)]"
+                >
+                  <span className="min-w-0 truncate">
+                    {c.meal_name} · {c.name}
+                  </span>
+                  <span className="ml-auto shrink-0 tabular-nums">
+                    {c.was_grams != null ? `${Math.round(c.was_grams)} → ` : ""}
+                    <b className="text-[var(--color-fg)]">{Math.round(c.grams)}</b> g
+                  </span>
+                </li>
+              ))}
+            </ul>
+            <p className="mt-2 text-[0.7rem] leading-relaxed text-[var(--color-mut)]">
+              The plan below is what&rsquo;s in the fridge this week; the shopping list is already
+              buying for these. They come in the evening before, as soon as that day&rsquo;s meals
+              are all ticked off — so what you cook on prep night is next week&rsquo;s numbers.
             </p>
-          )}
+          </details>
         </section>
       )}
 
@@ -856,98 +850,6 @@ export default function PlanPage() {
               detail={rate.note}
             />
           )}
-        </section>
-      )}
-
-      {/* Putting the portions back.
-          The weekly re-fit runs without anyone pressing anything, which is the
-          right behaviour and also the reason this has to exist: you can open
-          the app on a Monday, find the numbers have moved, and want to say
-          that was fine as it was. */}
-      {(snapshots.length > 0 || meals.length > 0) && (
-        <section className="card px-5 py-4">
-          <p className="text-sm font-bold">Put the portions back</p>
-          {snapshots.length > 0 ? (
-            <>
-              <Note label="How this works">
-                Every automatic rewrite takes a copy first, so a plan that moved overnight can
-                always be put back the way it was.
-              </Note>
-              <div className="mt-2.5 space-y-1.5">
-                {snapshots.slice(0, 3).map((sn) => (
-                  <div key={sn.id} className="flex items-center gap-3">
-                    {/* Wraps rather than truncating: the date is the half that
-                        tells you which one this is, and it was the half the
-                        ellipsis was eating. */}
-                    <span className="mr-auto min-w-0 text-xs leading-snug text-[var(--color-mut)]">
-                      Before the {sn.reason} on{" "}
-                      {new Date(sn.changed_on + "T12:00:00").toLocaleDateString(undefined, {
-                        weekday: "short",
-                        day: "numeric",
-                        month: "short",
-                      })}
-                    </span>
-                    <button
-                      className="btn btn-sm shrink-0"
-                      disabled={restoring}
-                      onClick={() => undo({ id: sn.id }, "Restored")}
-                    >
-                      Restore
-                    </button>
-                  </div>
-                ))}
-              </div>
-            </>
-          ) : (
-            <Note label="Nothing to put back yet">
-              Nothing has been rewritten since copies started being kept. If the portions changed
-              before that, the log still remembers them — every meal you tapped stored its amounts
-              as they were that day.
-            </Note>
-          )}
-
-          <div className="mt-3 border-t border-[#1c1f25] pt-3">
-            <div className="flex items-center gap-3">
-              <span className="mr-auto min-w-0 text-xs font-semibold">
-                {preview.length > 0
-                  ? `${preview.length} portion${preview.length === 1 ? "" : "s"} disagree with your log`
-                  : "Rebuild the portions from what you logged"}
-              </span>
-              <button
-                className={`btn btn-sm shrink-0 ${preview.length > 0 ? "btn-accent" : ""}`}
-                disabled={restoring || !logWindow || preview.length === 0}
-                onClick={() =>
-                  logWindow && undo({ ...logWindow }, "Rebuilt from your log")
-                }
-              >
-                {restoring ? "Working…" : preview.length > 0 ? "Put them back" : "Nothing to do"}
-              </button>
-            </div>
-
-            {preview.length > 0 && (
-              <ul className="mt-2 space-y-0.5">
-                {preview.slice(0, 8).map((c) => (
-                  <li
-                    key={`${c.meal_id}:${c.slot}`}
-                    className="flex items-baseline gap-2 text-xs text-[var(--color-mut)]"
-                  >
-                    <span className="truncate">{c.name}</span>
-                    <span className="ml-auto shrink-0 tabular-nums">
-                      {Math.round(c.from ?? 0)} &rarr;{" "}
-                      <b className="text-[var(--color-fg)]">{Math.round(c.grams)}</b> g
-                    </span>
-                  </li>
-                ))}
-              </ul>
-            )}
-
-            <Note label="Where these come from">
-              {logWindow?.because
-                ? `${logWindow.because[0].toUpperCase()}${logWindow.because.slice(1)}, back to ${logWindow.from}. `
-                : ""}
-              Every logged day votes, a one-off mis-weigh loses, and locked portions are left alone.
-            </Note>
-          </div>
         </section>
       )}
 
@@ -1258,6 +1160,26 @@ export default function PlanPage() {
         <AddSupplement onAdd={addSupp} existing={supplements.map((s) => s.name)} />
       </section>
 
+      {/* Putting the portions back.
+          The weekly re-fit runs without anyone pressing anything, which is the
+          right behaviour and also the reason this has to exist: you can open
+          the app on a Monday, find the numbers have moved, and want to say
+          that was fine as it was. It lives down here, under the meals it acts
+          on, rather than at the top — it's an undo, and an undo is something
+          you go looking for, not something the page should open on. */}
+      {(snapshots.length > 0 || preview.length > 0) && (
+        <PutBack
+          snapshots={snapshots}
+          preview={preview}
+          restoring={restoring}
+          canRebuild={!!logWindow}
+          because={logWindow?.because ?? ""}
+          from={logWindow?.from ?? ""}
+          onRestore={(id) => undo({ id }, "Restored")}
+          onRebuild={() => logWindow && undo({ ...logWindow }, "Put back")}
+        />
+      )}
+
       {/* Your week */}
       <section className="card px-5 py-5">
         <div className="flex items-center gap-3">
@@ -1384,112 +1306,79 @@ export default function PlanPage() {
         </button>
       </section>
 
-      {/* Phase */}
-      <section className="card px-5 py-5">
-        <SectionLabel
-          title="This block"
-          info={
-            <>
-              A block has a start, a length, and a target that can move across it. Starting level
-              with maintenance and drifting gently under is how you get leaner without the training
-              falling apart — the scale barely reacts, and body composition does.
-            </>
-          }
-        />
-
-        <div className="mt-4 grid gap-4 sm:grid-cols-2">
-          <Field label="Name">
-            <input
-              className="field w-full"
-              placeholder={goalDef(profile.goal).label}
-              value={profile.phase_name}
-              onChange={(e) => set("phase_name", e.target.value)}
+      {/* Your goal.
+          This used to be "This block": a name, a start date, a length in weeks,
+          and two sliders for where the calories started and ended as a
+          percentage of maintenance. None of that is how anyone thinks about
+          it. You don't know your starting point relative to maintenance, and
+          a goal like "leaner, a bit heavier" doesn't end on a date — it lasts
+          as long as you keep going. So the card now says what you're aiming
+          for in the two numbers you can actually see move, and the plan finds
+          the calories that produce them from what the scale does. */}
+      {(() => {
+        const g = goalDef(profile.goal);
+        const aim = plan.aim.aim;
+        const kg = planWeight(profile);
+        const steerKcal = Math.round((plan.aim.steer * plan.maintenance) / 25) * 25;
+        return (
+          <section className="card px-5 py-5">
+            <SectionLabel
+              title="Your goal"
+              info="No start date and no end — it runs for as long as you do. The goal sets where the calories start, and every Monday your weigh-ins and scans are checked against the two aims below."
             />
-          </Field>
 
-          <Field label="Starts">
-            <input
-              type="date"
-              className="field w-full"
-              value={profile.phase_start ?? ""}
-              onChange={(e) => set("phase_start", e.target.value || null)}
-            />
-          </Field>
+            <div className="mt-3 grid grid-cols-2 gap-2">
+              {GOALS.map((x) => (
+                <button
+                  key={x.value}
+                  onClick={() => pickGoal(x.value)}
+                  className={profile.goal === x.value ? "btn btn-accent" : "btn"}
+                >
+                  {x.label}
+                </button>
+              ))}
+            </div>
+            <p className="mt-2 text-xs leading-relaxed text-[var(--color-mut)]">{g.blurb}</p>
 
-          <Field label="Length in weeks — 0 to hold the starting figure">
-            <Num
-              value={profile.phase_weeks}
-              onChange={(v) => set("phase_weeks", Math.max(0, Math.round(v)))}
-              step={1}
-            />
-          </Field>
+            {g.paced && (
+              <div className="mt-4">
+                <span className="label mb-2 block">Pace</span>
+                <Segmented<Pace>
+                  size="sm"
+                  value={profile.pace}
+                  onChange={(v) => set("pace", v)}
+                  options={PACES.map((x) => ({ value: x.value, label: x.label }))}
+                />
+              </div>
+            )}
 
-          <div>
-            <span className="label mb-2 block">Right now</span>
-            <div className="sunk px-3 py-3">
-              <p className="num text-xl" style={{ color: "var(--color-accent)" }}>
-                {plan.goalKcal.toLocaleString()}
-              </p>
-              <p className="mt-1 text-[0.7rem] text-[var(--color-mut)]">
-                {plan.phase.week != null
-                  ? `week ${plan.phase.week} of ${plan.phase.weeks} · ${adjLabel(plan.phase.adjust)}`
-                  : adjLabel(plan.phase.adjust)}
+            <div className="mt-4 space-y-2">
+              <AimRow label="Weight" value={weightAim(aim.weight, kg)} />
+              <AimRow label="Body fat" value={bfAim(aim.bf)} />
+            </div>
+
+            <div className="sunk mt-4 px-3.5 py-3">
+              <div className="flex flex-wrap items-baseline gap-x-2">
+                <p className="num text-xl" style={{ color: "var(--color-accent)" }}>
+                  {plan.goalKcal.toLocaleString()}
+                </p>
+                <p className="text-xs text-[var(--color-mut)]">kcal a day, on average</p>
+              </div>
+              <p className="mt-1 text-[0.7rem] leading-relaxed text-[var(--color-mut)]">
+                {profile.calorie_override != null
+                  ? "Your own number, from the override below — nothing adjusts it."
+                  : steerKcal === 0
+                    ? `Where ${g.label.toLowerCase()} starts. It moves a little on ${DOW_LABELS[profile.plan_roll_dow]}s if your weight or body fat drifts off the aim.`
+                    : `${steerKcal > 0 ? "+" : "−"}${Math.abs(steerKcal)} kcal from where ${g.label.toLowerCase()} starts, adjusted from your weigh-ins and scans.`}
               </p>
             </div>
-          </div>
-        </div>
 
-        <div className="mt-4 space-y-3">
-          {(
-            [
-              ["phase_start_adjust", "Starts at"],
-              ["phase_end_adjust", "Ends at"],
-            ] as const
-          ).map(([key, label]) => (
-            <div key={key} className="flex items-center gap-3">
-              <span className="w-16 shrink-0 text-xs text-[var(--color-mut)]">{label}</span>
-              <input
-                type="range"
-                min={-30}
-                max={20}
-                step={1}
-                value={Math.round(profile[key] * 100)}
-                className="flex-1 accent-[var(--color-accent)]"
-                onChange={(e) => set(key, Number(e.target.value) / 100)}
-              />
-              <span className="w-20 shrink-0 text-right text-xs tabular-nums text-[var(--color-mut)]">
-                {adjLabel(profile[key])}
-              </span>
-            </div>
-          ))}
-        </div>
-
-        {(() => {
-          // The day where fat gets squeezed is the smallest one, because the
-          // carb floor takes it from fat first. Check every day type and report
-          // the worst rather than whichever one you happen to be looking at.
-          const worst = plan.order
-            .map((i) => targetsFor(plan, i))
-            .sort((a, b) => a.fatPerKg - b.fatPerKg)[0];
-          if (!worst || worst.fatPerKg >= 0.6) return null;
-          return (
-            <Flag
-              className="mt-4"
-              title={`Fat drops to ${worst.fatPerKg.toFixed(2)} g/kg on a ${worst.name.toLowerCase()} day`}
-              detail="The carb floor is taking it."
-            >
-              <Note label="What to change">
-                Under about 0.6 g/kg for a long block isn&rsquo;t worth the calories it saves.
-                Raise fat per kg, or lower the carb floor so carbohydrate gives way instead.
-              </Note>
-            </Flag>
-          );
-        })()}
-
-        <button className="btn btn-accent mt-4 w-full" onClick={() => saveProfile()}>
-          Save block
-        </button>
-      </section>
+            <button className="btn btn-accent mt-4 w-full" onClick={() => saveProfile()}>
+              Save goal
+            </button>
+          </section>
+        );
+      })()}
 
       {/* Protein distribution.
           Only when it is off. Six meals that all clear the per-dose threshold
@@ -1584,8 +1473,8 @@ export default function PlanPage() {
           {DOW_LABELS[profile.shop_start_dow].toLowerCase()} for food you start eating on{" "}
           {DOW_LABELS[profile.plan_roll_dow].toLowerCase()} — so the shopping list is built
           against next week's targets, while the plan you're still eating holds still until
-          then. The block's drift steps on this day too, once a week rather than every
-          morning.
+          then. Anything your weigh-ins and scans change lands on this day too, once a week
+          rather than every morning.
         </p>
 
         <Link href="/shop" className="btn btn-accent mt-4 w-full">
@@ -1628,38 +1517,6 @@ export default function PlanPage() {
             <Num value={profile.weight_kg} onChange={(v) => set("weight_kg", v)} step={0.1} />
           </Field>
 
-          <div className="sm:col-span-2">
-            <Field label="Body fat % — a starting figure, until you scan">
-              <NumberField
-                className="w-full"
-                allowEmpty
-                placeholder="from your scale, or leave it"
-                value={profile.body_fat_pct}
-                onCommit={(v) => set("body_fat_pct", v && v > 0 ? v : null)}
-              />
-            </Field>
-
-            {(() => {
-              const bf = estimatedBodyFat(profile);
-              if (!bf) {
-                return (
-                  <p className="mt-2 text-xs leading-relaxed text-[var(--color-mut)]">
-                    Fine to leave empty. BMR falls back to height and age, and a lean-mass protein
-                    target assumes a plausible body fat rather than guessing high. Log a scan on
-                    Progress and this stops mattering.
-                  </p>
-                );
-              }
-              return (
-                <p className="mt-2 text-xs leading-relaxed text-[var(--color-mut)]">
-                  <b className="text-[#f2f4f7]">{bf.pct}%</b> body fat · {bf.leanKg} kg lean ·{" "}
-                  {bf.label}. Once you have scanned, the weekly roll takes this off the scan and
-                  the box above stops being read.
-                </p>
-              );
-            })()}
-          </div>
-
           {profile.energy_model === "flat" && (
             <div className="sm:col-span-2">
               <Field label="Activity — one multiplier for the whole week">
@@ -1677,25 +1534,6 @@ export default function PlanPage() {
               </Field>
             </div>
           )}
-
-          <div className="sm:col-span-2">
-            <Field label="Goal">
-              <div className="grid grid-cols-2 gap-2">
-                {GOALS.map((g) => (
-                  <button
-                    key={g.value}
-                    onClick={() => pickGoal(g.value)}
-                    className={profile.goal === g.value ? "btn btn-accent" : "btn"}
-                  >
-                    {g.label}
-                  </button>
-                ))}
-              </div>
-              <p className="mt-2 text-xs leading-relaxed text-[var(--color-mut)]">
-                {goalDef(profile.goal).blurb}
-              </p>
-            </Field>
-          </div>
 
           <Field
             label={`Protein g/kg ${profile.protein_basis === "lean" ? "lean mass" : "bodyweight"} · ${Math.round(proteinTarget(profile))} g`}
@@ -1717,9 +1555,9 @@ export default function PlanPage() {
             </div>
             {proteinIsAssumed(profile) && (
               <p className="mt-2 text-xs leading-relaxed text-[var(--color-mut)]">
-                No body fat figure, so lean mass is assumed rather than known — the target is
-                converted rather than applied to bodyweight, which would silently add about 15%.
-                Set body fat above to make it exact.
+                No body fat figure yet, so lean mass is assumed rather than known — the target
+                is converted rather than applied to bodyweight, which would silently add about
+                15%. Your first scan on the Progress page makes it exact.
               </p>
             )}
 
@@ -1765,13 +1603,6 @@ export default function PlanPage() {
             <Num value={profile.fat_per_kg} onChange={(v) => set("fat_per_kg", v)} step={0.05} />
           </Field>
 
-          <Field label="Carb floor g/kg — carbs never go below this">
-            <Num
-              value={profile.carb_floor_per_kg}
-              onChange={(v) => set("carb_floor_per_kg", v)}
-              step={0.1}
-            />
-          </Field>
 
           <div className="sm:col-span-2">
             <Field label="Manual kcal override — your own number, used as the weekly average">
@@ -2133,10 +1964,162 @@ function totalGrams(meal: { ingredients: BoundedItem[] }): number {
   return meal.ingredients.reduce((a, i) => a + (Number(i.grams) || 0), 0);
 }
 
-function adjLabel(v: number): string {
-  const n = Math.round(v * 1000) / 10;
-  if (Math.abs(n) < 0.05) return "maintenance";
-  return `${n > 0 ? "+" : ""}${n}% of maintenance`;
+/** One aim, as a row: the name, then what it's aiming for in words. */
+function AimRow({ label, value }: { label: string; value: string }) {
+  return (
+    <div className="flex items-baseline gap-3">
+      <span className="w-16 shrink-0 text-xs text-[var(--color-mut)]">{label}</span>
+      <span className="text-sm">{value}</span>
+    </div>
+  );
+}
+
+/** A weekly weight band as words, in kilos for the body it's about. */
+function weightAim([lo, hi]: [number, number], kg: number): string {
+  const a = (lo / 100) * kg;
+  const b = (hi / 100) * kg;
+  if (lo < 0 && hi > 0) return `steady — within ${Math.max(-a, b).toFixed(1)} kg a week`;
+  if (hi <= 0) return `down ${Math.abs(b).toFixed(2)}–${Math.abs(a).toFixed(2)} kg a week`;
+  if (lo <= 0) return `steady, or up to ${b.toFixed(2)} kg a week`;
+  return `up ${a.toFixed(2)}–${b.toFixed(2)} kg a week`;
+}
+
+/** A monthly body fat band as words. */
+function bfAim([lo, hi]: [number, number]): string {
+  if (lo < 0 && hi > 0) return `steady — no more than +${hi.toFixed(1)}% a month`;
+  if (hi <= 0) return `down ${Math.abs(hi).toFixed(1)}–${Math.abs(lo).toFixed(1)}% a month`;
+  return `up ${lo.toFixed(1)}–${hi.toFixed(1)}% a month`;
+}
+
+type SnapshotRow = { id: number; changed_on: string; reason: string };
+type PreviewRow = { meal_id: number; slot: number; name: string; grams: number; from: number | null };
+
+/**
+ * Putting the portions back, as one tidy card.
+ *
+ * It used to open the Plan page: three restore rows, a paragraph on how
+ * snapshots work, a rule, a second heading, up to eight changed portions and
+ * another paragraph — all before the week. Most weeks nothing needed putting
+ * back and it was still the first thing on screen.
+ *
+ * Now the thing you'd actually do is one line with one button: either "these
+ * portions moved since you logged them — put them back", or "restore how it
+ * was before Monday's re-fit". Which portions, and the older copies, are one
+ * tap further in.
+ */
+function PutBack({
+  snapshots,
+  preview,
+  restoring,
+  canRebuild,
+  because,
+  from,
+  onRestore,
+  onRebuild,
+}: {
+  snapshots: SnapshotRow[];
+  preview: PreviewRow[];
+  restoring: boolean;
+  canRebuild: boolean;
+  because: string;
+  from: string;
+  onRestore: (id: number) => void;
+  onRebuild: () => void;
+}) {
+  const latest = snapshots[0];
+  const older = snapshots.slice(1, 6);
+  const day = (d: string) =>
+    new Date(d + "T12:00:00").toLocaleDateString("en-GB", {
+      weekday: "short",
+      day: "numeric",
+      month: "short",
+    });
+
+  return (
+    <section className="card px-5 py-4">
+      <p className="label">Put the portions back</p>
+
+      {preview.length > 0 && (
+        <div className="mt-3">
+          <div className="flex items-center gap-3">
+            <p className="mr-auto min-w-0 text-sm font-semibold leading-snug">
+              {preview.length} portion{preview.length === 1 ? "" : "s"} moved since you logged{" "}
+              {preview.length === 1 ? "it" : "them"}
+            </p>
+            <button
+              className="btn btn-sm btn-accent shrink-0"
+              disabled={restoring || !canRebuild}
+              onClick={onRebuild}
+            >
+              {restoring ? "Working…" : "Put them back"}
+            </button>
+          </div>
+          <details className="mt-1">
+            <summary className="cursor-pointer text-[0.7rem] text-[#5b6270]">Which ones</summary>
+            <ul className="mt-1.5 space-y-0.5">
+              {preview.map((c) => (
+                <li
+                  key={`${c.meal_id}:${c.slot}`}
+                  className="flex items-baseline gap-2 text-xs text-[var(--color-mut)]"
+                >
+                  <span className="min-w-0 truncate">{c.name}</span>
+                  <span className="ml-auto shrink-0 tabular-nums">
+                    {Math.round(c.from ?? 0)} &rarr;{" "}
+                    <b className="text-[var(--color-fg)]">{Math.round(c.grams)}</b> g
+                  </span>
+                </li>
+              ))}
+            </ul>
+            <p className="mt-1.5 text-[0.7rem] leading-relaxed text-[var(--color-mut)]">
+              {because ? `${because[0].toUpperCase()}${because.slice(1)}, back to ${from}. ` : ""}
+              Every logged day votes, a one-off mis-weigh loses, and locked portions are left alone.
+            </p>
+          </details>
+        </div>
+      )}
+
+      {latest && (
+        <div
+          className={`flex items-center gap-3 ${preview.length > 0 ? "mt-3 border-t border-[#1c1f25] pt-3" : "mt-2.5"}`}
+        >
+          <p className="mr-auto min-w-0 text-xs leading-snug text-[var(--color-mut)]">
+            As it was before the {latest.reason}, {day(latest.changed_on)}
+          </p>
+          <button
+            className="btn btn-sm shrink-0"
+            disabled={restoring}
+            onClick={() => onRestore(latest.id)}
+          >
+            Restore
+          </button>
+        </div>
+      )}
+
+      {older.length > 0 && (
+        <details className="mt-1.5">
+          <summary className="cursor-pointer text-[0.7rem] text-[#5b6270]">
+            Older copies ({older.length})
+          </summary>
+          <div className="mt-1.5 space-y-1.5">
+            {older.map((sn) => (
+              <div key={sn.id} className="flex items-center gap-3">
+                <span className="mr-auto min-w-0 text-xs leading-snug text-[var(--color-mut)]">
+                  Before the {sn.reason}, {day(sn.changed_on)}
+                </span>
+                <button
+                  className="btn btn-sm shrink-0"
+                  disabled={restoring}
+                  onClick={() => onRestore(sn.id)}
+                >
+                  Restore
+                </button>
+              </div>
+            ))}
+          </div>
+        </details>
+      )}
+    </section>
+  );
 }
 
 function Field({ label, children }: { label: string; children: React.ReactNode }) {

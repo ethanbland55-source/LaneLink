@@ -9,6 +9,7 @@ import {
   goalDef,
   type EnergyModel,
   type Goal,
+  type Pace,
   type Profile,
   type ProteinBasis,
   type WeekMap,
@@ -43,6 +44,7 @@ export function normaliseWeek(raw: unknown): WeekMap {
 }
 
 const GOAL_VALUES: Goal[] = ["cut", "maintain", "recomp", "bulk"];
+const PACE_VALUES: Pace[] = ["gentle", "steady", "faster"];
 
 /**
  * A stored date as "YYYY-MM-DD", whatever shape it arrives in.
@@ -71,14 +73,6 @@ export function normaliseProfile(p: any): Profile {
   const goal: Goal = GOAL_VALUES.includes(p?.goal) ? p.goal : "maintain";
   const def = goalDef(goal);
 
-  // An adjustment outside ±40% is a typo, not a phase. Falling back to the
-  // goal's own shape also means a profile written before phases existed comes
-  // out behaving exactly as it did.
-  const adj = (v: unknown, fallback: number) => {
-    const n = Number(v);
-    return Number.isFinite(n) && Math.abs(n) <= 0.4 ? n : fallback;
-  };
-
   return {
     sex: p?.sex === "female" ? "female" : "male",
     dob: isoDate(p?.dob),
@@ -89,14 +83,10 @@ export function normaliseProfile(p: any): Profile {
     base_activity: Math.min(1.8, Math.max(1.05, num(p?.base_activity, 1.3))),
     energy_model: model,
     goal,
+    pace: PACE_VALUES.includes(p?.pace) ? p.pace : "steady",
     protein_basis: (p?.protein_basis === "lean" ? "lean" : "bodyweight") as ProteinBasis,
     protein_per_kg: num(p?.protein_per_kg, def.protein.perKg),
     fat_per_kg: num(p?.fat_per_kg, def.fatPerKg),
-    phase_name: String(p?.phase_name ?? "").slice(0, 60),
-    phase_start: isoDate(p?.phase_start),
-    phase_weeks: Math.min(52, Math.max(0, Math.round(num(p?.phase_weeks, 0)))),
-    phase_start_adjust: adj(p?.phase_start_adjust, def.start),
-    phase_end_adjust: adj(p?.phase_end_adjust, def.end),
     calibrated_tdee: optionalNum(p?.calibrated_tdee),
     use_calibration: p?.use_calibration === undefined ? false : !!p.use_calibration,
     // Clamped here as well as in the steer, because this is the boundary a
@@ -104,7 +94,6 @@ export function normaliseProfile(p: any): Profile {
     // database would otherwise quietly become an out-of-range calorie target.
     recomp_adjust: Math.max(-STEER_LIMIT, Math.min(STEER_LIMIT, num(p?.recomp_adjust, 0))),
     calorie_override: optionalNum(p?.calorie_override),
-    carb_floor_per_kg: num(p?.carb_floor_per_kg, 1),
     // The weekly snapshot. Absent on a new profile, which is why every target
     // falls back to weight_kg until shopping day has come round once.
     plan_weight_kg: optionalNum(p?.plan_weight_kg),

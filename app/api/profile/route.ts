@@ -6,8 +6,8 @@ import { seedAccount } from "@/lib/accounts";
 import { applyRoll, rollState } from "@/lib/weekly";
 import { refitPlan, restagePlan } from "@/lib/refit";
 import { applyDayFor } from "@/lib/pending";
-import { buildWeekPlan, dayKey, normaliseDayType } from "@/lib/nutrition";
-import { steerRecomp } from "@/lib/steer";
+import { aimFor, buildWeekPlan, dayKey, legacyBlockAdjust, normaliseDayType } from "@/lib/nutrition";
+import { STEER_LIMIT, steerPlan } from "@/lib/steer";
 import { composition, weightRate } from "@/lib/trend";
 import type { WeighIn } from "@/lib/trend";
 import type { Profile } from "@/lib/nutrition";
@@ -31,7 +31,8 @@ async function rollIfDue(userId: number, p: Profile): Promise<Profile> {
   if (!p.auto_roll) return p;
   try {
     const rows = (await sql`
-      select to_char(day, 'YYYY-MM-DD') as day, weight_kg, tag, at_time, bf_pct, bf_method
+      select to_char(day, 'YYYY-MM-DD') as day, weight_kg, tag, at_time, bf_pct, bf_method,
+             muscle_kg, water_pct
       from weigh_ins
       where user_id = ${userId} and day > current_date - 180
       order by day`) as any[];
@@ -54,7 +55,7 @@ async function rollIfDue(userId: number, p: Profile): Promise<Profile> {
     const dayTypes = (await sql`
       select * from day_types where user_id = ${userId} order by sort_order, id`) as any[];
     const before = buildWeekPlan(p, dayTypes.map((d, n) => normaliseDayType(d, n)));
-    const steer = steerRecomp(p, weightRate(entries), composition(entries), before.maintenance);
+    const steer = steerPlan(p, weightRate(entries), composition(entries), before.maintenance);
 
     const next = applyRoll(p, state.figures, state.dueOn, steer);
     await sql`
@@ -109,8 +110,41 @@ export async function GET() {
     return NextResponse.json(normaliseProfile(made[0] ?? {}));
   }
 
-  const profile = normaliseProfile(rows[0]);
+  const profile = await retireBlock(who.id, rows[0]);
   return NextResponse.json(await rollIfDue(who.id, profile));
+}
+
+/**
+ * Move a profile off the old block and onto a pace — once, and without the
+ * calories moving.
+ *
+ * A block walked the target from one percentage of maintenance to another
+ * across a set number of weeks. A pace doesn't: the goal says where the
+ * calories start and the steer moves them from what the scale does. Swapping
+ * one for the other naively would jump the target by whatever the block had
+ * reached, mid-week, against food already cooked. So the block's current value
+ * is folded into the steer instead, and the week comes out the same.
+ *
+ * Differences under 1% of maintenance are dropped rather than carried. That is
+ * the soft reset: a block a week or two into a gentle ramp was adding a few
+ * dozen calories, and starting the new system from the goal's own starting
+ * point is cleaner than carrying a residue nobody can explain.
+ *
+ * Runs per account on first read, keyed on `pace` being null, and writes the
+ * pace in the same statement — so it cannot run twice for anyone.
+ */
+async function retireBlock(userId: number, raw: any) {
+  if (raw.pace != null) return normaliseProfile(raw);
+
+  const goalName = normaliseProfile(raw).goal;
+  const was = legacyBlockAdjust(raw, dayKey());
+  const diff = was - aimFor(goalName, "steady").adjust;
+  const carry = Math.abs(diff) < 0.01 ? 0 : Math.max(-STEER_LIMIT, Math.min(STEER_LIMIT, diff));
+
+  await sql`
+    update profile set pace = 'steady', recomp_adjust = ${carry}, updated_at = now()
+     where id = ${userId} and pace is null`;
+  return normaliseProfile({ ...raw, pace: "steady", recomp_adjust: carry });
 }
 
 export async function PUT(req: Request) {
@@ -122,7 +156,6 @@ export async function PUT(req: Request) {
   const b = normaliseProfile(await req.json());
   const prev = (await sql`
     select *, to_char(plan_updated_on, 'YYYY-MM-DD') as plan_updated_on,
-              to_char(phase_start, 'YYYY-MM-DD') as phase_start,
               to_char(dob, 'YYYY-MM-DD') as dob
       from profile where id = ${who.id}`) as any[];
   const before: string | null = prev[0]?.plan_updated_on ?? null;
@@ -136,20 +169,15 @@ export async function PUT(req: Request) {
       body_fat_pct = ${b.body_fat_pct},
       activity = ${b.activity},
       goal = ${b.goal},
+      pace = ${b.pace},
       protein_basis = ${b.protein_basis},
       protein_per_kg = ${b.protein_per_kg},
       fat_per_kg = ${b.fat_per_kg},
       calorie_override = ${b.calorie_override},
-      carb_floor_per_kg = ${b.carb_floor_per_kg},
       cycling = ${b.cycling},
       energy_model = ${b.energy_model},
       base_activity = ${b.base_activity},
       week_ids = ${JSON.stringify(b.week)}::jsonb,
-      phase_name = ${b.phase_name || null},
-      phase_start = ${b.phase_start || null},
-      phase_weeks = ${b.phase_weeks},
-      phase_start_adjust = ${b.phase_start_adjust},
-      phase_end_adjust = ${b.phase_end_adjust},
       calibrated_tdee = ${b.calibrated_tdee},
       use_calibration = ${b.use_calibration},
       shop_days = ${b.shop_days},
@@ -164,7 +192,6 @@ export async function PUT(req: Request) {
       updated_at = now()
     where id = ${who.id}
     returning *,
-              to_char(phase_start, 'YYYY-MM-DD') as phase_start,
               to_char(plan_updated_on, 'YYYY-MM-DD') as plan_updated_on,
               to_char(dob, 'YYYY-MM-DD') as dob`;
   const next = normaliseProfile(rows[0]);
@@ -217,19 +244,15 @@ function targetSignature(p: Profile): string {
     p.base_activity,
     p.energy_model,
     p.goal,
+    p.pace,
     p.protein_basis,
     p.protein_per_kg,
     p.fat_per_kg,
-    p.carb_floor_per_kg,
     p.calorie_override,
     p.recomp_adjust,
     p.cycling,
     p.periodise,
     p.week,
-    p.phase_start,
-    p.phase_weeks,
-    p.phase_start_adjust,
-    p.phase_end_adjust,
     p.calibrated_tdee,
     p.use_calibration,
     p.plan_weight_kg,

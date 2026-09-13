@@ -1,5 +1,5 @@
 /**
- * Checks the phase, protein and calibration maths against cases where the
+ * Checks the goal, protein and calibration maths against cases where the
  * right answer is known. Run with: npx tsx bench/recomp.ts
  */
 import { normaliseProfile } from "../lib/profile";
@@ -8,7 +8,6 @@ import {
   WEEKDAYS,
   buildWeekPlan,
   normaliseDayType,
-  phaseOf,
   proteinTarget,
   targetsFor,
   type DayType,
@@ -34,11 +33,7 @@ const base = {
   protein_per_kg: 2.8,
   fat_per_kg: 0.8,
   cycling: true,
-  phase_name: "Toned maintenance",
-  phase_start: "2026-08-31",
-  phase_weeks: 10,
-  phase_start_adjust: 0,
-  phase_end_adjust: -0.08,
+  pace: "steady",
   week_ids: {
     mon: id("Swim only"),
     tue: id("Swim + gym"),
@@ -64,19 +59,13 @@ console.log("without a body fat figure it falls back to bodyweight:", Math.round
 const silly = normaliseProfile({ ...base, body_fat_pct: 3, protein_per_kg: 3.5 });
 console.log("mistyped 3% body fat + 3.5 g/kg is clamped to:", Math.round(proteinTarget(silly)), "g");
 
-console.log("\n--- the phase drifting ---");
-for (const [label, day] of [
-  ["day 1", "2026-08-31"],
-  ["week 3", "2026-09-16"],
-  ["week 6", "2026-10-07"],
-  ["week 10 (end)", "2026-11-09"],
-  ["after it ends", "2026-12-01"],
-] as const) {
-  const ph = phaseOf(profile, day);
-  const plan = buildWeekPlan(profile, dayTypes, { today: day });
+console.log("\n--- the steer moving the target ---");
+for (const steer of [0, -0.03, 0.03, 0.12, -0.2]) {
+  const p = normaliseProfile({ ...base, recomp_adjust: steer });
+  const plan = buildWeekPlan(p, dayTypes);
   const week = WEEKDAYS.map((d) => targetsFor(plan, plan.week[d]).kcal);
   console.log(
-    `${label.padEnd(14)} ${(ph.adjust * 100).toFixed(1).padStart(5)}%  ` +
+    `steer ${(steer * 100).toFixed(0).padStart(4)}% -> ${(plan.aim.total * 100).toFixed(1).padStart(5)}%  ` +
       `average ${plan.goalKcal}  rest ${Math.min(...week)}  biggest ${Math.max(...week)}  ` +
       `protein ${targetsFor(plan, plan.week.mon).protein} g`
   );

@@ -35,7 +35,7 @@ let schemaReady: Promise<void> | null = null;
  * a database stamped with an older number runs the whole migration again, and
  * every statement in it is `if not exists`, so running it again is harmless.
  */
-const SCHEMA_VERSION = "2026-09-09.1-scan";
+const SCHEMA_VERSION = "2026-09-13.1-aims";
 
 /**
  * Creates the tables if they don't exist, adds any columns a newer version
@@ -262,6 +262,11 @@ async function createSchema() {
   // roll. Defaults to zero, so an account that has never scanned is exactly
   // where it was — the steer can only move what it has evidence about.
   await sql`alter table profile add column if not exists recomp_adjust numeric not null default 0`;
+  // How hard to push toward the goal. Null on purpose for every profile that
+  // predates it: the profile route reads a null as "still on the old block"
+  // and converts it once, folding what the block was adding into the steer so
+  // the calories don't jump. See legacyBlockAdjust in lib/nutrition.ts.
+  await sql`alter table profile add column if not exists pace text`;
   await sql`alter table profile add column if not exists shop_days int not null default 7`;
   await sql`alter table profile add column if not exists shop_start_dow int not null default 6`;
   await sql`alter table profile add column if not exists plan_roll_dow int not null default 1`;
@@ -330,6 +335,12 @@ async function createSchema() {
     grams numeric not null default 0,
     updated_at timestamptz not null default now()
   )`;
+  // The moment the grams figure was true. Everything eaten since is taken off it on
+  // the way out, so the cupboard runs itself down as meals are ticked. Rows
+  // from before this existed start counting from when they were last edited.
+  await sql`alter table pantry add column if not exists counted_at timestamptz`;
+  await sql`alter table pantry add column if not exists counted_on date`;
+  await sql`update pantry set counted_at = updated_at where counted_at is null`;
 
   // One row per time you stood on the scale. Waist is optional and weekly is
   // plenty — in a recomposition it's the number that actually moves. The tag
@@ -359,12 +370,28 @@ async function createSchema() {
   await sql`alter table weigh_ins add column if not exists sf_suprailiac numeric`;
   await sql`alter table weigh_ins add column if not exists bf_pct numeric`;
   await sql`alter table weigh_ins add column if not exists bf_method text`;
+  // Everything else the scale reports on a scan morning. All optional — body
+  // fat is the one a scan is saved on; these fill the picture in. See
+  // lib/scan.ts for which of them the app reads and which it only shows.
+  await sql`alter table weigh_ins add column if not exists muscle_kg numeric`;
+  await sql`alter table weigh_ins add column if not exists water_pct numeric`;
+  await sql`alter table weigh_ins add column if not exists bone_kg numeric`;
+  await sql`alter table weigh_ins add column if not exists visceral_fat numeric`;
+  await sql`alter table weigh_ins add column if not exists subq_fat_pct numeric`;
+  await sql`alter table weigh_ins add column if not exists skeletal_pct numeric`;
+  await sql`alter table weigh_ins add column if not exists protein_pct numeric`;
+  await sql`alter table weigh_ins add column if not exists bmr_kcal numeric`;
+  await sql`alter table weigh_ins add column if not exists body_age numeric`;
 
   await sql`create table if not exists shop_checks (
     key text primary key,
     checked boolean not null default false,
     updated_at timestamptz not null default now()
   )`;
+  // What ticking a line put into the cupboard, so unticking can take exactly
+  // that back out again. See lib/stock.ts.
+  await sql`alter table shop_checks add column if not exists bought_grams numeric`;
+  await sql`alter table shop_checks add column if not exists name text`;
 
   // Portions agreed but not yet in force.
   //

@@ -2,61 +2,103 @@
  * Steering the plan by what the body actually did.
  *
  * Everything else in this app predicts. A BMR equation predicts what you burn
- * at rest, a MET table predicts what a session costs, and a phase curve
- * predicts how far under maintenance you should be in week six. Predictions
+ * at rest, a MET table predicts what a session costs, and the goal predicts the
+ * surplus or deficit that should produce the rate you asked for. Predictions
  * are how you start; they are a poor way to continue, because they were fitted
  * to a population and there is only one of you.
  *
- * This closes the loop. Twice a week the scale says what fraction of you is
- * fat, every day it says how much of you there is, and between them those two
- * answer the only question a recomposition actually asks: is the fat coming
- * off, and is the muscle staying on? If it is, nothing moves. If it isn't, the
- * calorie target moves — a little.
+ * This closes the loop. Every day the scale says how much of you there is and
+ * twice a week it says what fraction of that is fat, and between them those
+ * two answer the only question any goal actually asks: is the weight doing
+ * what it should, and is it the right tissue doing it? If both are, nothing
+ * moves. If not, the calorie target moves — a little.
  *
- * "A little" is the whole design.
+ * **Two readings, four ways to be wrong.** Taking toned maintenance as the
+ * example — body fat slowly down, weight slowly up:
+ *
+ *  - weight up *and* body fat up: eating too much. Down.
+ *  - weight down *and* body fat down: eating too little for the aim. Up.
+ *  - weight down while body fat goes *up*: muscle is leaving. Something is
+ *    genuinely wrong — up, and say so loudly, because this one is expensive.
+ *  - weight up while body fat comes down faster than aimed: that is muscle.
+ *    Nothing to fix.
+ *
+ * Every goal reads the same grid against its own bands (lib/nutrition.ts,
+ * `GOALS`), so a cut and a bulk get the same logic aimed somewhere else.
+ *
+ * **"A little" is the whole design.**
  *
  *  - **One step per roll.** The plan changes on one day a week, because the
- *    food for that week has already been bought and cooked. A steer that fired
- *    whenever the numbers looked bad would be rewriting portions on a
- *    Wednesday against containers already in the fridge.
- *  - **A step you cannot feel.** 1.5% of maintenance is about 45 kcal on a
- *    3,000 kcal day — half a slice of bread. A month of consistent evidence
- *    moves it 6%, which is a real change arrived at slowly. A step big enough
- *    to notice would be a step big enough to be wrong about.
- *  - **A hard limit either side.** The steer can never account for more than
- *    8% of maintenance. If the truth is further away than that, the problem is
- *    an input — bodyweight, session lengths, everyday activity — and burying
- *    it under a growing correction would hide it rather than fix it.
- *  - **It will not act on noise.** Bioimpedance reads hydration, so a single
- *    pair of scans says nothing. Nothing happens until there are four scans
- *    across three weeks, and every threshold sits above the scan-to-scan
- *    error.
- *
- * The order the rules are read in is deliberate, and it is not symmetrical.
- * Losing lean mass raises calories on the strength of one signal; losing no
- * fat lowers them only once the evidence is unambiguous. Undershooting costs
- * you a month. Losing muscle in a training block costs you the block.
+ *    food for that week has already been bought and cooked.
+ *  - **Sized by the miss, capped at 3%.** A step is worked out from how far
+ *    the weight trend is from the aim, converted to calories and then halved —
+ *    the trend lags, and the last step has not fully shown yet. 1–3% of
+ *    maintenance is 30–95 kcal on a 3,100 kcal week: noticeable over a month,
+ *    invisible on a plate.
+ *  - **A hard limit either side.** The steer never accounts for more than 12%
+ *    of maintenance. Past that the problem is an input — bodyweight, session
+ *    lengths, everyday activity — and a growing correction would bury it.
+ *  - **It will not act on noise.** Body fat is only read once there are several
+ *    scans across about three weeks. Weight on its own can move the target
+ *    before then, but only when it is clearly outside the aim.
+ *  - **Two opinions on lean mass.** When the scale's own muscle figure exists,
+ *    lean mass has to agree with it before a "muscle is leaving" step is
+ *    taken. Two estimates from one reading disagreeing is a reason to wait.
  */
 
-import type { Profile } from "./nutrition";
+import { aimFor, type Profile } from "./nutrition";
 import {
-  FAT_LOSS_PER_MONTH,
   FAT_RISE_PER_MONTH,
   LEAN_LOSS_PER_MONTH,
   SCAN_MIN_POINTS,
-  SCAN_NOISE_PTS,
   type Composition,
   type Rate,
 } from "./trend";
 
-/** How far the target moves in one week, as a fraction of maintenance. */
-export const STEER_STEP = 0.015;
+/** The smallest move worth making, as a fraction of maintenance. */
+export const STEER_MIN_STEP = 0.01;
+
+/** The largest single move, as a fraction of maintenance. */
+export const STEER_MAX_STEP = 0.03;
 
 /** The most the steer may ever account for, either way. */
-export const STEER_LIMIT = 0.08;
+export const STEER_LIMIT = 0.12;
 
-/** Weight falling faster than this a week is coming off you, not off the fat. */
-export const TOO_FAST_PCT_PER_WEEK = -0.7;
+/**
+ * Energy in a kilo of bodyweight change, for sizing a step.
+ *
+ * 7,700 kcal is fat tissue. A change that is part muscle, part water and part
+ * glycogen is less — gaining in particular is well under it — and a step sized
+ * on 7,700 would overshoot every time the weight was rising. 6,500 sits between
+ * the two and is only ever used to size a step that is then halved and capped,
+ * so its exact value barely reaches the answer.
+ */
+const KCAL_PER_KG_CHANGE = 6500;
+
+/** Half the gap each week: the trend lags, and the last step hasn't landed. */
+const DAMPING = 0.5;
+
+/** How far outside a band a reading has to be before it counts as outside. */
+const WEIGHT_MARGIN = 0.04; // % of bodyweight a week
+const BF_MARGIN = 0.15; // points a month
+
+/** How far off the aim weight has to be to act before the scans are in. */
+const WEIGHT_ALONE_MARGIN = 0.2; // % of bodyweight a week
+
+/**
+ * How much weighing it takes before the trend is steered on at all.
+ *
+ * `weightRate` will draw a slope through five readings, which is fine for a
+ * chart and nowhere near enough to move a calorie target: five readings, three
+ * of them in the evening, came out as "+0.4 kg a week" on real data and would
+ * have cut 100 kcal on the strength of it. Ten over a fortnight is the least
+ * where the time-of-day correction and the smoothing have something to work
+ * with.
+ */
+export const STEER_MIN_READINGS = 10;
+export const STEER_MIN_DAYS = 14;
+
+export type Reading = "low" | "in" | "high" | "unknown";
 
 export type Steer = {
   /** What `recomp_adjust` should become. */
@@ -69,15 +111,37 @@ export type Steer = {
   totalKcal: number;
   headline: string;
   detail: string;
-  tone: "good" | "watch" | "neutral";
+  tone: "good" | "watch" | "bad" | "neutral";
   /** False when it is holding still, for any reason. */
   moving: boolean;
   /** True when it stopped because it ran out of room, not out of reason. */
   atLimit: boolean;
+  /** Where each reading sits against the aim, for the status rows. */
+  weight: Reading;
+  bf: Reading;
 };
 
 function round25(kcal: number): number {
   return Math.round(kcal / 25) * 25;
+}
+
+function place(v: number, [lo, hi]: [number, number], margin: number): Reading {
+  if (v < lo - margin) return "low";
+  if (v > hi + margin) return "high";
+  return "in";
+}
+
+/** "+0.3", "−0.2", "0.0" — a real minus sign, and no sign on zero. */
+function signed(n: number, dp = 1): string {
+  const r = Number(n.toFixed(dp));
+  if (r === 0) return (0).toFixed(dp);
+  return `${r > 0 ? "+" : "−"}${Math.abs(r).toFixed(dp)}`;
+}
+
+/** Friendly form of a weekly weight rate, in kg. */
+function kgWk(pct: number, weightKg: number): string {
+  const kg = (pct / 100) * weightKg;
+  return `${kg >= 0 ? "+" : "−"}${Math.abs(kg).toFixed(2)} kg a week`;
 }
 
 /**
@@ -86,13 +150,19 @@ function round25(kcal: number): number {
  * Pure: it reads the trend and hands back a number. The caller writes it, and
  * only on roll day — see `applyRoll` in lib/weekly.ts.
  */
-export function steerRecomp(
+export function steerPlan(
   p: Profile,
   rate: Rate | null,
   comp: Composition | null,
   maintenance: number
 ): Steer {
   const from = p.recomp_adjust ?? 0;
+  const aim = aimFor(p.goal, p.pace);
+  const settled = !!comp && comp.settled;
+
+  const solid = !!rate && rate.readings >= STEER_MIN_READINGS && rate.days >= STEER_MIN_DAYS;
+  const weight: Reading = solid ? place(rate!.pctPerWeek, aim.weight, WEIGHT_MARGIN) : "unknown";
+  const bf: Reading = settled ? place(comp!.bfPtsPerMonth, aim.bf, BF_MARGIN) : "unknown";
 
   const hold = (headline: string, detail: string, tone: Steer["tone"] = "neutral"): Steer => ({
     next: from,
@@ -104,45 +174,49 @@ export function steerRecomp(
     tone,
     moving: false,
     atLimit: false,
+    weight,
+    bf,
   });
-
-  // Only a recomposition is steered. A deliberate cut or bulk has a target
-  // rate of its own and does not want a second opinion arriving on Mondays.
-  if (p.goal !== "recomp") {
-    return hold(
-      "Not steering",
-      "Only toned maintenance is steered — the other goals have a rate of their own."
-    );
-  }
 
   if (p.calorie_override != null && p.calorie_override > 0) {
     return hold(
       "Your number, left alone",
-      "You have set the calories by hand, so nothing here overrides them. Clear the override on the Plan page to hand it back."
+      "You've set the calories yourself, so nothing here changes them. Clear the override on the Plan page to hand it back."
     );
   }
 
-  if (!rate) {
-    return hold("Waiting on the scale", "A fortnight of weigh-ins before there is a trend to read.");
-  }
-
-  if (!comp || !comp.settled) {
-    const short = comp ? Math.max(0, SCAN_MIN_POINTS - comp.scans) : SCAN_MIN_POINTS;
+  if (!rate || !solid) {
+    const have = rate?.readings ?? 0;
     return hold(
-      "Waiting on the scans",
-      short > 0
-        ? `${short} more scan${short === 1 ? "" : "s"} and it starts steering. Body fat across a fortnight is mostly how hydrated you were.`
-        : "Three weeks between the first scan and the last before the slope means anything."
+      "Waiting on the scale",
+      `${have > 0 ? `${have} weigh-in${have === 1 ? "" : "s"} in the last three weeks. ` : ""}About ${STEER_MIN_READINGS} across a fortnight — most days, any time — and there's a trend steady enough to steer by. Nothing changes until then.`
     );
   }
 
-  const lean = comp.leanKgPerMonth;
-  const fat = comp.fatKgPerMonth;
-  const bf = comp.bfPtsPerMonth;
+  const kg = rate.current;
+  const mid = (aim.weight[0] + aim.weight[1]) / 2;
 
-  /** Move the target one step in `dir`, clipped to the limit. */
-  const move = (dir: 1 | -1, headline: string, detail: string, tone: Steer["tone"]): Steer => {
-    const next = Math.max(-STEER_LIMIT, Math.min(STEER_LIMIT, from + dir * STEER_STEP));
+  /**
+   * One step, sized by how far the weight trend is from the middle of the aim.
+   * `dir` decides the direction; the size is the same arithmetic either way,
+   * floored so a step is always big enough to matter and capped so it is never
+   * big enough to feel.
+   */
+  const sized = (): number => {
+    const gapKgWk = ((rate.pctPerWeek - mid) / 100) * kg;
+    const kcalDay = (Math.abs(gapKgWk) * KCAL_PER_KG_CHANGE) / 7;
+    const frac = maintenance > 0 ? (kcalDay * DAMPING) / maintenance : STEER_MIN_STEP;
+    return Math.min(STEER_MAX_STEP, Math.max(STEER_MIN_STEP, frac));
+  };
+
+  const move = (
+    dir: 1 | -1,
+    size: number,
+    headline: string,
+    detail: string,
+    tone: Steer["tone"]
+  ): Steer => {
+    const next = Math.max(-STEER_LIMIT, Math.min(STEER_LIMIT, from + dir * size));
     const step = next - from;
 
     if (Math.abs(step) < 1e-9) {
@@ -150,7 +224,7 @@ export function steerRecomp(
       return {
         ...hold(
           headline,
-          `${detail} It is already ${stuck} kcal ${from < 0 ? "under" : "over"} and that is as far as it goes on its own. If it still is not landing, the number to question is your weight, your session lengths or your everyday activity — not this.`,
+          `${detail} It's already ${stuck} kcal ${from < 0 ? "under" : "over"} where it started, and that's as far as it goes on its own. If it still isn't landing, check your weight, session lengths and everyday activity on the Plan page.`,
           tone
         ),
         atLimit: true,
@@ -167,80 +241,160 @@ export function steerRecomp(
       tone,
       moving: true,
       atLimit: false,
+      weight,
+      bf,
     };
   };
 
-  /**
-   * Fat going on, which changes what a falling lean figure means.
-   *
-   * At a steady bodyweight lean and fat are one measurement with the sign
-   * flipped, so "lean mass is down" reads identically whether you are
-   * under-eating or simply getting fatter at the same weight — and those two
-   * want opposite steps. Every rule that raises calories is therefore gated on
-   * fat not rising.
-   */
-  const fatRising = fat > FAT_RISE_PER_MONTH;
+  const wWord = kgWk(rate.pctPerWeek, kg);
+  const aimWord = `${kgWk(aim.weight[0], kg).replace(" a week", "")} to ${kgWk(aim.weight[1], kg)}`;
 
-  // 1. Lean mass leaving, and not because it is turning into fat. The
-  //    expensive failure, and the only one that gets a step on one signal.
-  if (lean < LEAN_LOSS_PER_MONTH && !fatRising) {
-    return move(
-      1,
-      "Eating a little more",
-      `Lean mass is down ${Math.abs(lean).toFixed(1)} kg a month across ${comp.scans} scans. That is the one thing this block cannot afford to lose, so the target goes up.`,
-      "watch"
-    );
-  }
+  /* --- Before the scans are in: weight alone, and only when it's clear ---- */
+  if (!settled) {
+    const short = comp ? Math.max(0, SCAN_MIN_POINTS - comp.scans) : SCAN_MIN_POINTS;
+    const waiting = comp
+      ? short > 0
+        ? `${short} more scan${short === 1 ? "" : "s"} and body fat joins in.`
+        : "A few more days between the first scan and the last and body fat joins in."
+      : "Scan on your two scan days and body fat joins in after about three weeks.";
 
-  // 2. Coming off too fast overall — the same problem, arriving by the scale.
-  if (rate.pctPerWeek < TOO_FAST_PCT_PER_WEEK && !fatRising) {
-    return move(
-      1,
-      "Easing off",
-      `Weight is falling ${Math.abs(rate.kgPerWeek).toFixed(2)} kg a week. Past about 0.7% of bodyweight, what you lose stops being mostly fat.`,
-      "watch"
-    );
-  }
-
-  // 3. Working. The point of the whole thing is that this changes nothing.
-  if (fat <= FAT_LOSS_PER_MONTH && lean >= LEAN_LOSS_PER_MONTH) {
+    if (rate.pctPerWeek < aim.weight[0] - WEIGHT_ALONE_MARGIN) {
+      return move(
+        1,
+        sized(),
+        "Weight is falling — eating a little more",
+        `The trend is ${wWord} against an aim of ${aimWord}. That's clear enough to act on before the scans are in. ${waiting}`,
+        "watch"
+      );
+    }
+    if (rate.pctPerWeek > aim.weight[1] + WEIGHT_ALONE_MARGIN) {
+      return move(
+        -1,
+        sized(),
+        "Weight is climbing fast — trimming a little",
+        `The trend is ${wWord} against an aim of ${aimWord}. Faster than muscle can be built, so some of it is fat. ${waiting}`,
+        "watch"
+      );
+    }
     return hold(
-      "Leaving it exactly where it is",
-      `Fat down ${Math.abs(fat).toFixed(1)} kg a month with lean mass holding. Nothing to fix, so nothing moves.`,
+      weight === "in" ? "Weight is on track" : "Watching the weight",
+      `The trend is ${wWord}; the aim is ${aimWord}. ${waiting}`,
+      weight === "in" ? "good" : "neutral"
+    );
+  }
+
+  /* --- Both readings in ----------------------------------------------------- */
+  const c = comp!;
+  const bfWord = `${signed(c.bfPtsPerMonth)}% a month`;
+  const bfAim = `${signed(aim.bf[0])} to ${signed(aim.bf[1])}`;
+
+  /**
+   * Lean mass leaving, and not because it's turning into fat.
+   *
+   * At a steady weight lean and fat are one measurement with the sign flipped,
+   * so "lean is down" is only evidence of under-eating when fat isn't going up
+   * at the same time. And when the scale has its own muscle figure, it has to
+   * agree — the app's lean mass and the scale's are two readings of one current
+   * through you, and when they point different ways neither is trustworthy.
+   */
+  const fatRising = c.fatKgPerMonth > FAT_RISE_PER_MONTH;
+  const muscleAgrees = c.muscleKgPerMonth == null || c.muscleKgPerMonth < 0;
+  const leanLeaving =
+    p.goal !== "cut" && c.leanKgPerMonth < LEAN_LOSS_PER_MONTH && !fatRising && muscleAgrees;
+
+  // Losing weight while getting fatter. The one that means something is wrong.
+  if (weight === "low" && bf === "high") {
+    return move(
+      1,
+      Math.max(sized(), STEER_MIN_STEP * 2),
+      "Losing weight but body fat is rising",
+      `Weight ${wWord}, body fat ${bfWord}. That combination means muscle is going, not fat — the calories go up. Check the obvious first: is protein landing every day, are the gym sessions still hard, and were the last scans taken first thing, before food and drink? A dry morning reads fatter than you are.`,
+      "bad"
+    );
+  }
+
+  if (leanLeaving && weight !== "high") {
+    return move(
+      1,
+      sized(),
+      "Muscle is slipping — eating a little more",
+      `Lean mass is down ${Math.abs(c.leanKgPerMonth).toFixed(1)} kg a month across ${c.scans} scans${c.muscleKgPerMonth != null ? ", and the scale's muscle figure agrees" : ""}. That's the one thing this can't afford to lose.`,
+      "watch"
+    );
+  }
+
+  if (weight === "high" && bf === "high") {
+    const gaining = rate.kgPerWeek > 0.05;
+    return move(
+      -1,
+      sized(),
+      gaining ? "Gaining weight and fat — trimming" : "Not coming off — trimming",
+      `Weight ${wWord} and body fat ${bfWord}, against aims of ${aimWord} and ${bfAim}% a month. ${
+        gaining ? "Too much going in" : "Neither is moving the way it should"
+      }; it comes down a notch.`,
+      "watch"
+    );
+  }
+
+  if (weight === "low") {
+    return move(
+      1,
+      sized(),
+      p.goal === "cut"
+        ? "Coming off too fast — easing off"
+        : rate.kgPerWeek < -0.05
+          ? "Weight is falling — eating a little more"
+          : "Weight isn't climbing — eating a little more",
+      `Weight ${wWord} against an aim of ${aimWord}${bf === "low" ? `, with body fat also dropping faster than aimed (${bfWord})` : ""}. ${
+        p.goal === "cut"
+          ? "Past the aim, what comes off stops being mostly fat."
+          : "The aim is for the scale to hold or climb, so the calories go up."
+      }`,
+      "watch"
+    );
+  }
+
+  if (weight === "high") {
+    // Weight above the aim but body fat still falling at least as fast as
+    // aimed: the extra is lean. Nothing to fix.
+    if (bf === "low") {
+      return hold(
+        "Gaining quickly — and it's lean",
+        `Weight ${wWord}, faster than the aim of ${aimWord}, but body fat is falling ${bfWord}. That's muscle arriving, not fat. Leaving it alone.`,
+        "good"
+      );
+    }
+    return move(
+      -1,
+      sized(),
+      p.goal === "cut" ? "Not coming off — trimming" : "Weight climbing faster than aimed — trimming",
+      `Weight ${wWord} against an aim of ${aimWord}. Body fat ${bfWord}.`,
+      "watch"
+    );
+  }
+
+  // Weight on track from here down.
+  if (bf === "high") {
+    return move(
+      -1,
+      STEER_MIN_STEP,
+      "Body fat isn't coming down — trimming",
+      `Weight is on track (${wWord}), but body fat is ${bfWord} against an aim of ${bfAim}% a month. One small notch down.`,
+      "watch"
+    );
+  }
+
+  if (bf === "low") {
+    return hold(
+      "On track — fat coming off quickly",
+      `Weight ${wWord}, right where it should be, and body fat ${bfWord} — faster than the aim of ${bfAim}% a month. While the weight holds, that's good news. If the weight starts falling, it'll ease off.`,
       "good"
     );
   }
 
-  // 4. Trading the wrong way: fat on, lean off, at whatever the scale says.
-  //     Worth its own words, because the arithmetic looks like rule 1 and the
-  //     answer is the opposite of rule 1.
-  if (fatRising && lean < 0) {
-    return move(
-      -1,
-      "Trading the wrong way",
-      `Fat is up ${fat.toFixed(1)} kg a month and lean mass is down ${Math.abs(lean).toFixed(1)} kg — at a weight that has barely moved, that is the swap running backwards. The target comes down. Worth checking protein is landing and the gym sessions are still hard.`,
-      "watch"
-    );
-  }
-
-  // 5. Nothing happening: maintenance is higher than the plan believes.
-  if (bf > -SCAN_NOISE_PTS / 2) {
-    const what =
-      bf > SCAN_NOISE_PTS / 2
-        ? `up ${bf.toFixed(1)} points a month`
-        : `flat across ${comp.days} days`;
-    return move(
-      -1,
-      "Trimming the target",
-      `Body fat is ${what}, so maintenance is a little higher than the plan thinks and the target comes down by one notch.`,
-      "watch"
-    );
-  }
-
-  // 6. Moving the right way, just gently. Leave it alone.
   return hold(
-    "Holding",
-    `Fat is coming off at ${Math.abs(fat).toFixed(1)} kg a month — slower than the plan expects, but the right direction, and a nudge either way would be guessing.`,
-    "neutral"
+    "On track",
+    `Weight ${wWord} and body fat ${bfWord} — both inside the aim. Nothing to fix, so nothing moves.`,
+    "good"
   );
 }
