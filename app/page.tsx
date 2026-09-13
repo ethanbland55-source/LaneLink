@@ -36,7 +36,7 @@ import { hasPrepped, servingGrams } from "@/lib/batch";
 import { normaliseProfile } from "@/lib/profile";
 import { CheatCard, CheatSheet } from "./cheat-ui";
 import { Flag } from "./flag";
-import { absorbCheat, cheatForWeek, daysAfter, type CheatMeal } from "@/lib/cheat";
+import { cheatForWeek, type CheatMeal } from "@/lib/cheat";
 import { lastRollDay, nextRollDay } from "@/lib/weekly";
 
 type Meal = {
@@ -170,23 +170,7 @@ export default function TodayPage() {
     [meals, dayTypeId, dayTypes.length]
   );
 
-  /**
-   * Meals already confirmed today. These are facts, and the absorber may not
-   * plan around changing them — see `AbsorbInput.eaten`.
-   */
-  const eatenMealIds = useMemo(
-    () =>
-      [
-        ...new Set(
-          entries
-            .filter((e) => e.confirmed && e.meal_id != null)
-            .map((e) => Number(e.meal_id))
-        ),
-      ],
-    [entries]
-  );
-
-  /* --- the cheat meal, and what the week does about it ----------------- */
+  /* --- the cheat meal ---------------------------------------------------- */
 
   /**
    * The plan week `day` falls in: roll day to the day before the next one.
@@ -241,54 +225,6 @@ export default function TodayPage() {
     return food;
   }, [entries, todaysSupps, takenMap, todayCheat]);
 
-  /**
-   * Worked out here rather than stored, on purpose.
-   *
-   * The answer depends on the plan, the day type and the targets, all of which
-   * can move after the meal was entered. A stored absorption would go stale
-   * silently; a recomputed one is always about the plan you actually have.
-   */
-  /**
-   * Keyed on what the answer actually depends on, not on object identity.
-   *
-   * Absorbing a cheat meal runs the solver once, then again for every meal it
-   * considers dropping — up to nine full fits. That is fine once; it is not
-   * fine on every render, and every one of the dependencies here is a fresh
-   * array or object after each fetch, so it was re-running for no reason and
-   * locking the page while it did. The signature is the content that changes
-   * the result, so the work happens once per real change.
-   */
-  const cheatKey = useMemo(() => {
-    if (!todayCheat || !plan) return null;
-    return JSON.stringify([
-      todayCheat.day,
-      todayCheat.meal_id,
-      todayCheat.kcal,
-      todayCheat.protein,
-      todayCheat.carbs,
-      todayCheat.fat,
-      dayTypeId,
-      day,
-      eatenMealIds,
-      meals.map((m) => [m.id, m.day_type_ids, m.times_per_day, m.ingredients.map((i) => i.grams)]),
-    ]);
-  }, [todayCheat, plan, dayTypeId, day, meals, eatenMealIds]);
-
-  const absorption = useMemo(() => {
-    if (!todayCheat || !plan || !profile) return null;
-    return absorbCheat({
-      cheat: todayCheat,
-      meals: meals as any,
-      plan,
-      dayTypes,
-      dayTypeId,
-      supplements,
-      rest: daysAfter(day, plan, planWeek?.dow ?? 1),
-      eaten: eatenMealIds,
-    });
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [cheatKey]);
-
   async function saveCheat(c: Omit<CheatMeal, "id">) {
     const saved = await fetch("/api/cheat", {
       method: "PUT",
@@ -305,43 +241,23 @@ export default function TodayPage() {
   }
 
   /**
-   * The menu as the cheat meal leaves it.
+   * The menu, with the meal the cheat meal replaced taken off it.
    *
-   * This is the part that has to be right. Working out that dinner comes off
-   * and lunch shrinks is worth nothing if the list you tap through on the day
-   * still shows the plan you are no longer eating — you would log the old one
-   * out of habit and the day would be wrong by exactly the amount the whole
-   * mechanism was there to handle.
+   * Nothing else moves. A meal out used to be "absorbed": the rest of the day
+   * shrank around it and whatever was left spread over the days after. That
+   * made every meal out look free, and it made it impossible to tell whether
+   * one had cost anything — the plan had already hidden it. So now it is simply
+   * logged: its macros go on the day it happened, in place of the meal it
+   * replaced, and the weigh-ins and scans are what say whether it mattered.
    *
    * The cheat meal itself is deliberately *not* in this list. It is already in
    * today's totals from the moment you entered it, and offering it as a row to
    * tap invites you to count it twice.
    */
   const menu = useMemo<Meal[]>(() => {
-    if (!absorption || !todayCheat) return suggested;
-
-    const byId = new Map(absorption.meals.map((m) => [m.mealId, m]));
-    const kept: Meal[] = [];
-
-    for (const m of suggested) {
-      const o = byId.get(m.id);
-      if (!o || o.action === "kept") {
-        kept.push(m);
-        continue;
-      }
-      if (o.action === "dropped" || o.action === "replaced") continue;
-
-      const moved = new Map(o.portions.map((p) => [p.name, p.to]));
-      kept.push({
-        ...m,
-        ingredients: m.ingredients.map((it) =>
-          moved.has(it.name) ? { ...it, grams: moved.get(it.name) as number } : it
-        ),
-      });
-    }
-
-    return kept;
-  }, [absorption, todayCheat, suggested]);
+    if (!todayCheat || todayCheat.meal_id == null) return suggested;
+    return suggested.filter((m) => m.id !== todayCheat.meal_id);
+  }, [todayCheat, suggested]);
 
   /**
    * What the times you logged actually say. Only meals with a time can be
@@ -587,7 +503,11 @@ export default function TodayPage() {
       {meals.length > 0 && (
         <CheatCard
           cheat={todayCheat}
-          absorption={absorption}
+          replaced={
+            todayCheat?.meal_id != null
+              ? (meals.find((m) => m.id === todayCheat.meal_id)?.name ?? null)
+              : null
+          }
           used={!!weekCheat && weekCheat.day !== day}
           onOpen={() => setShowCheat(true)}
           onClear={clearCheat}
@@ -623,19 +543,17 @@ export default function TodayPage() {
             )}
           </div>
 
-          {/* Said here, where you are about to tap something, rather than only
-              in the card further up. The list below has already been resized
-              around the meal out, and without a line saying so the portions
-              look like they changed for no reason. */}
+          {/* Said here, where you are about to tap something, so the missing
+              meal in the list below doesn't look like a fault. */}
           {todayCheat && (
             <Flag
               tone="info"
               className="mb-3"
-              title={`${todayCheat.name} is counted — ${Math.round(todayCheat.kcal)} kcal`}
+              title={`${todayCheat.name} is logged — ${Math.round(todayCheat.kcal)} kcal`}
               detail={
-                absorption && absorption.meals.some((m) => m.action !== "kept")
-                  ? "The meals below are what's left of the day."
-                  : "No need to add it as a meal."
+                todayCheat.meal_id != null
+                  ? "In place of its meal. Everything else below is as planned."
+                  : "On top of the day. Everything below is as planned."
               }
             />
           )}

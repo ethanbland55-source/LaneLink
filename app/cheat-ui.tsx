@@ -5,7 +5,7 @@ import { Sheet } from "./sheet";
 import { NumberField } from "./number-field";
 import { Note } from "./explain";
 import { MACRO_COLOR } from "./macro-ui";
-import { completeCheat, type Absorption, type CheatMeal } from "@/lib/cheat";
+import { completeCheat, type CheatMeal } from "@/lib/cheat";
 import type { PlanMeal } from "@/lib/batch";
 
 /* ------------------------------------------------------------------ */
@@ -13,23 +13,25 @@ import type { PlanMeal } from "@/lib/batch";
 /* ------------------------------------------------------------------ */
 
 /**
- * One meal out a week, and what the week does about it.
+ * One meal out a week, logged as what it was.
  *
- * Deliberately not a warning. A cheat meal that comes with a telling-off is a
- * cheat meal you stop logging, and an unlogged one is the only kind that
- * actually costs you anything — the whole mechanism here depends on the app
- * knowing it happened. So the card states the arithmetic and gets out of the
- * way.
+ * Deliberately not a warning, and no longer a rescue either. It used to shrink
+ * the rest of the day and spread what was left over the days after, which made
+ * a meal out look free and made it impossible to see whether it had cost
+ * anything. Now it is recorded against the day, in place of the meal it
+ * replaced, and nothing else moves — the trend on the Progress page is what
+ * says whether it made a difference.
  */
 export function CheatCard({
   cheat,
-  absorption,
+  replaced,
   used,
   onOpen,
   onClear,
 }: {
   cheat: CheatMeal | null;
-  absorption: Absorption | null;
+  /** The planned meal it took the place of, by name. */
+  replaced: string | null;
   /** Whether this plan week already has one. */
   used: boolean;
   onOpen: () => void;
@@ -45,7 +47,7 @@ export function CheatCard({
           <p className="mt-0.5 text-xs text-[var(--color-mut)]">
             {used
               ? "One a week. It's on another day this week — nothing to do here."
-              : "Swap a meal for what you're actually eating. The day makes room."}
+              : "Log a meal out in place of one of yours. Nothing else changes."}
           </p>
         </div>
         {!used && (
@@ -78,97 +80,12 @@ export function CheatCard({
         ))}
       </div>
 
-      {absorption && <AbsorptionReport a={absorption} />}
+      <p className="mt-2 text-xs leading-relaxed text-[var(--color-mut)]">
+        {replaced ? `Logged instead of ${replaced}.` : "Logged on top of the day."} The rest of
+        the day and the week stay as planned — your weigh-ins and scans will show whether it made a
+        difference.
+      </p>
     </section>
-  );
-}
-
-/**
- * What the day and the week do to make room.
- *
- * The order on screen matches the order the logic tries things in, because
- * that order *is* the explanation: the swap costs nothing, shrinking costs
- * little, dropping a meal costs something, and what's left over is the only
- * part that is actually a cost. Reading it top to bottom tells you how
- * expensive this particular meal was.
- */
-function AbsorptionReport({ a }: { a: Absorption }) {
-  const moved = a.meals.filter((m) => m.action !== "kept");
-
-  return (
-    <div className="mt-3 space-y-2.5 border-t border-[#1c1f25] pt-3">
-      {moved.length > 0 && (
-        <ul className="space-y-1">
-          {moved.map((m) => (
-            <li key={m.mealId} className="text-xs">
-              <span className="flex items-baseline gap-2">
-                <span
-                  className="truncate font-semibold"
-                  style={{
-                    color:
-                      m.action === "resized" ? "var(--color-fg)" : "var(--color-mut)",
-                    textDecoration:
-                      m.action === "dropped" || m.action === "replaced"
-                        ? "line-through"
-                        : undefined,
-                  }}
-                >
-                  {m.name}
-                </span>
-                <span className="ml-auto shrink-0 text-[var(--color-mut)]">
-                  {m.action === "replaced"
-                    ? "swapped out"
-                    : m.action === "dropped"
-                      ? "off today"
-                      : `${Math.round(m.after.kcal)} kcal`}
-                </span>
-              </span>
-              {m.action === "resized" && m.portions.length > 0 && (
-                <span className="mt-0.5 block text-[0.7rem] text-[var(--color-mut)]">
-                  {m.portions
-                    .slice(0, 3)
-                    .map((p) => `${p.name} ${Math.round(p.from)}→${Math.round(p.to)} g`)
-                    .join(", ")}
-                </span>
-              )}
-              {m.why && m.action !== "resized" && (
-                <span className="mt-0.5 block text-[0.7rem] text-[var(--color-mut)]">{m.why}</span>
-              )}
-            </li>
-          ))}
-        </ul>
-      )}
-
-      <div className="flex flex-wrap gap-x-4 gap-y-1 text-xs tabular-nums">
-        <span className="text-[var(--color-mut)]">
-          Day lands <b className="text-[var(--color-fg)]">{Math.round(a.after.kcal)}</b> against{" "}
-          {Math.round(a.target.kcal)}
-        </span>
-        <span className="text-[var(--color-mut)]">
-          protein <b className="text-[var(--color-fg)]">{Math.round(a.after.protein)}</b> /{" "}
-          {Math.round(a.target.protein)} g
-        </span>
-      </div>
-
-      {/* One line, not a list. Four weekdays each with their own row was half
-          the height of the card for a number you read once and act on never —
-          the week does this by itself. */}
-      {a.spread.length > 0 && (
-        <p className="text-xs text-[var(--color-mut)]">
-          {a.spread.reduce((n, s) => n + s.kcal, 0)} kcal spread over{" "}
-          {a.spread.map((s) => s.weekday).join(", ")}
-        </p>
-      )}
-
-      {a.leftover > 0 && (
-        <p className="text-xs" style={{ color: "var(--color-carbs)" }}>
-          {a.leftover} kcal with nowhere to go — about {a.leftoverFatGrams} g.
-        </p>
-      )}
-
-      {/* The reasoning is worth keeping and is not worth reading twice. */}
-      {a.notes.length > 0 && <Note label="Why it did that">{a.notes.join(" ")}</Note>}
-    </div>
   );
 }
 
@@ -232,7 +149,7 @@ export function CheatSheet({
       <div className="shrink-0 px-5 pb-3 pt-2 sm:pt-5">
         <h2 className="text-lg font-bold tracking-tight">Cheat meal</h2>
         <p className="mt-0.5 text-xs text-[var(--color-mut)]">
-          One a week, on top of nothing. What it costs gets worked out, not waved through.
+          One a week. Logged as it was — nothing else in the plan moves to make room.
         </p>
       </div>
 
@@ -276,8 +193,8 @@ export function CheatSheet({
           </div>
           <p className="mt-1.5 text-xs leading-relaxed text-[var(--color-mut)]">
             {swapped
-              ? `${swapped.name} comes off the day. That's usually most of the room right there.`
-              : "Nothing comes off, so the whole day and the days after it have to find the room. Doable, just dearer."}
+              ? `${swapped.name} comes off today's list and this goes in its place. The rest of the day stays as planned.`
+              : "Nothing comes off — it's logged on top of the day, and the rest stays as planned."}
           </p>
         </div>
 
@@ -324,7 +241,7 @@ export function CheatSheet({
             <p className="mt-2 text-xs leading-relaxed text-[var(--color-mut)]">
               Left blank, so they&rsquo;re estimated at roughly a fifth protein and a third fat —
               what a meal out usually is. Fill them in if the place publishes them and the day
-              will be worked out properly rather than approximately.
+              is logged properly rather than approximately.
             </p>
           )}
           {!estimated && (kcal ?? 0) > 0 && Math.abs(preview.kcal - (kcal ?? 0)) > 60 && (
