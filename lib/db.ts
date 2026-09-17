@@ -35,7 +35,7 @@ let schemaReady: Promise<void> | null = null;
  * a database stamped with an older number runs the whole migration again, and
  * every statement in it is `if not exists`, so running it again is harmless.
  */
-const SCHEMA_VERSION = "2026-09-13.1-aims";
+const SCHEMA_VERSION = "2026-09-17.1-segments";
 
 /**
  * Creates the tables if they don't exist, adds any columns a newer version
@@ -262,6 +262,9 @@ async function createSchema() {
   // roll. Defaults to zero, so an account that has never scanned is exactly
   // where it was — the steer can only move what it has evidence about.
   await sql`alter table profile add column if not exists recomp_adjust numeric not null default 0`;
+  // On by default, so the steer shapes protein and fat as well as the total —
+  // otherwise every calorie it moves lands on carbohydrate. See `shapeMacros`.
+  await sql`alter table profile add column if not exists adapt_macros boolean not null default true`;
   // How hard to push toward the goal. Null on purpose for every profile that
   // predates it: the profile route reads a null as "still on the old block"
   // and converts it once, folding what the block was adding into the steer so
@@ -382,6 +385,25 @@ async function createSchema() {
   await sql`alter table weigh_ins add column if not exists protein_pct numeric`;
   await sql`alter table weigh_ins add column if not exists bmr_kcal numeric`;
   await sql`alter table weigh_ins add column if not exists body_age numeric`;
+  // The five segments, muscle and fat in kg each — left arm, right arm, trunk,
+  // left leg, right leg. Shown and trended; only their total ever reaches the
+  // steer, and then only as a second opinion on `muscle_kg`. The reasoning is
+  // in lib/scan.ts's header.
+  //
+  // Written out one per line rather than generated in a loop, because `sql`
+  // here is the statement collector (see `collector()`) and it is a tagged
+  // template and nothing else. A loop would need `sql.query`, which the
+  // collector does not have and which would skip the batching if it did.
+  await sql`alter table weigh_ins add column if not exists seg_la_muscle_kg numeric`;
+  await sql`alter table weigh_ins add column if not exists seg_la_fat_kg numeric`;
+  await sql`alter table weigh_ins add column if not exists seg_ra_muscle_kg numeric`;
+  await sql`alter table weigh_ins add column if not exists seg_ra_fat_kg numeric`;
+  await sql`alter table weigh_ins add column if not exists seg_tr_muscle_kg numeric`;
+  await sql`alter table weigh_ins add column if not exists seg_tr_fat_kg numeric`;
+  await sql`alter table weigh_ins add column if not exists seg_ll_muscle_kg numeric`;
+  await sql`alter table weigh_ins add column if not exists seg_ll_fat_kg numeric`;
+  await sql`alter table weigh_ins add column if not exists seg_rl_muscle_kg numeric`;
+  await sql`alter table weigh_ins add column if not exists seg_rl_fat_kg numeric`;
 
   await sql`create table if not exists shop_checks (
     key text primary key,

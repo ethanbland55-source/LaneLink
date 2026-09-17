@@ -29,7 +29,7 @@
  * than on a population.
  */
 
-import { EXTRA_KEYS, type ScanExtras } from "./scan";
+import { EXTRA_KEYS, SEGMENT_KEYS, segmentMuscleTotal, type ScanExtras } from "./scan";
 
 export type Tag = "morning" | "evening" | "other";
 
@@ -436,6 +436,13 @@ export type Composition = {
    * scans that carried one. Used as a second opinion on the lean slope.
    */
   muscleKgPerMonth: number | null;
+  /**
+   * The same slope again from the five segments added up — a third opinion on
+   * the same tissue, and held to the same gates. Only `steer.ts`'s agreement
+   * test reads it. See `segmentMuscleTotal` in lib/scan.ts for why a partial
+   * sum is refused outright.
+   */
+  segmentMuscleKgPerMonth: number | null;
   /** Scans left out of the slopes for being off-hydration. */
   excluded: number;
   /** True when there are enough scans over enough time to read the slopes. */
@@ -465,6 +472,13 @@ export function composition(entriesRaw: WeighIn[], windowDays = 84): Composition
     .map((e) => {
       const extras: ScanExtras = {};
       for (const k of EXTRA_KEYS) {
+        const v = (e as any)[k];
+        if (v != null && Number.isFinite(Number(v))) extras[k] = Number(v);
+      }
+      // The five segments ride along in the same bag, so a readout can show
+      // them and `segmentMuscleTotal` can add them up. Nothing here treats them
+      // as a metric in their own right — see lib/scan.ts.
+      for (const k of SEGMENT_KEYS) {
         const v = (e as any)[k];
         if (v != null && Number.isFinite(Number(v))) extras[k] = Number(v);
       }
@@ -543,6 +557,23 @@ export function composition(entriesRaw: WeighIn[], windowDays = 84): Composition
   const muscleSpan =
     withMuscle.length >= 2 ? at(withMuscle[withMuscle.length - 1]) - at(withMuscle[0]) : 0;
 
+  /*
+   * The same slope again, off the five segments added up.
+   *
+   * It is a THIRD estimate of the same tissue — lean from body fat and the
+   * trend weight, the scale's own muscle figure, and now the limbs summed — and
+   * it is held to the same gates as the second one. Its only job is to make the
+   * agreement test in `steer.ts` harder to pass by accident; nothing reads it
+   * on its own, because a total built from five of the least repeatable
+   * readings the scale produces is not a number to act on alone. See
+   * `segmentMuscleTotal`, which refuses a partial sum for the same reason.
+   */
+  const segTotals = fitOn
+    .map((p) => ({ p, total: segmentMuscleTotal(p.extras) }))
+    .filter((x): x is { p: ScanPoint; total: number } => x.total != null);
+  const segSpan =
+    segTotals.length >= 2 ? at(segTotals[segTotals.length - 1].p) - at(segTotals[0].p) : 0;
+
   return {
     points,
     scans: fitOn.length,
@@ -555,6 +586,10 @@ export function composition(entriesRaw: WeighIn[], windowDays = 84): Composition
     muscleKgPerMonth:
       withMuscle.length >= SCAN_MIN_POINTS && muscleSpan >= SCAN_MIN_DAYS
         ? slopePerDay(withMuscle.map((p) => ({ t: at(p), v: p.extras.muscle_kg as number }))) * 28
+        : null,
+    segmentMuscleKgPerMonth:
+      segTotals.length >= SCAN_MIN_POINTS && segSpan >= SCAN_MIN_DAYS
+        ? slopePerDay(segTotals.map((x) => ({ t: at(x.p), v: x.total }))) * 28
         : null,
     excluded: points.length - fitOn.length,
     settled: fitOn.length >= SCAN_MIN_POINTS && days >= SCAN_MIN_DAYS,

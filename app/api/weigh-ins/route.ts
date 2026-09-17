@@ -3,7 +3,7 @@ import { sql, ensureSchema } from "@/lib/db";
 import { requireUser } from "@/lib/session";
 import { parseClock, type Tag } from "@/lib/trend";
 import { plausibleBf } from "@/lib/bodyfat";
-import { EXTRA_KEYS, plausible } from "@/lib/scan";
+import { EXTRA_KEYS, SEGMENT_KEYS, plausible, plausibleSegment } from "@/lib/scan";
 
 export const dynamic = "force-dynamic";
 
@@ -46,6 +46,9 @@ function row(r: any) {
     ...Object.fromEntries(
       EXTRA_KEYS.map((k) => [k, r[k] == null ? null : Number(r[k])])
     ),
+    ...Object.fromEntries(
+      SEGMENT_KEYS.map((k) => [k, r[k] == null ? null : Number(r[k])])
+    ),
   };
 }
 
@@ -71,7 +74,10 @@ export async function GET(req: Request) {
   const rows = await sql`
     select to_char(day, 'YYYY-MM-DD') as day, weight_kg, tag, at_time, bf_pct, bf_method, note,
            muscle_kg, water_pct, bone_kg, visceral_fat, subq_fat_pct, skeletal_pct,
-           protein_pct, bmr_kcal, body_age
+           protein_pct, bmr_kcal, body_age,
+           seg_la_muscle_kg, seg_la_fat_kg, seg_ra_muscle_kg, seg_ra_fat_kg,
+           seg_tr_muscle_kg, seg_tr_fat_kg, seg_ll_muscle_kg, seg_ll_fat_kg,
+           seg_rl_muscle_kg, seg_rl_fat_kg
     from weigh_ins
     where user_id = ${who.id} and day > current_date - ${days}::int
     order by day`;
@@ -112,7 +118,10 @@ export async function PUT(req: Request) {
   const before = (await sql`
     select weight_kg, tag, at_time, bf_pct, bf_method, note,
            muscle_kg, water_pct, bone_kg, visceral_fat, subq_fat_pct, skeletal_pct,
-           protein_pct, bmr_kcal, body_age
+           protein_pct, bmr_kcal, body_age,
+           seg_la_muscle_kg, seg_la_fat_kg, seg_ra_muscle_kg, seg_ra_fat_kg,
+           seg_tr_muscle_kg, seg_tr_fat_kg, seg_ll_muscle_kg, seg_ll_fat_kg,
+           seg_rl_muscle_kg, seg_rl_fat_kg
       from weigh_ins where user_id = ${who.id} and day = ${day}`) as any[];
   const had = before[0];
 
@@ -157,6 +166,20 @@ export async function PUT(req: Request) {
             : Number(had[k]);
   }
 
+  // The five segments, on exactly the same rule — including "no body fat means
+  // no scan means none of this", which is what makes clearing the percentage
+  // clear the whole morning rather than leaving ten orphaned limb figures.
+  for (const k of SEGMENT_KEYS) {
+    x[k] =
+      bfPct == null
+        ? null
+        : sent(k)
+          ? plausibleSegment(b[k])
+          : had?.[k] == null
+            ? null
+            : Number(had[k]);
+  }
+
   // Nothing left in the row at all, so there is no row.
   if (w == null && bfPct == null) {
     await sql`delete from weigh_ins where user_id = ${who.id} and day = ${day}`;
@@ -167,20 +190,34 @@ export async function PUT(req: Request) {
   const rows = await sql`
     insert into weigh_ins (user_id, day, weight_kg, tag, at_time, bf_pct, bf_method, note,
                            muscle_kg, water_pct, bone_kg, visceral_fat, subq_fat_pct,
-                           skeletal_pct, protein_pct, bmr_kcal, body_age)
+                           skeletal_pct, protein_pct, bmr_kcal, body_age,
+                           seg_la_muscle_kg, seg_la_fat_kg, seg_ra_muscle_kg, seg_ra_fat_kg,
+                           seg_tr_muscle_kg, seg_tr_fat_kg, seg_ll_muscle_kg, seg_ll_fat_kg,
+                           seg_rl_muscle_kg, seg_rl_fat_kg)
     values (${who.id}, ${day}, ${w}, ${tag}, ${at}, ${bfPct}, ${method}, ${note},
             ${x.muscle_kg}, ${x.water_pct}, ${x.bone_kg}, ${x.visceral_fat}, ${x.subq_fat_pct},
-            ${x.skeletal_pct}, ${x.protein_pct}, ${x.bmr_kcal}, ${x.body_age})
+            ${x.skeletal_pct}, ${x.protein_pct}, ${x.bmr_kcal}, ${x.body_age},
+            ${x.seg_la_muscle_kg}, ${x.seg_la_fat_kg}, ${x.seg_ra_muscle_kg}, ${x.seg_ra_fat_kg},
+            ${x.seg_tr_muscle_kg}, ${x.seg_tr_fat_kg}, ${x.seg_ll_muscle_kg}, ${x.seg_ll_fat_kg},
+            ${x.seg_rl_muscle_kg}, ${x.seg_rl_fat_kg})
     on conflict (user_id, day) do update set
       weight_kg = ${w}, tag = ${tag}, at_time = ${at}, bf_pct = ${bfPct},
       bf_method = ${method}, note = ${note},
       muscle_kg = ${x.muscle_kg}, water_pct = ${x.water_pct}, bone_kg = ${x.bone_kg},
       visceral_fat = ${x.visceral_fat}, subq_fat_pct = ${x.subq_fat_pct},
       skeletal_pct = ${x.skeletal_pct}, protein_pct = ${x.protein_pct},
-      bmr_kcal = ${x.bmr_kcal}, body_age = ${x.body_age}
+      bmr_kcal = ${x.bmr_kcal}, body_age = ${x.body_age},
+      seg_la_muscle_kg = ${x.seg_la_muscle_kg}, seg_la_fat_kg = ${x.seg_la_fat_kg},
+      seg_ra_muscle_kg = ${x.seg_ra_muscle_kg}, seg_ra_fat_kg = ${x.seg_ra_fat_kg},
+      seg_tr_muscle_kg = ${x.seg_tr_muscle_kg}, seg_tr_fat_kg = ${x.seg_tr_fat_kg},
+      seg_ll_muscle_kg = ${x.seg_ll_muscle_kg}, seg_ll_fat_kg = ${x.seg_ll_fat_kg},
+      seg_rl_muscle_kg = ${x.seg_rl_muscle_kg}, seg_rl_fat_kg = ${x.seg_rl_fat_kg}
     returning to_char(day, 'YYYY-MM-DD') as day, weight_kg, tag, at_time, bf_pct, bf_method, note,
               muscle_kg, water_pct, bone_kg, visceral_fat, subq_fat_pct, skeletal_pct,
-              protein_pct, bmr_kcal, body_age`;
+              protein_pct, bmr_kcal, body_age,
+              seg_la_muscle_kg, seg_la_fat_kg, seg_ra_muscle_kg, seg_ra_fat_kg,
+              seg_tr_muscle_kg, seg_tr_fat_kg, seg_ll_muscle_kg, seg_ll_fat_kg,
+              seg_rl_muscle_kg, seg_rl_fat_kg`;
 
   /**
    * Keep the profile's figure pointed at the newest scan.

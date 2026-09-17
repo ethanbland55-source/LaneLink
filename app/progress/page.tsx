@@ -15,7 +15,19 @@ import {
 } from "@/lib/nutrition";
 import { DOW_LABELS, normaliseProfile } from "@/lib/profile";
 import { BF_MAX, BF_MIN, SCAN_ERROR, fromScan } from "@/lib/bodyfat";
-import { EXTRA_METRICS, SCAN_METRICS, bmi, type ScanKey, type ScanMetric } from "@/lib/scan";
+import {
+  EXTRA_METRICS,
+  SCAN_METRICS,
+  SEGMENTS,
+  SEGMENT_FIELDS,
+  SEGMENT_KEYS,
+  bmi,
+  segmentKey,
+  segmentRatio,
+  type ScanKey,
+  type ScanMetric,
+  type SegmentKey,
+} from "@/lib/scan";
 import { applyRoll, rollDelta, rollState } from "@/lib/weekly";
 import { STEER_MIN_READINGS, steerPlan, type Reading } from "@/lib/steer";
 import { Note } from "../explain";
@@ -37,9 +49,13 @@ import {
   type WeighIn,
 } from "@/lib/trend";
 
-type ScanForm = Record<ScanKey, string>;
+/** Every box on the scan card — the whole-body figures and the five segments. */
+type ScanField = ScanKey | SegmentKey;
+type ScanForm = Record<ScanField, string>;
 
-const EMPTY_SCAN = Object.fromEntries(SCAN_METRICS.map((m) => [m.key, ""])) as ScanForm;
+const SCAN_FIELDS: ScanField[] = [...SCAN_METRICS.map((m) => m.key), ...SEGMENT_KEYS];
+
+const EMPTY_SCAN = Object.fromEntries(SCAN_FIELDS.map((k) => [k, ""])) as ScanForm;
 
 /**
  * Two measurements, and everything is built out of them.
@@ -83,7 +99,7 @@ export default function ProgressPage() {
     setAtTime(mine?.at_time ?? "");
     setScan(
       Object.fromEntries(
-        SCAN_METRICS.map((m) => [m.key, mine?.[m.key] != null ? String(mine[m.key]) : ""])
+        SCAN_FIELDS.map((k) => [k, mine?.[k] != null ? String(mine[k]) : ""])
       ) as ScanForm
     );
     setLoading(false);
@@ -222,7 +238,7 @@ export default function ProgressPage() {
 
   async function saveScan() {
     const body: Record<string, number | null> = {};
-    for (const m of SCAN_METRICS) body[m.key] = scan[m.key] ? Number(scan[m.key]) : null;
+    for (const k of SCAN_FIELDS) body[k] = scan[k] ? Number(scan[k]) : null;
     await put(body, liveScan ? `Scan logged — ${liveScan.pct}% body fat` : "Scan cleared");
     setEditing(false);
   }
@@ -772,7 +788,7 @@ function ScanEntry({
   onCancel,
 }: {
   scan: ScanForm;
-  onChange: (k: ScanKey, v: string) => void;
+  onChange: (k: ScanField, v: string) => void;
   live: ReturnType<typeof fromScan>;
   trendKg: number;
   weighedToday: boolean;
@@ -820,6 +836,47 @@ function ScanEntry({
         </p>
       )}
 
+      {/* Folded away because it is ten more boxes and none of them is required.
+          Open once and the browser keeps it open. */}
+      <details className="mt-3 border-t border-[#1c1f25] pt-3">
+        <summary className="cursor-pointer text-xs text-[var(--color-mut)]">
+          Per body part — optional
+        </summary>
+        <p className="mt-2 text-xs text-[var(--color-mut)]">
+          The five segments off the scale&rsquo;s app, in kilograms. Left and right are worth more
+          than either on its own.
+        </p>
+        <div className="mt-2 space-y-1.5">
+          {SEGMENTS.map((s) => (
+            <div key={s.id} className="flex items-center gap-2">
+              <span className="w-[4.5rem] shrink-0 text-[0.7rem] text-[var(--color-mut)]">
+                {s.label}
+              </span>
+              {SEGMENT_FIELDS.map((f) => (
+                <label key={f.field} className="sunk min-w-0 flex-1 px-2 pb-1.5 pt-1.5">
+                  <span className="block text-[0.6rem] leading-none text-[#5b6270]">
+                    {f.label} kg
+                  </span>
+                  <NumberField
+                    step={0.1}
+                    allowEmpty
+                    className="mt-1 w-full px-1.5 py-1 text-sm"
+                    placeholder="—"
+                    aria-label={`${s.label} ${f.label} in kg`}
+                    value={scan[segmentKey(s.id, f.field)] === ""
+                      ? null
+                      : Number(scan[segmentKey(s.id, f.field)])}
+                    onCommit={(v) =>
+                      onChange(segmentKey(s.id, f.field), v == null ? "" : String(v))
+                    }
+                  />
+                </label>
+              ))}
+            </div>
+          ))}
+        </div>
+      </details>
+
       <div className="mt-4 flex gap-2">
         <button className="btn btn-accent flex-1" onClick={onSave} disabled={bad}>
           {live ? `Save scan · ${live.pct}%` : "Save scan"}
@@ -832,10 +889,12 @@ function ScanEntry({
       </div>
 
       <Note label="Which numbers off the scale?">
-        The whole-body figures, as the display shows them. Skip the per-arm, per-leg and trunk
-        breakdown — it&rsquo;s the least repeatable thing the scale does. Weight comes from the
-        weigh-in above, and BMI, lean mass and fat mass are worked out for you, so none of those
-        need typing.
+        The whole-body figures, as the display shows them. Weight comes from the weigh-in above,
+        and BMI, lean mass and fat mass are worked out for you, so none of those need typing. The
+        per-limb breakdown is the least repeatable thing the scale does, so it is shown and
+        trended but never used to change your calories — the one exception is the five muscle
+        figures added up, which has to agree with the scale&rsquo;s own muscle mass before the
+        plan will act on muscle being lost.
       </Note>
     </div>
   );
@@ -999,7 +1058,88 @@ function ScanReadout({
           Changes since {prettyDay(first.day)}. Lean and fat are split from your trend weight.
         </p>
       )}
+      <SegmentMap comp={comp} />
     </div>
+  );
+}
+
+/**
+ * Where the muscle is — the five segments, laid out as a body rather than a
+ * list, with each side's figures next to its opposite number.
+ *
+ * Left beside right on the same row is the whole point. The absolute figure for
+ * one arm is the least trustworthy thing on this page; the DIFFERENCE between
+ * two arms is one of the most, because whatever the scale gets wrong about you
+ * it gets wrong on both sides at once. So the pairs are adjacent, and the gap
+ * between them is called out in words underneath.
+ */
+function SegmentMap({ comp }: { comp: NonNullable<ReturnType<typeof composition>> }) {
+  const cur = comp.current.extras;
+  const first = comp.first.extras;
+  const multi = comp.points.length >= 2;
+
+  const rows = SEGMENTS.map((s) => ({
+    seg: s,
+    muscle: cur[segmentKey(s.id, "muscle_kg")] ?? null,
+    fat: cur[segmentKey(s.id, "fat_kg")] ?? null,
+    wasMuscle: first[segmentKey(s.id, "muscle_kg")] ?? null,
+    ratio: segmentRatio(cur, s.id),
+  }));
+  if (!rows.some((r) => r.muscle != null || r.fat != null)) return null;
+
+  /** The biggest left-right muscle gap, as a share of the bigger side. */
+  const gaps = SEGMENTS.filter((s) => s.side === "left" && s.mirror).map((s) => {
+    const l = cur[segmentKey(s.id, "muscle_kg")];
+    const r = cur[segmentKey(s.mirror!, "muscle_kg")];
+    if (l == null || r == null || !(Math.max(l, r) > 0)) return null;
+    return { label: s.label.replace("Left ", ""), l, r, pct: (Math.abs(l - r) / Math.max(l, r)) * 100 };
+  });
+  const worst = gaps
+    .filter((g): g is NonNullable<typeof g> => g != null)
+    .sort((a, b) => b.pct - a.pct)[0];
+
+  return (
+    <details className="mt-3 border-t border-[#1c1f25] pt-3">
+      <summary className="cursor-pointer text-xs text-[var(--color-mut)]">
+        Where it sits — per body part
+      </summary>
+      <div className="mt-2 space-y-1">
+        {rows.map((r) => (
+          <div key={r.seg.id} className="flex items-center gap-2 text-[0.72rem]">
+            <span className="w-[4.5rem] shrink-0 text-[var(--color-mut)]">{r.seg.label}</span>
+            <span className="num w-[3.6rem] shrink-0 text-right">
+              {r.muscle == null ? "—" : `${r.muscle.toFixed(2)}`}
+              <span className="ml-0.5 text-[0.6rem] text-[#5b6270]">kg</span>
+            </span>
+            {multi && r.muscle != null && r.wasMuscle != null ? (
+              <span
+                className="w-[2.8rem] shrink-0 text-right text-[0.62rem] tabular-nums"
+                style={{ color: changeColour(r.muscle - r.wasMuscle, "up") }}
+              >
+                {signed(r.muscle - r.wasMuscle, 2)}
+              </span>
+            ) : (
+              <span className="w-[2.8rem] shrink-0" />
+            )}
+            <span className="flex-1 text-right text-[#5b6270]">
+              {r.fat == null ? "" : `${r.fat.toFixed(2)} kg fat`}
+              {r.ratio != null && ` · ${r.ratio.toFixed(2)} fat:muscle`}
+            </span>
+          </div>
+        ))}
+      </div>
+      {worst && (
+        <p className="mt-2 text-[0.68rem] text-[#5b6270]">
+          {worst.pct < 3
+            ? `Arms and legs are even — the biggest gap is ${worst.pct.toFixed(1)}% across the ${worst.label}s.`
+            : `Your ${worst.l > worst.r ? "left" : "right"} ${worst.label} carries ${worst.pct.toFixed(1)}% more muscle than the other. Worth watching across a few scans before reading anything into it.`}
+        </p>
+      )}
+      <p className="mt-1 text-[0.68rem] text-[#5b6270]">
+        Shown, not steered on. These move around between scans far more than the whole-body
+        figures do.
+      </p>
+    </details>
   );
 }
 

@@ -46,7 +46,7 @@
  *    taken. Two estimates from one reading disagreeing is a reason to wait.
  */
 
-import { aimFor, type Profile } from "./nutrition";
+import { aimFor, STEER_LIMIT, type Profile } from "./nutrition";
 import {
   FAT_RISE_PER_MONTH,
   LEAN_LOSS_PER_MONTH,
@@ -61,8 +61,15 @@ export const STEER_MIN_STEP = 0.01;
 /** The largest single move, as a fraction of maintenance. */
 export const STEER_MAX_STEP = 0.03;
 
-/** The most the steer may ever account for, either way. */
-export const STEER_LIMIT = 0.12;
+/**
+ * The most the steer may ever account for, either way.
+ *
+ * Defined in `nutrition.ts` and re-exported here, where it reads as belonging.
+ * It has to live there because the macro shaping needs it too, and a nutrition
+ * module importing from this one would close a cycle — this module already
+ * imports `aimFor` from it.
+ */
+export { STEER_LIMIT } from "./nutrition";
 
 /**
  * Energy in a kilo of bodyweight change, for sizing a step.
@@ -298,7 +305,19 @@ export function steerPlan(
    * through you, and when they point different ways neither is trustworthy.
    */
   const fatRising = c.fatKgPerMonth > FAT_RISE_PER_MONTH;
-  const muscleAgrees = c.muscleKgPerMonth == null || c.muscleKgPerMonth < 0;
+  /*
+   * Every muscle figure the scale gave has to agree, or the app waits.
+   *
+   * There are up to three: lean mass worked out from body fat and the trend
+   * weight, the scale's own `muscle_kg`, and — since the limb breakdown went in
+   * — the five segments added up. They are all built from the same impedance
+   * reading, so agreeing does not make them independent; but DISAGREEING is
+   * still decisive, because it means the reading itself is unstable that
+   * morning. Absent figures abstain rather than object.
+   */
+  const muscleAgrees =
+    (c.muscleKgPerMonth == null || c.muscleKgPerMonth < 0) &&
+    (c.segmentMuscleKgPerMonth == null || c.segmentMuscleKgPerMonth < 0);
   const leanLeaving =
     p.goal !== "cut" && c.leanKgPerMonth < LEAN_LOSS_PER_MONTH && !fatRising && muscleAgrees;
 
