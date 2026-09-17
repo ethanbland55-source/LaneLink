@@ -93,6 +93,9 @@ export function normaliseProfile(p: any): Profile {
     // stored value crosses on its way back in — and an out-of-range one in the
     // database would otherwise quietly become an out-of-range calorie target.
     recomp_adjust: Math.max(-STEER_LIMIT, Math.min(STEER_LIMIT, num(p?.recomp_adjust, 0))),
+    // On by default: the steer moving calories without moving fat means every
+    // calorie it takes off lands on carbohydrate. See `shapeMacros`.
+    adapt_macros: p?.adapt_macros !== false,
     calorie_override: optionalNum(p?.calorie_override),
     // The weekly snapshot. Absent on a new profile, which is why every target
     // falls back to weight_kg until shopping day has come round once.

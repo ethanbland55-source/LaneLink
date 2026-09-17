@@ -39,6 +39,7 @@ export const REAL_DAY_TYPES: DayType[] = [
 ];
 
 export const REAL_PROFILE: Profile = {
+  adapt_macros: true,
   sex: "male",
   dob: "2005-04-26",
   height_cm: 182.88,

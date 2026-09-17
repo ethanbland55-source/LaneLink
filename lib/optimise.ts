@@ -389,21 +389,55 @@ function rowTotals(ctx: Ctx, row: DayRow, grams: number[]): Macros {
  */
 function evenShare(ctx: Ctx, items: BoundedItem[], start: number[]): number[] {
   const free = items.map((it) => !it.locked);
-  let gap = 0;
+
+  /*
+   * Each moving macro shared across the foods that actually carry it.
+   *
+   * This used to share the whole calorie gap across carbohydrate alone, and
+   * that was right while it was true: protein is set by lean mass and fat by
+   * bodyweight, so neither moved when the target did and every calorie of the
+   * change was carbohydrate by construction.
+   *
+   * `shapeMacros` broke that assumption on purpose — fat now moves with the
+   * steer. Sharing a gap that is part fat across carbohydrate asks the rice to
+   * pay for the olive oil: the calories come out, the fat target does not, and
+   * the fit makes up the difference by leaning even harder on whichever food
+   * still has room. Measured on the real plan it made the spread a point worse
+   * than not trying to be even at all.
+   *
+   * So the gap is split by macro and each half is shared over the items that
+   * hold it. An item moves by the sum of its two shares, which for a food that
+   * is mostly one macro is the old behaviour, and for olive oil is nothing to
+   * do with the carbohydrate gap.
+   */
+  let gapCarbKcal = 0;
+  let gapFatKcal = 0;
   let carbKcal = 0;
+  let fatKcal = 0;
   for (const row of ctx.rows) {
-    gap += (row.target.kcal - rowTotals(ctx, row, start).kcal) * row.weight;
+    const now = rowTotals(ctx, row, start);
+    gapCarbKcal += (row.target.carbs - now.carbs) * 4 * row.weight;
+    gapFatKcal += (row.target.fat - now.fat) * 9 * row.weight;
     for (let i = 0; i < start.length; i++) {
       if (!free[i] || !row.counts[i]) continue;
-      carbKcal += ctx.ds[i].carbs * 4 * (start[i] || 0) * row.counts[i] * row.weight;
+      const g = (start[i] || 0) * row.counts[i] * row.weight;
+      carbKcal += ctx.ds[i].carbs * 4 * g;
+      fatKcal += ctx.ds[i].fat * 9 * g;
     }
   }
-  if (!(carbKcal > 0)) return start.slice();
-  const k = Math.min(0.3, Math.max(-0.3, gap / carbKcal));
+  if (!(carbKcal > 0) && !(fatKcal > 0)) return start.slice();
+
+  const share = (gap: number, pool: number) =>
+    pool > 0 ? Math.min(0.3, Math.max(-0.3, gap / pool)) : 0;
+  const kCarb = share(gapCarbKcal, carbKcal);
+  const kFat = share(gapFatKcal, fatKcal);
+
   return start.map((g, i) => {
     if (!free[i] || !(ctx.ds[i].kcal > 0)) return g;
     const carbShare = Math.min(1, (ctx.ds[i].carbs * 4) / ctx.ds[i].kcal);
-    return g * (1 + k * carbShare);
+    const fatShare = Math.min(1, (ctx.ds[i].fat * 9) / ctx.ds[i].kcal);
+    const move = kCarb * carbShare + kFat * fatShare;
+    return g * (1 + Math.min(0.3, Math.max(-0.3, move)));
   });
 }
 

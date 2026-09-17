@@ -1603,6 +1603,37 @@ export default function PlanPage() {
             <Num value={profile.fat_per_kg} onChange={(v) => set("fat_per_kg", v)} step={0.05} />
           </Field>
 
+          <div className="sm:col-span-2">
+            <label className="flex items-start gap-2.5">
+              <input
+                type="checkbox"
+                className="mt-0.5"
+                checked={profile.adapt_macros}
+                onChange={(e) => set("adapt_macros", e.target.checked)}
+              />
+              <span className="text-sm">
+                Let the weekly steer move protein and fat too
+                <span className="mt-0.5 block text-xs text-[var(--color-mut)]">
+                  Off, every calorie it adds or takes lands on carbohydrate. On, fat keeps its
+                  share of the day and protein edges up while you&rsquo;re eating under.
+                </span>
+              </span>
+            </label>
+            {profile.adapt_macros && plan.macroShape.shaped && (
+              <p className="mt-2 text-xs leading-relaxed text-[var(--color-mut)]">
+                In force this week:{" "}
+                <b className="text-[#f2f4f7]">
+                  {plan.macroShape.proteinPerKg.toFixed(2)} g/kg protein
+                </b>{" "}
+                and{" "}
+                <b className="text-[#f2f4f7]">{plan.macroShape.fatPerKg.toFixed(2)} g/kg fat</b>,
+                moved from your {profile.protein_per_kg} and {profile.fat_per_kg} by the steer.
+                Your own figures above are what it moves away from and back toward — they
+                aren&rsquo;t overwritten.
+              </p>
+            )}
+          </div>
+
 
           <div className="sm:col-span-2">
             <Field label="Manual kcal override — your own number, used as the weekly average">

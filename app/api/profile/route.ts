@@ -187,6 +187,7 @@ export async function PUT(req: Request) {
       plan_bf_pct = ${b.plan_bf_pct},
       plan_updated_on = ${b.plan_updated_on || null},
       recomp_adjust = ${b.recomp_adjust},
+      adapt_macros = ${b.adapt_macros},
       auto_roll = ${b.auto_roll},
       periodise = ${b.periodise},
       updated_at = now()
@@ -250,6 +251,7 @@ function targetSignature(p: Profile): string {
     p.fat_per_kg,
     p.calorie_override,
     p.recomp_adjust,
+    p.adapt_macros,
     p.cycling,
     p.periodise,
     p.week,

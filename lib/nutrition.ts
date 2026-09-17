@@ -142,6 +142,18 @@ export type Profile = {
    * every goal now, not only a recomposition.
    */
   recomp_adjust: number;
+  /**
+   * Let the steer shape the macros, not only the calorie total.
+   *
+   * Ethan: *"if we're putting too much fat on, it's all right dropping fat [the
+   * calories], but it might be worth just dropping the amount of fat that we're
+   * eating per kilo of body weight."* With this off, protein is a fixed g/kg of
+   * lean and fat a fixed g/kg of bodyweight, so **every calorie the steer moves
+   * lands on carbohydrate** — which is both a blunt instrument and, given his
+   * portions already sit at their minimum bounds, a change that can only come
+   * out of one bowl of rice. See `shapeMacros`.
+   */
+  adapt_macros: boolean;
   calorie_override: number | null;
   /**
    * The figures this week's targets are built on, snapshotted on shopping day.
@@ -492,6 +504,104 @@ export const EA_FLOOR = 30;
  */
 const CARB_SAFETY_PER_KG = 1.0;
 
+// --- shaping the macros, not just the total ----------------------------------
+
+/**
+ * The most the self-correcting steer may ever account for, either way.
+ *
+ * Lives here rather than in `steer.ts`, which is where it reads as belonging
+ * and which re-exports it under the same name, because the macro shaping below
+ * needs it and `steer.ts` already imports from this file.
+ */
+export const STEER_LIMIT = 0.12;
+
+/** Fat never goes below this, whatever the steer says. g per kg bodyweight. */
+export const FAT_PER_KG_FLOOR = 0.6;
+/** Nor above this — past it the day is mostly fat and carbohydrate suffers. */
+export const FAT_PER_KG_CEILING = 1.3;
+/** The most the steer will add to protein, in g per kg of lean mass. */
+export const PROTEIN_LEAN_BONUS = 0.15;
+/** And the most protein may reach that way, per kg of lean. */
+export const PROTEIN_PER_LEAN_CEILING = 3.0;
+
+export type MacroShape = {
+  proteinPerKg: number;
+  fatPerKg: number;
+  /** True when either has been moved off the setting. */
+  shaped: boolean;
+};
+
+/**
+ * What the steer does to protein and fat, on top of what it does to calories.
+ *
+ * ---------------------------------------------------------------------------
+ * ONE CONTROLLER, THREE OUTPUTS — NOT THREE CONTROLLERS
+ * ---------------------------------------------------------------------------
+ * This is the part worth being careful about, because the obvious version is
+ * wrong. The obvious version watches body fat and moves dietary fat by its own
+ * rule: a second feedback loop, running off the same measurement as the first,
+ * on a body that takes weeks to answer. Two loops reading one signal and both
+ * pulling on the plate is how a plan starts oscillating, and with two scans on
+ * the board there is no data to tune either of them against. Asked to do it
+ * "only if it'll do this perfectly", that version is the one that cannot be.
+ *
+ * So there is still exactly one controller — `lib/steer.ts`, deciding one
+ * number a week — and this is a pure function OF that number. No new signal, no
+ * second opinion, nothing that can disagree with anything.
+ *
+ * **Fat keeps its share.** `fat_per_kg` is a fixed g/kg of bodyweight, so it
+ * does not move when calories do, and everything the steer takes off comes out
+ * of carbohydrate. Scaling fat by the same fraction as the total is the
+ * neutral thing to do: fat is about a fifth of the day's calories, so a 10%
+ * cut takes 10% off fat and the rest off carbohydrate, in proportion. That is
+ * the answer to *"drop the amount of fat we're eating per kilo"* — and it is
+ * the honest version of it, because dietary fat does not put body fat on you
+ * at a fixed calorie intake. What it does do is give the cut somewhere else to
+ * come from than one bowl of rice.
+ *
+ * **Protein goes the other way.** It is held in absolute terms whatever the
+ * calories do, and nudged UP as the steer cuts, because a deficit is exactly
+ * when lean mass is at risk and protein is what protects it. It is never
+ * reduced by this — the bonus is one-sided by construction.
+ *
+ * Both are clamped, and the clamps are the real safety: fat cannot go below
+ * `FAT_PER_KG_FLOOR` however deep the cut, and protein cannot climb past
+ * `PROTEIN_PER_LEAN_CEILING` however long the steer sits negative.
+ */
+export function shapeMacros(p: Profile): MacroShape {
+  const base = { proteinPerKg: p.protein_per_kg, fatPerKg: p.fat_per_kg, shaped: false };
+  if (!p.adapt_macros) return base;
+
+  const steer = aimState(p).total;
+  if (!Number.isFinite(steer) || steer === 0) return base;
+
+  const fatPerKg = Math.min(
+    FAT_PER_KG_CEILING,
+    Math.max(FAT_PER_KG_FLOOR, p.fat_per_kg * (1 + steer)),
+  );
+
+  // One-sided: a surplus does not buy less protein.
+  const deficit = steer < 0 ? Math.min(1, -steer / STEER_LIMIT) : 0;
+  const proteinPerKg =
+    p.protein_basis === "lean"
+      ? Math.min(PROTEIN_PER_LEAN_CEILING, p.protein_per_kg + PROTEIN_LEAN_BONUS * deficit)
+      : p.protein_per_kg;
+
+  const round = (n: number) => Math.round(n * 1000) / 1000;
+  return {
+    proteinPerKg: round(proteinPerKg),
+    fatPerKg: round(fatPerKg),
+    shaped: round(proteinPerKg) !== p.protein_per_kg || round(fatPerKg) !== p.fat_per_kg,
+  };
+}
+
+/** The profile the macro maths should actually use. */
+export function shaped(p: Profile): Profile {
+  const s = shapeMacros(p);
+  if (!s.shaped) return p;
+  return { ...p, protein_per_kg: s.proteinPerKg, fat_per_kg: s.fatPerKg };
+}
+
 export type Targets = Macros & {
   dayTypeId: number;
   name: string;
@@ -529,6 +639,11 @@ export type WeekPlan = {
   calibrated: boolean;
   /** Mean daily cost across the seven days you've mapped. */
   maintenance: number;
+  /**
+   * What the steer did to protein and fat this week, so a settings screen can
+   * show the figures in force rather than the ones that were typed in.
+   */
+  macroShape: MacroShape;
   /** The seven-day average you're aiming for. */
   goalKcal: number;
   /** What every non-pinned day was multiplied by to make the week balance. */
@@ -613,6 +728,18 @@ export function buildWeekPlan(
   _opts: { today?: string } = {}
 ): WeekPlan {
   const aim = aimState(p);
+
+  /*
+   * The macro settings the day's numbers are actually built from.
+   *
+   * A copy of the profile with protein and fat moved by the steer, so every
+   * downstream call — `proteinTarget`, the fat line, the periodisation
+   * multipliers — sees one consistent set of figures rather than some of them
+   * shaped and some of them not. Identical to `p` when the steer is at zero or
+   * the setting is off. See `shapeMacros`.
+   */
+  const mp = shaped(p);
+  const macroShape = shapeMacros(p);
 
   // Never end up with no day types at all. If seeding hasn't run yet, or the
   // fetch failed, or someone deleted the last one, fall back to a single
@@ -744,7 +871,7 @@ export function buildWeekPlan(
     const raw = cost.get(t.id) ?? baseline(p);
     const kcal = kcalById.get(t.id) ?? floor;
 
-    const m = macrosFor(p, kcal, p.periodise ? muls.get(t.id) ?? undefined : undefined);
+    const m = macrosFor(mp, kcal, p.periodise ? muls.get(t.id) ?? undefined : undefined);
     byId[t.id] = {
       ...m,
       dayTypeId: t.id,
@@ -773,6 +900,7 @@ export function buildWeekPlan(
     aim,
     calibrated,
     maintenance: Math.round(maintenance),
+    macroShape,
     goalKcal: Math.round(goalKcal),
     balance,
     dayTypes: types,
