@@ -489,8 +489,8 @@ export function RecalculateDialog({
                 />
                 <Note>
                   {drift === "keep_close"
-                    ? "Spreads a change over everything instead of taking it all out of one thing. Slightly less exact on paper, much more like the food you already buy."
-                    : "Ignores what the plan looks like now and fits the targets outright. Right for a plan you are building from scratch, blunt for one you are adjusting."}
+                    ? "Spreads the change over every food."
+                    : "Fits the targets from scratch."}
                 </Note>
 
                 {movement.length > 0 && (
@@ -526,12 +526,7 @@ export function RecalculateDialog({
 
           {tab === "splits" && (
             <div className="space-y-4 pb-2">
-              <Note label="What these do">
-                Nothing in the day&rsquo;s targets says how to divide meals that always appear
-                together, so these say what you want and the fit holds it. Figures are shares of
-                the <b>calories</b>. It shapes the plan you cook to — logging what you ate is
-                untouched by any of it.
-              </Note>
+              <Note label="What these do">How meals on the same days split their calories.</Note>
 
               {/* Between meals that come and go together */}
               {groups.map((g) => (
@@ -566,10 +561,8 @@ export function RecalculateDialog({
               <div className="sunk px-4 py-3.5">
                 <p className="text-xs font-semibold text-[var(--color-mut)]">Inside a meal</p>
                 <Note>
-                  Some meals you balance deliberately — a yoghurt bowl you want half yoghurt rather
-                  than half granola. Most you don&rsquo;t: chicken and rice is a recipe, not a
-                  ratio. Open one only if it&rsquo;s the first kind.
-                </Note>
+                  Only for meals you balance on purpose, like a yoghurt bowl.
+                  </Note>
 
                 <div className="mt-3 flex flex-wrap gap-1.5">
                   {draft
@@ -854,9 +847,8 @@ function ShareRow({
         // than leaving a typed 50 sitting next to a 43% with no explanation.
         missed && (
           <p className="mt-1.5 text-[0.7rem] leading-relaxed text-[#5b6270]">
-            Nothing&rsquo;s in the way — the macros land closer at {Math.round(got * 100)}%. Lock a
-            portion, or narrow its limits, to insist.
-          </p>
+            Nothing&rsquo;s blocking it — the macros land better at {Math.round(got * 100)}%.
+            </p>
         )
       )}
     </div>
@@ -1194,10 +1186,8 @@ function PrepGuide({
         <p className="label">How much food this actually is</p>
         <p className="mt-2 text-sm leading-relaxed">{volumeHeadline(volume)}</p>
         <Note>
-          Energy density is the number that decides whether a day fills you up. Under about
-          150 kcal per 100 g you&rsquo;ll finish the day full; over 250 and you&rsquo;ll be hungry
-          on the same calories.
-        </Note>
+          Under 150 kcal per 100 g fills you up; over 250 won&rsquo;t.
+          </Note>
       </div>
 
       {volume.meals.map((m) => (
@@ -1228,9 +1218,8 @@ function PrepGuide({
         <div className="sunk px-4 py-3.5">
           <p className="label">Calories spare</p>
           <p className="mt-2 text-xs leading-relaxed text-[var(--color-mut)]">
-            There&rsquo;s room left in the average day. These add the most food for the fewest
-            calories — pick a meal and add one, and the fit will re-run around it.
-          </p>
+            Room left: these add the most food for the fewest calories.
+            </p>
           <div className="mt-3">
             <select
               className="field w-full text-sm"

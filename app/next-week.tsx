@@ -103,7 +103,7 @@ export function NextWeek({
           {Math.abs(review.stepKcal)} kcal a day
           {review.decisive && (
             <span className="ml-2 rounded-full bg-[var(--color-raised)] px-2 py-0.5 align-middle text-[0.68rem] font-semibold text-[var(--color-mut)]">
-              the one-off recomp cut
+              one move
             </span>
           )}
         </p>
@@ -117,8 +117,8 @@ export function NextWeek({
 
       <p className="mt-2 text-xs leading-relaxed text-[var(--color-mut)]">
         {quiet
-          ? `No portions change. Next week is this week again.`
-          : `Comes in on ${eve} evening as soon as all of ${eve}'s meals are ticked off — so what you cook that night is next week's — or first thing ${day(applyOn, { weekday: "long" })} if not. The shopping list is already buying for it.`}
+          ? `No portions change.`
+          : `In from ${eve} evening once its meals are ticked off (or ${day(applyOn, { weekday: "long" })} morning). The shopping list is already buying for it.`}
       </p>
 
       {/* The day before and after — the numbers the portions are fitted to. */}
@@ -151,15 +151,12 @@ export function NextWeek({
       )}
       {from && to && !quiet && (
         <p className="mt-2 text-[0.72rem] leading-relaxed text-[var(--color-mut)]">
-          Daily average, {diff >= 0 ? "+" : "−"}
-          {Math.abs(diff)} kcal. Protein {from.proteinPerKg.toFixed(2)}
-          {to.proteinPerKg !== from.proteinPerKg ? ` → ${to.proteinPerKg.toFixed(2)}` : ""} g per kg
-          {to.proteinBasis === "lean" ? " of lean mass" : ""}; fat {from.fatPerKg.toFixed(2)}
-          {to.fatPerKg !== from.fatPerKg ? ` → ${to.fatPerKg.toFixed(2)}` : ""} g per kg.
+          Protein {to.proteinPerKg.toFixed(2)} g/kg{to.proteinBasis === "lean" ? " lean" : ""} · fat{" "}
+          {to.fatPerKg.toFixed(2)} g/kg
           {review?.landsKcal != null && Math.abs(review.landsKcal - to.kcal) > 30
-            ? ` The portions come to ${review.landsKcal.toLocaleString()} — ${review.landsKcal > to.kcal ? "over" : "under"} by ${Math.abs(review.landsKcal - to.kcal)}, because of the limits below.`
+            ? ` · portions land at ${review.landsKcal.toLocaleString()} (limits below)`
             : ""}
-        </p>
+          </p>
       )}
 
       {/* Every meal, every food — nothing folded away. */}
@@ -220,10 +217,8 @@ export function NextWeek({
 
       {review && review.held.length > 0 && !quiet && (
         <p className="mt-3 text-xs leading-relaxed text-[var(--color-mut)]">
-          Left as they are: {review.held.join(", ")} — the fit wanted to move{" "}
-          {review.held.length === 1 ? "it" : "them"} by more than half in one go, which is a
-          sign something upstream is off rather than a change worth making.
-        </p>
+          Left as they are: {review.held.join(", ")} — the change was too big to trust.
+          </p>
       )}
 
       {/* The limits that stop it landing, and the one-tap way past each. */}
@@ -252,13 +247,8 @@ export function NextWeek({
 
       {review && (
         <Note label="Why">
-          {review.detail}
-          {review.weight.kgPerWeek != null &&
-            ` Weight trend ${review.weight.kgPerWeek > 0 ? "+" : ""}${review.weight.kgPerWeek.toFixed(2)} ± ${review.weight.seKgPerWeek?.toFixed(2)} kg a week (aim ${review.weight.aimKg[0].toFixed(2)} to +${review.weight.aimKg[1].toFixed(2)}).`}
-          {review.bf.settled && review.bf.ptsPerMonth != null
-            ? ` Body fat ${review.bf.ptsPerMonth > 0 ? "+" : ""}${review.bf.ptsPerMonth.toFixed(1)} ± ${review.bf.sePtsPerMonth?.toFixed(1)} points a month (aim ${review.bf.aim[0]} to ${review.bf.aim[1]}).`
-            : " Body fat isn't steering yet — it needs about two and a half weeks of scans."}{" "}
-          Decided {day(review.on, { weekday: "long", day: "numeric", month: "short" })}.
+          {review.detail}{" "}
+          {review.bf.settled ? "" : "Body fat joins in after about two and a half weeks of scans."}
         </Note>
       )}
 

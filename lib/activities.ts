@@ -38,11 +38,17 @@ export const ACTIVITIES: ActivityDef[] = [
      * calorie cost is modest. Compendium values for freestyle at light (5.8),
      * moderate (8.3) and vigorous (9.8) effort; speed placed between the first
      * two for the rest it carries.
+     *
+     * The default is the typical session: nobody should have to log which set
+     * they swam every day. Over a week of mixed sessions the average sits close
+     * to a moderate main set, and the weekly review corrects the rest from what
+     * the scale does. The others are there for a day type that really is one
+     * kind of session every week.
      */
     levels: [
       { id: "easy", label: "Technique / recovery", met: 5.8 },
       { id: "speed", label: "Speed / sprint (lots of rest)", met: 7.0 },
-      { id: "moderate", label: "Aerobic main set", met: 8.3 },
+      { id: "moderate", label: "Typical session (mixed sets)", met: 8.3 },
       { id: "hard", label: "Threshold / VO2 max", met: 9.8 },
     ],
   },

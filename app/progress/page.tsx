@@ -319,10 +319,7 @@ export default function ProgressPage() {
           <p className="label mr-auto">Weigh in</p>
           <p className="text-xs text-[var(--color-mut)]">{prettyDay(today)}</p>
         </div>
-        <p className="mt-1 text-xs text-[var(--color-mut)]">
-          Every day. First thing — after the loo, before food or drink — is the reading that
-          counts most.
-        </p>
+        <p className="mt-1 text-xs text-[var(--color-mut)]">Every day — first thing is best.</p>
 
         <div className="mt-3 grid grid-cols-2 gap-3">
           <Measure label="Weight" unit="kg" value={weight} onChange={setWeight} />
@@ -352,19 +349,10 @@ export default function ProgressPage() {
         </button>
 
         <Note label="Weighed at an odd time?">
-          You don&rsquo;t have to weigh at the same time every day — say when you did and the
-          reading is corrected to what it would have been first thing before it touches the trend.
-          You gain one to two and a half kilos through the day and none of it is fat, which is why
-          an evening number can make you feel you&rsquo;re putting weight on when you aren&rsquo;t.
-          The correction is an average and your days aren&rsquo;t, so an evening reading counts
-          about a third as much as a morning one.{" "}
+          Log the time and it&rsquo;s corrected to a morning reading; evening ones count less.{" "}
           {offsets.measured
-            ? `Measured on you: about ${(offsets.risePerHour * 1000).toFixed(0)} g an hour awake${
-                offsets.timed > 0
-                  ? `, from ${offsets.timed} timed reading${offsets.timed === 1 ? "" : "s"}`
-                  : ""
-              }.`
-            : `Using a typical ${(DEFAULT_RISE_PER_HOUR * 1000).toFixed(0)} g an hour for now; log a few at different times and it switches to one measured on you.`}
+            ? `Your day adds about ${(offsets.risePerHour * 1000).toFixed(0)} g an hour.`
+            : ""}
         </Note>
       </section>
 
@@ -435,10 +423,8 @@ export default function ProgressPage() {
                 detail="It's shown, but left out of the trend."
               >
                 <Note label="Why">
-                  Body water per kilo of lean was well off your usual that morning. The scale reads
-                  water as lean tissue, so a dry morning reads fatter than you are and a wet one
-                  leaner. Same conditions next time — first thing, before any food or drink.
-                </Note>
+                  Your water was off your usual that morning, so it&rsquo;s left out of the trend.
+                  </Note>
               </Flag>
             )}
 
@@ -462,14 +448,7 @@ export default function ProgressPage() {
               </button>
             </div>
 
-            <Note label="How much to trust these">
-              Body fat is worth about ±{SCAN_ERROR} points against a lab method, and most of that is
-              a fixed offset for your body and your scale — so the number is approximate and the way
-              it moves is real. Lean and fat mass here are your trend weight split by the scan, not
-              the display&rsquo;s own figures: that keeps a salty Friday out of Saturday&rsquo;s
-              answer. Muscle mass is used as a second opinion on lean; the rest are shown so you can
-              watch them, and nothing steers on them.
-            </Note>
+            <Note label="How much to trust these">Good for the trend; the number itself is ±{SCAN_ERROR} points.</Note>
           </>
         ) : (
           <>
@@ -511,7 +490,7 @@ export default function ProgressPage() {
             reading={steer.bf}
             waiting={
               signals.comp
-                ? `${signals.comp.scans} of ${SCAN_MIN_POINTS}+ scans, ~2½ weeks`
+                ? `${signals.comp.scans} scans so far — joins in after ~2½ weeks`
                 : "starts with your first scan"
             }
           />
@@ -558,16 +537,9 @@ export default function ProgressPage() {
                 Save target
               </button>
             )}
-            <Note label="Why a target, and why this one">
-              A recomposition is a way to get to a body, not somewhere to stay. International-level
-              male swimmers sit around 8–12% body fat on a lab scan, and leaner isn&rsquo;t
-              automatically faster in the water — buoyancy is part of it, and pre-session
-              carbohydrate matters more to a swim than the last point of fat. Once your scan trend
-              is at the target, the plan stops looking for fat loss: any cut eases back out, and it
-              holds you within about a point of the target with small nudges either way, weight
-              free to climb on muscle. It only starts recomposing again if body fat climbs a full
-              point above the target. Your scale reads a few points off a lab method for everyone,
-              so set it in the scale&rsquo;s own terms.
+            <Note label="What happens there">
+              At the target the plan stops cutting and holds you there, fully fuelled. International
+              swimmers sit around 8–12%.
             </Note>
           </div>
         )}
@@ -632,19 +604,9 @@ export default function ProgressPage() {
           );
         })()}
 
-        <Note label="How the adjusting works">
-          Every {DOW_LABELS[reviewDow(profile)]} — the day before you shop — your weight trend and
-          your scans are checked against the two aims above, each with its error bar, so a slope
-          drawn through noise can&rsquo;t move anything. If both are on track nothing changes. If
-          weight and body fat are both going up, the calories go straight to a recomposition
-          deficit — about 7% under maintenance, well short of the ~500 kcal a day past which
-          lifting stops adding muscle — in one move rather than a notch a week, and protein goes up
-          to protect the muscle. Body fat on its own has to say so on two reviews in a row first.
-          If weight and fat then come off faster than aimed, it eases back 1.5% at a time. After
-          any change it waits two to three weeks for the scale to catch up before moving again.
-          Losing weight while body fat rises means muscle is going, and that raises the calories
-          straight away. The portions are re-fitted with the change shared across every meal,
-          staged for {DOW_LABELS[profile.plan_roll_dow]}, and the shopping list buys for them.
+        <Note label="How it adjusts">
+          Every {DOW_LABELS[reviewDow(profile)]}: gaining fat takes the surplus off, losing too fast adds
+          a little back, otherwise nothing moves. Training days keep their carbs.
         </Note>
 
         {/* Maintenance itself, measured. The steer sets the offset; this sets
@@ -655,12 +617,10 @@ export default function ProgressPage() {
           </summary>
           {latestBmr != null && (
             <p className="mt-3 text-xs leading-relaxed text-[var(--color-mut)]">
-              Your scale puts your resting burn at{" "}
-              <b className="text-[#f2f4f7]">{Math.round(latestBmr).toLocaleString()} kcal</b>; the
-              plan works it out as {plan.bmr.toLocaleString()} ({plan.method}
-              {plan.method === "Katch-McArdle" ? ", from your lean mass" : ""}). Both are formulas —
-              what you actually burn is the figure below, once there&rsquo;s enough data for it.
-            </p>
+              Resting burn — scale{" "}
+              <b className="text-[#f2f4f7]">{Math.round(latestBmr).toLocaleString()} kcal</b>, plan{" "}
+              {plan.bmr.toLocaleString()} ({plan.method}).
+              </p>
           )}
           {cal ? (
             <>
@@ -675,10 +635,9 @@ export default function ProgressPage() {
               </div>
 
               <p className="mt-3 text-xs leading-relaxed text-[var(--color-mut)]">
-                Over {cal.days} days you ate {cal.intake.toLocaleString()} kcal a day across{" "}
-                {cal.intakeDays} logged days and the trend moved {signed(cal.kgPerWeek, 2)} kg a
-                week. What you ate minus what you stored is what you burned.
-              </p>
+                {cal.days} days: you ate {cal.intake.toLocaleString()} kcal a day and the trend moved{" "}
+                {signed(cal.kgPerWeek, 2)} kg a week.
+                </p>
 
               {cal.confidence === "low" && (
                 <Flag
@@ -707,9 +666,8 @@ export default function ProgressPage() {
             </>
           ) : (
             <p className="mt-3 text-xs leading-relaxed text-[var(--color-mut)]">
-              Needs about two weeks of daily weigh-ins and confirmed food logs in the same window.
-              Then this works out what you actually burn from what you actually ate.
-            </p>
+              Needs about two weeks of weigh-ins and logged meals.
+              </p>
           )}
         </details>
       </section>
@@ -758,10 +716,10 @@ export default function ProgressPage() {
           </p>
         </div>
 
-        <Note label="Where this figure comes from">
+        <Note label="Where this comes from">
           {roll.current.fromSnapshot
-            ? `Taken from your trend on ${prettyDay(roll.lastRolled ?? roll.dueOn)}. Every target, the shopping list and the cook list are built on this figure, and it holds still until ${prettyDay(roll.nextOn)} — so what you buy on shopping day is what you eat all week.`
-            : `Your typed-in weight, until there are enough weigh-ins for a trend. From then on this updates itself every ${DOW_LABELS[profile.plan_roll_dow]}.`}
+            ? `Your trend, fixed for the week so the shop and the cooking match.`
+            : `Your typed-in weight, until there's a trend.`}
         </Note>
 
         <p className="mt-3 text-xs leading-relaxed text-[#5b6270]">
@@ -851,10 +809,8 @@ export default function ProgressPage() {
           </div>
           {entries.some((e) => e.bf_pct != null && !isScan(e)) && (
             <p className="mt-2 text-[0.7rem] leading-relaxed text-[#5b6270]">
-              * from the old tape estimate. Kept because it happened, left out of the chart and the
-              trend because a tape and a scan have different offsets — a series that switches
-              between them has a step in it that looks like progress and isn&rsquo;t.
-            </p>
+              * old tape estimate — not used in the trend.
+              </p>
           )}
         </section>
       )}
@@ -982,14 +938,7 @@ function ScanEntry({
         )}
       </div>
 
-      <Note label="Which numbers off the scale?">
-        The whole-body figures, as the display shows them. Weight comes from the weigh-in above,
-        and BMI, lean mass and fat mass are worked out for you, so none of those need typing. The
-        per-limb breakdown is the least repeatable thing the scale does, so it is shown and
-        trended but never used to change your calories — the one exception is the five muscle
-        figures added up, which has to agree with the scale&rsquo;s own muscle mass before the
-        plan will act on muscle being lost.
-      </Note>
+      <Note label="Which numbers?">Type what the scale shows. Weight comes from the weigh-in.</Note>
     </div>
   );
 }

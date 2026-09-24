@@ -175,19 +175,13 @@ export function AccountCard() {
 
       {weakSecret && (
         <Flag className="mt-3" tone="bad" title="AUTH_SECRET isn't set">
-          <Note label="What that means">
-            Sessions are signed with a constant that is printed in the source, so anyone who reads
-            it can forge a cookie for any account. Add it as an environment variable where this is
-            deployed — README.md has the two-minute version.
-          </Note>
+          <Note label="What that means">Set AUTH_SECRET where the app is deployed — see the README.</Note>
         </Flag>
       )}
 
       <Note label={others > 0 ? `${others + 1} plans on here` : "Sharing this with someone?"}>
-        Everything is kept per account — your meals, your week, your weigh-ins, your log and your
-        shopping list. Nobody sees anyone else&rsquo;s, and nothing you change touches theirs. They
-        can set one up from the sign-in page.
-      </Note>
+        Each account is separate. Others can set one up from the sign-in page.
+        </Note>
 
       {/* Two steps and a password, because there is no third step where you
           get it back. The button stays quiet until you have asked for it —

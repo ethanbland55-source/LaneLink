@@ -662,6 +662,10 @@ each.
 
 ### The rest of what it reads
 
+- **Swim sessions, without logging them.** A day type carries a *typical session* (mixed
+  sets), so nothing needs entering day to day; the review corrects the rest from the scale.
+  Speed, threshold/VO2 max and technique are there for a day type that really is one kind
+  of session — and a speed session is costed *below* an aerobic one, because of the rest.
 - **Your scale's resting burn.** Averaged with the formula when the two agree to within
   15%, as a second estimate built on this body rather than a population.
 - **Cheat meals** now count toward the intake the calibration reads — the meal they

@@ -325,7 +325,7 @@ export function steerPlan(
   if (p.calorie_override != null && p.calorie_override > 0) {
     return hold(
       "Your number, left alone",
-      "You've set the calories yourself, so nothing here changes them. Clear the override on the Plan page to hand it back."
+      "You've set the calories yourself. Clear it on the Plan page to hand it back."
     );
   }
 
@@ -333,7 +333,7 @@ export function steerPlan(
     const have = rate?.readings ?? 0;
     return hold(
       "Waiting on the scale",
-      `${have > 0 ? `${have} weigh-in${have === 1 ? "" : "s"} in the last four weeks. ` : ""}About ${STEER_MIN_READINGS} across a fortnight — first thing in the morning is best — and there's a trend steady enough to steer by. Nothing changes until then.`
+      `${have} of ${STEER_MIN_READINGS} weigh-ins over a fortnight. Nothing changes until then.`
     );
   }
 
@@ -373,7 +373,7 @@ export function steerPlan(
     if (wait) {
       return hold(
         headline,
-        `${detail} The last change came in on ${prettyDay(p.steer_moved_on!)} and takes a few weeks to show on the scale, so nothing moves again before ${prettyDay(wait)}.`,
+        `${detail} Waiting for the last change (${prettyDay(p.steer_moved_on!)}) to show — next move from ${prettyDay(wait)}.`,
         tone,
         { cooldownUntil: wait }
       );
@@ -386,7 +386,7 @@ export function steerPlan(
       const stuck = Math.abs(round25(total * maintenance));
       return hold(
         headline,
-        `${detail} It's already ${stuck} kcal ${total < 0 ? "under" : "over"} maintenance, and that's as far as it goes on its own. If it still isn't landing, check your weight, session lengths and everyday activity on the Plan page.`,
+        `${detail} Already ${stuck} kcal ${total < 0 ? "under" : "over"} maintenance — the limit. Check your weight and sessions on the Plan page.`,
         tone,
         { atLimit: true }
       );
@@ -430,7 +430,7 @@ export function steerPlan(
         -1,
         size,
         headline,
-        `${detail} The weight trend puts the surplus at about ${kcal} kcal a day, so that comes off in one go rather than a little every week — enough to stop the fat going on, not a cut. Protein goes up a touch to protect the muscle, and training days keep their carbohydrate.`,
+        `${detail} The surplus is about ${kcal} kcal a day, so that comes off in one go. Training days keep their carbs.`,
         "watch",
         { decisive: true }
       );
@@ -449,15 +449,15 @@ export function steerPlan(
     const short = comp ? Math.max(0, SCAN_MIN_POINTS - comp.scans) : SCAN_MIN_POINTS;
     const waiting = comp
       ? short > 0
-        ? `${short} more scan${short === 1 ? "" : "s"} and body fat joins in.`
-        : "A few more days between the first scan and the last and body fat joins in."
-      : "Scan on your two scan days and body fat joins in after about two and a half weeks.";
+        ? `Body fat joins in after ${short} more scan${short === 1 ? "" : "s"}.`
+        : "Body fat joins in after a few more days of scans."
+      : "Body fat joins in after about two and a half weeks of scans.";
 
     const se = rate.sePctPerWeek;
     if (rate.pctPerWeek + Z_CUT * se < aim.weight[0] - WEIGHT_ALONE_MARGIN) {
       return ease(
         "Weight is falling — eating a little more",
-        `The trend is ${wWord} against an aim of ${aimWord}. That's clear enough to act on before the scans are in. ${waiting}`
+        `Weight ${wWord}; aim ${aimWord}. ${waiting}`
       );
     }
     if (rate.pctPerWeek - Z_CUT * se > aim.weight[1] + WEIGHT_ALONE_MARGIN) {
@@ -467,13 +467,13 @@ export function steerPlan(
         -1,
         sized(),
         "Weight is climbing fast — trimming a little",
-        `The trend is ${wWord} against an aim of ${aimWord}. Faster than muscle can be built, so some of it is fat. ${waiting}`,
+        `Weight ${wWord}; aim ${aimWord}. ${waiting}`,
         "watch"
       );
     }
     return hold(
       weight === "in" ? "Weight is on track" : "Watching the weight",
-      `The trend is ${wWord}; the aim is ${aimWord}. ${waiting}`,
+      `Weight ${wWord}; aim ${aimWord}. ${waiting}`,
       weight === "in" ? "good" : "neutral"
     );
   }
@@ -506,7 +506,7 @@ export function steerPlan(
       1,
       Math.max(STEER_MAX_STEP, total < 0 ? -total / 2 : 0),
       "Losing weight but body fat is rising",
-      `Weight ${wWord}, body fat ${bfWord}. That combination means muscle is going, not fat — the calories go up now. Check the obvious first: is protein landing every day, are the gym sessions still hard, and were the last scans taken first thing, before food and drink? A dry morning reads fatter than you are.`,
+      `Weight ${wWord}, body fat ${bfWord} — that's muscle going, so calories go up now. Check scans were first thing, before food or drink.`,
       "bad",
       { alarm: true }
     );
@@ -517,7 +517,7 @@ export function steerPlan(
       1,
       Math.max(STEER_MIN_STEP * 2, sized()),
       "Muscle is slipping — eating a little more",
-      `Lean mass is down ${Math.abs(c.leanKgPerMonth).toFixed(1)} kg a month across ${c.scans} scans${c.muscleKgPerMonth != null ? ", and the scale's muscle figure agrees" : ""}. That's the one thing this can't afford to lose.`,
+      `Lean mass is down ${Math.abs(c.leanKgPerMonth).toFixed(1)} kg a month across ${c.scans} scans.`,
       "watch"
     );
   }
@@ -536,7 +536,7 @@ export function steerPlan(
   if (bf === "high" && (weight === "high" || (rising && fatAgain))) {
     return trim(
       rate.kgPerWeek > 0.05 ? "Gaining weight and fat" : "Weight and fat aren't coming off",
-      `Weight ${wWord} and body fat ${bfWord}, against aims of ${aimWord} and ${bfAim}% a month. Too much is going in.`
+      `Weight ${wWord}, body fat ${bfWord}.`
     );
   }
 
@@ -547,11 +547,7 @@ export function steerPlan(
         : rate.kgPerWeek < -0.05
           ? "Weight is falling — eating a little more"
           : "Weight is below the aim — eating a little more",
-      `Weight ${wWord} against an aim of ${aimWord}${bf === "low" ? `, with body fat also dropping faster than aimed (${bfWord})` : ""}. ${
-        p.goal === "cut"
-          ? "Past the aim, what comes off stops being mostly fat."
-          : "More is coming off than the aim asks for, so it eases back a little."
-      }`
+      `Weight ${wWord}; aim ${aimWord}.`
     );
   }
 
@@ -561,7 +557,7 @@ export function steerPlan(
     if (bf === "low") {
       return hold(
         "Gaining quickly — and it's lean",
-        `Weight ${wWord}, faster than the aim of ${aimWord}, but body fat is falling ${bfWord}. That's muscle arriving, not fat. Leaving it alone.`,
+        `Weight ${wWord} with body fat falling ${bfWord} — that's muscle. Leaving it.`,
         "good"
       );
     }
@@ -569,7 +565,7 @@ export function steerPlan(
       -1,
       sized(),
       p.goal === "cut" ? "Not coming off — trimming" : "Weight climbing faster than aimed — trimming",
-      `Weight ${wWord} against an aim of ${aimWord}. Body fat ${bfWord} — not clearly rising, so this is a routine step rather than the full cut.`,
+      `Weight ${wWord}; aim ${aimWord}. Body fat ${bfWord}.`,
       "watch"
     );
   }
@@ -591,7 +587,7 @@ export function steerPlan(
     if (p.last_review?.bf?.reading !== "high") {
       return hold(
         arrived ? "Body fat may be drifting up" : "Body fat may not be coming down",
-        `Weight is on track (${wWord}), but body fat reads ${bfWord} against an aim of ${bfAim}% a month. One reading could be hydration, so this checks again next week — if the next review says the same, it trims a little.`,
+        `Body fat reads ${bfWord}. Checking again next week before acting.`,
         "watch"
       );
     }
@@ -601,7 +597,7 @@ export function steerPlan(
         -1,
         STEER_MIN_STEP,
         "Drifting above your target — a small trim",
-        `Body fat is ${bfWord}, a little above holding steady at your target of ${p.bf_target_pct}%, on two reviews running. 1% off — the smallest move there is — to keep you in range.`,
+        `Body fat ${bfWord} at your ${p.bf_target_pct}% target, two weeks running. 1% off to stay in range.`,
         "watch"
       );
     }
@@ -609,7 +605,7 @@ export function steerPlan(
       -1,
       FAT_NUDGE,
       "Body fat isn't coming down — a small nudge",
-      `Weight is on track (${wWord}), but body fat is ${bfWord} against an aim of ${bfAim}% a month, on two reviews running. A 2% nudge — slow and steady, with the training days still fully fuelled.`,
+      `Weight on track, body fat ${bfWord} two weeks running. A 2% nudge.`,
       "watch"
     );
   }
@@ -624,7 +620,7 @@ export function steerPlan(
       1,
       Math.min(EASE_STEP, -total),
       "At your body fat target — easing the cut out",
-      `Body fat is about ${bfNow?.toFixed(1)}% against a target of ${p.bf_target_pct}%. From here the job is to hold it and fuel the training, so the deficit comes back out ${Math.round(EASE_STEP * 100 * 10) / 10}% at a time.`,
+      `Body fat about ${bfNow?.toFixed(1)}%, target ${p.bf_target_pct}%. The cut comes back out ${Math.round(EASE_STEP * 100 * 10) / 10}% at a time.`,
       "good"
     );
   }
@@ -632,7 +628,7 @@ export function steerPlan(
   if (arrived) {
     return hold(
       "At your body fat target — holding and fuelling",
-      `Body fat is about ${bfNow?.toFixed(1)}% against a target of ${p.bf_target_pct}%. Weight ${wWord}, body fat ${bfWord}. The aim now is to hold here with the training fully fuelled; a slow climb in weight from muscle is fine.`,
+      `Body fat about ${bfNow?.toFixed(1)}%, target ${p.bf_target_pct}%. Holding here, fully fuelled.`,
       "good"
     );
   }
@@ -640,14 +636,14 @@ export function steerPlan(
   if (bf === "low") {
     return hold(
       "On track — fat coming off quickly",
-      `Weight ${wWord}, right where it should be, and body fat ${bfWord} — faster than the aim of ${bfAim}% a month. While the weight holds, that's good news. If the weight starts falling, it'll ease off.`,
+      `Weight ${wWord}, body fat ${bfWord}. Good while weight holds.`,
       "good"
     );
   }
 
   return hold(
     "On track",
-    `Weight ${wWord} and body fat ${bfWord} — neither is clearly outside the aim. Nothing to fix, so nothing moves.`,
+    `Weight ${wWord}, body fat ${bfWord}. Nothing to change.`,
     "good"
   );
 }

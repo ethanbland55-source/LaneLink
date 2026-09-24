@@ -792,11 +792,7 @@ export default function PlanPage() {
               title="Some days lifted above your deficit"
               detail="Held at the energy floor on purpose."
             >
-              <Note label="Why">
-                A weekly average can look sensible while a day with two sessions in it leaves too
-                little to run a body on, and the scale will not tell you. The fat can come off next
-                month; a season cannot be got back.
-              </Note>
+              <Note label="Why">Two-session days are kept fuelled, deficit or not.</Note>
             </Flag>
           )}
 
@@ -809,11 +805,7 @@ export default function PlanPage() {
                 Math.min(...lowFat.map((f) => f.pctKcal)) * 100
               ).toFixed(0)}% of calories. Athletes want 20–35%.`}
             >
-              <Note label="Why it matters">
-                Under 20% buys no performance, and low-fat intakes in men track with lower
-                testosterone — which is the side of this doing the muscle-keeping. Raise fat per kg
-                in your numbers below.
-              </Note>
+              <Note label="Why it matters">Under 20% costs hormones, not just taste. Raise fat per kg below.</Note>
             </Flag>
           )}
 
@@ -840,12 +832,7 @@ export default function PlanPage() {
               title={underFuelled.map((c) => `${c.name} is ${c.lowGrams - c.grams} g short`).join(", ")}
               detail="Carbohydrate, against what the training asks for."
             >
-              <Note label="What to do about it">
-                The bands assume energy balance, so in a deficit you can&rsquo;t clear them and
-                shouldn&rsquo;t try. What you can do is put the carbohydrate you do have around the
-                session rather than spreading it flat: a top-up before and a refill after buy more
-                training quality than the same grams at breakfast.
-              </Note>
+              <Note label="What to do about it">Put the carbs around the session: a top-up before, a refill after.</Note>
             </Flag>
           )}
 
@@ -944,15 +931,14 @@ export default function PlanPage() {
 
         {!profile.next_review && pending.length === 0 && profile.auto_roll && (
           <p className="mt-3 text-xs leading-relaxed text-[var(--color-mut)]">
-            Next week&rsquo;s plan is worked out on{" "}
+            Next week is worked out{" "}
             {schedule && new Date(schedule.reviewOn + "T12:00:00").toLocaleDateString("en-GB", {
               weekday: "long",
               day: "numeric",
               month: "short",
-            })}{" "}
-            — the day before you shop — from your weigh-ins and scans, and shown here in full
-            before anything changes.
-          </p>
+            })}
+            , before you shop.
+            </p>
         )}
 
         <button
@@ -1108,9 +1094,7 @@ export default function PlanPage() {
 
             {meal.batch && meal.ingredients.length > 0 && (
               <Note label={`One serving is ${Math.round(totalGrams(meal))} g`}>
-                Recalculate can change how much of it you plate, but not the ratio inside it — once
-                it&rsquo;s cooked, that&rsquo;s fixed. The cook list on the Shop page turns this
-                into what to cook and how much to serve.
+                The serving can change; the recipe inside it can&rsquo;t.
               </Note>
             )}
 
@@ -1145,11 +1129,7 @@ export default function PlanPage() {
             </p>
           )}
         </div>
-        <Note label="What these are">
-          A dose you take, not a portion you weigh — so the fit counts them toward the day and
-          never resizes them to hit a number. Each one is graded on the evidence behind it, which
-          for some of them is the most useful thing on the card.
-        </Note>
+        <Note label="What these are">Taken, not weighed — counted in the day and graded on the evidence.</Note>
 
         {supplements.length > 0 && (
           <div className="mt-3 space-y-1.5">
@@ -1196,7 +1176,7 @@ export default function PlanPage() {
           <div className="mr-auto">
             <SectionLabel
               title="Your week"
-              info="Describe the kinds of day you have, then say which is which. Calories follow the training, and the seven-day average still lands on your goal."
+              info="Your kinds of day, and which weekday is which."
             />
           </div>
           <button
@@ -1227,10 +1207,7 @@ export default function PlanPage() {
                   </button>
                 }
               >
-                <Note label="What changes">
-                  Sessions works each day out from what you actually did, which is what the day
-                  types below are for. Your targets will move.
-                </Note>
+                <Note label="What changes">Targets follow your sessions.</Note>
               </Flag>
             )}
 
@@ -1334,7 +1311,7 @@ export default function PlanPage() {
           <section className="card px-5 py-5">
             <SectionLabel
               title="Your goal"
-              info="No start date and no end — it runs for as long as you do. The goal sets where the calories start, and every Monday your weigh-ins and scans are checked against the two aims below."
+              info="Where the calories start. The Friday review steers from there."
             />
 
             <div className="mt-3 grid grid-cols-2 gap-2">
@@ -1426,9 +1403,7 @@ export default function PlanPage() {
           </div>
 
           <Note label="How to spread it">
-            {protein.notes.join(" ")} A dose under about {Math.round(protein.thresholdG)} g
-            doesn&rsquo;t clear the threshold that switches muscle protein synthesis on — the
-            protein still gets used, the signal just isn&rsquo;t sent.
+            {protein.notes.join(" ")} About {Math.round(protein.thresholdG)} g a dose switches muscle building on.
           </Note>
         </section>
       )}
@@ -1479,13 +1454,8 @@ export default function PlanPage() {
           </select>
         </label>
         <p className="mt-2 text-xs leading-relaxed text-[var(--color-mut)]">
-          Not the same day as the shop, and shouldn't be. You buy on{" "}
-          {DOW_LABELS[profile.shop_start_dow].toLowerCase()} for food you start eating on{" "}
-          {DOW_LABELS[profile.plan_roll_dow].toLowerCase()} — so the shopping list is built
-          against next week's targets, while the plan you're still eating holds still until
-          then. Anything your weigh-ins and scans change lands on this day too, once a week
-          rather than every morning.
-        </p>
+          The day next week&rsquo;s plan comes in. It&rsquo;s decided the day before you shop.
+          </p>
 
         <Link href="/shop" className="btn btn-accent mt-4 w-full">
           Open the shopping list
@@ -1565,10 +1535,8 @@ export default function PlanPage() {
             </div>
             {proteinIsAssumed(profile) && (
               <p className="mt-2 text-xs leading-relaxed text-[var(--color-mut)]">
-                No body fat figure yet, so lean mass is assumed rather than known — the target
-                is converted rather than applied to bodyweight, which would silently add about
-                15%. Your first scan on the Progress page makes it exact.
-              </p>
+                No scan yet — lean mass is estimated until your first one.
+                </p>
             )}
 
             {/* A figure meant for lean mass, applied to bodyweight, is a 15%
@@ -1601,9 +1569,7 @@ export default function PlanPage() {
                 }
               >
                 <Note label="Why it matters">
-                  {goalDef(profile.goal).label} means {goalDef(profile.goal).protein.perKg} g per
-                  kg of lean mass. The same figure applied to bodyweight is about 15% more protein
-                  than the goal intended, and it looks identical in the box.
+                  Per kg of lean mass is about 15% less protein than per kg of bodyweight.
                 </Note>
               </Flag>
             )}
@@ -1631,16 +1597,11 @@ export default function PlanPage() {
             </label>
             {profile.adapt_macros && plan.macroShape.shaped && (
               <p className="mt-2 text-xs leading-relaxed text-[var(--color-mut)]">
-                In force this week:{" "}
-                <b className="text-[#f2f4f7]">
-                  {plan.macroShape.proteinPerKg.toFixed(2)} g/kg protein
-                </b>{" "}
-                and{" "}
-                <b className="text-[#f2f4f7]">{plan.macroShape.fatPerKg.toFixed(2)} g/kg fat</b>,
-                moved from your {profile.protein_per_kg} and {profile.fat_per_kg} by the steer.
-                Your own figures above are what it moves away from and back toward — they
-                aren&rsquo;t overwritten.
-              </p>
+                This week:{" "}
+                <b className="text-[#f2f4f7]">{plan.macroShape.proteinPerKg.toFixed(2)} g/kg protein</b>,{" "}
+                <b className="text-[#f2f4f7]">{plan.macroShape.fatPerKg.toFixed(2)} g/kg fat</b> — steered
+                from your {profile.protein_per_kg} and {profile.fat_per_kg}.
+                </p>
             )}
           </div>
 
@@ -1657,9 +1618,8 @@ export default function PlanPage() {
             </Field>
             {profile.calorie_override != null && (
               <p className="mt-2 text-xs leading-relaxed text-[var(--color-mut)]">
-                Using your number as the seven-day average. The shape of the week still comes from
-                your sessions, and Recalculate will default to landing this figure exactly.
-              </p>
+                Your number is the weekly average.
+                </p>
             )}
           </div>
         </div>

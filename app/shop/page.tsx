@@ -277,12 +277,7 @@ export default function ShopPage() {
                 See it on the Plan page
               </Link>
             </p>
-            <Note label="Why next week's">
-              The food you buy today is for the week starting {pretty(pending[0].apply_on)}, so the
-              list is built against those portions. The Plan page keeps showing what&rsquo;s in the
-              fridge until the evening before, when the last of that day&rsquo;s meals is ticked
-              off — in time to cook to.
-            </Note>
+            <Note label="Why next week's">The food you buy now is for next week.</Note>
           </div>
         )}
 
@@ -400,7 +395,7 @@ export default function ShopPage() {
             <section className="card px-4 py-4 sm:px-5">
               <SectionLabel
                 title="Cook list"
-                info="Weigh each one out, cook it, then divide the lot evenly between the containers. Anything listed as added on the day stays out of the box until you eat it."
+                info="Cook each one, then split it evenly between the containers."
               />
               <p className="mt-1.5 text-xs text-[var(--color-mut)]">
                 Totals for the whole window. Weigh, cook, divide.
@@ -427,14 +422,12 @@ export default function ShopPage() {
             <section className="card px-4 py-4 sm:px-5">
               <SectionLabel
                 title="In the cupboard"
-                info="What you bought, less every meal you've logged since. Next week's list takes it off before it tells you what to buy. If something's gone off or run out, change it here."
+                info="What's left. It comes off next week's list."
               />
               {shelf.some((x) => !x.tracking) && (
                 <p className="mt-2 text-xs leading-relaxed" style={{ color: "var(--color-carbs)" }}>
-                  Figures marked &ldquo;not tracking yet&rdquo; are ones you typed in before the
-                  cupboard kept itself up to date. Check them once and correct any that are off —
-                  from then on, and for anything you tick in a shop, they run down as you log meals.
-                </p>
+                  &ldquo;Not tracking yet&rdquo; — check these once.
+                  </p>
               )}
               <div className="mt-3 space-y-1.5">
                 {shelf.map((x) => (
@@ -445,12 +438,7 @@ export default function ShopPage() {
           )}
 
           <div className="px-1 pb-4 text-center">
-            <Note label="How these amounts are worked out">
-              Rounded up to the nearest pack, with what&rsquo;s already in the cupboard taken off
-              first. Ticking a line adds what you bought to the cupboard, and every meal you log
-              takes its share back out, so the figure keeps itself up to date. Weights are as
-              you&rsquo;d weigh them for the plan — raw for meat, dry for rice and pasta.
-            </Note>
+            <Note label="How these are worked out">Rounded up to packs, with the cupboard taken off first.</Note>
           </div>
         </>
       )}

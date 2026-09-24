@@ -239,17 +239,14 @@ export function CheatSheet({
           </div>
           {estimated && (
             <p className="mt-2 text-xs leading-relaxed text-[var(--color-mut)]">
-              Left blank, so they&rsquo;re estimated at roughly a fifth protein and a third fat —
-              what a meal out usually is. Fill them in if the place publishes them and the day
-              is logged properly rather than approximately.
-            </p>
+              Blank macros are estimated (a fifth protein, a third fat).
+              </p>
           )}
           {!estimated && (kcal ?? 0) > 0 && Math.abs(preview.kcal - (kcal ?? 0)) > 60 && (
             <p className="mt-2 text-xs leading-relaxed text-[var(--color-carbs)]">
-              Those macros come to {Math.round(preview.protein * 4 + preview.carbs * 4 + preview.fat * 9)}{" "}
-              kcal, not {Math.round(kcal ?? 0)}. Not necessarily wrong — labels round — but worth a
-              second look.
-            </p>
+              Those macros make {Math.round(preview.protein * 4 + preview.carbs * 4 + preview.fat * 9)} kcal,
+              not {Math.round(kcal ?? 0)} — worth a check.
+              </p>
           )}
         </div>
       </div>
