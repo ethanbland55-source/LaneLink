@@ -253,14 +253,12 @@ Two separate days, then:
   is for. It looks *forward*: a list built on Saturday is built against the
   targets that will apply on roll day, because that's the week the food is for.
 - **Roll day** (`plan_roll_dow`, Monday by default) is when the plan itself
-  changes — the weekly snapshot of trend weight and body fat is taken, and the
-  block's drift steps.
+  changes — what the weekly review decided the day before shopping comes into
+  force (or Sunday evening, once that day's meals are ticked off).
 
-The drift steps **once a week, on roll day**, rather than a little every
+The target moves **once a week, on roll day**, rather than a little every
 morning. A target that slides daily means Sunday's containers are wrong by
-Wednesday and the shopping list disagrees with the plan it came from. Across the
-block the average adjustment is the same either way; holding it still for the
-week is simply easier to cook against.
+Wednesday and the shopping list disagrees with the plan it came from.
 
 ### Staged changes
 
@@ -450,36 +448,14 @@ Two changes to the estimates themselves:
   waist from a gained centimetre of shoulder, so a swimmer building a back and
   losing belly fat can watch it move the wrong way while everything goes right.
 
-## Blocks, and toned maintenance
+## Toned maintenance
 
-A goal isn't a percentage, it's a shape over time. A **block** has a name, a start, a
-length in weeks, and a target that can move from one figure to another across it.
-
-**Toned maintenance** is the interesting one. Recomposition — losing fat and gaining
-muscle at the same time — is well documented in trained people, and the levers that
-decide whether it happens are protein, training, and an energy balance somewhere near
-zero rather than a large deficit. So the block:
-
-- **starts level with maintenance** and drifts to about −8% by the end, so nothing
-  about training suffers while you settle in and the deficit arrives slowly enough that
-  the scale barely reacts,
-- **puts protein on lean mass** — 2.8 g/kg of fat-free mass, mid-range of the
-  2.6–3.5 g/kg FFM the recomposition literature points at, which for 78 kg at 14% works
-  out around 188 g, or 2.4 g/kg of bodyweight. Without a body fat figure it *converts*
-  using a plausible one rather than falling back — applying a per-lean-mass number to
-  scale weight would silently add about 15% (218 g instead of 179 g) — and the result is
-  clamped either way so a mistyped percentage can't ask you to eat 400 g,
-- **holds protein and fat flat on a rest day** and lets carbohydrate absorb the whole
-  swing, with a floor under carbs and a hard 0.45 g/kg floor under fat. If the carb
-  floor ever squeezes fat below 0.6 g/kg the Plan page says so, because a long block on
-  very low fat isn't worth the calories it saves.
-
-The drift composes with everything else: day types still set the shape of the week,
-the week still averages exactly on the block's target for today, and the shopping list
-still buys the plan you actually eat.
-
-Cutting, maintaining and bulking are the same machinery with the start and end set
-equal. Any of them can be given a ramp if you want one.
+Recomposition — losing fat and gaining muscle at the same time — is well documented in
+trained people (Barakat et al. 2020), and the levers that decide whether it happens are
+protein, hard training, and an energy balance at or a little under maintenance rather
+than a real deficit. It used to be a dated **block** that walked the calories from one
+percentage to another; it is now a pace plus a weekly review that steers by what your
+weight and scans actually do. See [The weekly review](#the-weekly-review).
 
 ## Batch cooking
 
@@ -570,41 +546,127 @@ call all of it fat. Over a few weeks that is usually right. Over a few days it
 is mostly water. And most of the error against a scan is a fixed offset for
 your build, which is why the direction it moves is worth more than the number.
 
-## The weekly roll
+## The weekly review
 
-Your weight moves every day. **Your plan must not.**
+Your weight moves every day. **Your plan must not.** So the plan is decided once a
+week, from the trend rather than the scale, and it changes on one day — the day you
+start eating the food you cooked for it.
 
-If targets tracked the scale, Tuesday's porridge would be a different size from
-Monday's for reasons that are mostly water, the shopping list would disagree
-with the plan it was built from by Wednesday, and the containers in the fridge
-would be wrong for the day they were opened.
-
-So the plan is built on a **snapshot**, taken once a week **on your shopping
-day**. Between rolls the numbers hold perfectly still: what you bought is what
-you cook is what you eat. On shopping day the trend weight and the latest body
-fat figure are read once, every target is rebuilt around them, and that is the
-week you then shop for.
-
-It reads the **trend**, not the scale — a single reading is noise, and the EWMA
-of the last fortnight is the number that means something. It won't run at all
-on fewer than three weigh-ins, because rebuilding a week's targets on one
-reading would be worse than leaving last week's alone.
+### Three days, three jobs
 
 ```
-  Sat  measure ──► corrected for the time ──► trend
-                                               │
-                                               ▼
-                                        roll the snapshot
-                                               │
-                          ┌────────────────────┼────────────────────┐
-                          ▼                    ▼                    ▼
-                    day-type targets    rebalance the week    shopping list
-  Sun–Fri  ............ all of it holds still ............
+  Fri  review   read the scale and the scans ─► decide ─► re-fit ─► stage for Monday
+  Sat  shop     the list already buys next week's portions
+  Sun  cook     the new plan comes in as soon as Sunday's meals are all ticked off
+  Mon           …or first thing Monday if they weren't
 ```
 
-Happens by itself when you open the app on or after shopping day; there's a
-switch on Progress to do it by hand instead, and a line saying what the plan is
-built on and when it changes next.
+It used to be decided on Monday morning, which is the one day it is guaranteed to be
+too late: Saturday's shop had bought for the old portions and Sunday night's cooking
+had put them in boxes. Now the review runs the **day before shopping** (Friday for a
+Saturday shop), and everything it decides — the calorie target, the protein and fat per
+kilo, the portions — is **staged**, never written to the plan in force. A weigh-in or
+scan saved on review day re-runs it, so Friday morning's scan counts. The Plan page shows
+next week in full — every meal, every food, what it was and what it becomes — with a
+button to keep this week's plan instead.
+
+Scan days are the day the plan comes in and review day (Monday and Friday), so the
+freshest scan is the one the review reads.
+
+### Reading the scale honestly
+
+Two measurement faults were found on real data and fixed:
+
+- **The trend started in the wrong place.** It was seeded with the first reading — an
+  evening one the time-of-day correction took 1.9 kg off — so it spent a month climbing
+  back to the true weight, and a climbing trend reads as gaining. The review said
+  +0.10 kg a week while every morning reading was falling. It now seeds from the
+  median of the first week.
+- **The rate was the slope of a smoothed line**, which lags and has no error bar. It is
+  now a weighted straight line through the corrected readings over four weeks, with a
+  standard error. Evening readings count about a third as much as morning ones: the
+  correction takes the *average* day's food off, and no day is average.
+
+Body fat gets the same treatment: a slope over six weeks of scans with its own standard
+error, never trusted below half a point of scan-to-scan scatter (consumer eight-electrode
+scales repeat well within a morning and drift with hydration between mornings).
+
+A reading only counts as outside its aim when it is outside **by more than its error
+bar** — one standard error before cutting, half of one before easing, because a missed
+cut costs a week of slightly too much food and a false one costs a week of training
+under-fuelled in season.
+
+### What it does about it
+
+The aim for toned maintenance: **weight holding or climbing** (−0.05 to +0.2% a week —
+the slow climb muscle brings is on track), **body fat drifting down** (0.15–0.6 points a
+month — slow, on purpose). Then:
+
+| weight | body fat | what happens |
+| --- | --- | --- |
+| climbing | clearly rising | **the surplus comes off in one move** — measured from the weight gain past a quarter-kilo-a-month muscle allowance, 3–7% of maintenance, undamped |
+| on track | clearly rising | a 2% nudge, once two reviews in a row agree |
+| falling | falling faster than aimed | eat a little more: +1.5% at a time |
+| falling | rising | **muscle is going** — up at once, by 3% or half the deficit |
+| climbing | falling | that's muscle — leave it |
+| on track | on track | nothing moves |
+
+After any move it **waits** two weeks (three before a second cut): weight lags intake,
+and the first week of any cut is mostly glycogen and its water, not fat. The steer never
+accounts for more than ±12% of maintenance; past that the problem is an input.
+
+**Protein and fat move with it.** In a cut, fat keeps its share of the day and protein
+rises by 0.15 g per kg of lean mass at −7% (Helms et al. 2014; Refalo, Trexler & Helms
+2025) — modest on purpose, because at 2.45 g/kg of lean mass a swimmer is already at
+2.1 g/kg of bodyweight, inside the 1.6–2.4 g/kg Hector & Phillips (2018) give athletes
+in a deficit, and every extra gram of protein on a fixed budget is carbohydrate the pool
+doesn't get.
+
+### Fuelled first
+
+A recomposition cut **never comes out of training fuel**. On any day with real training,
+carbohydrate is held within half a gram per kilo of the bottom of its band (Burke 2011;
+Shaw 2014 — 6–10 g/kg for one to three hours a day), and the day is lifted by whatever
+that costs. The energy-availability floor (30 kcal per kg of lean mass, Mountjoy et al.
+2023) still sits under every day. The cut comes from the rest day, from fat and from how
+deep it can go — fat can come off next month; a training block cannot be got back.
+
+### A target, then hold
+
+Recomposition is a way to get to a body, not somewhere to stay. Set a **body fat target**
+on the Progress page, in your scale's own terms (it reads a few points off a lab method,
+one way or the other, for everyone). International-level male swimmers sit around 8–12%
+on DXA, and leaner is not automatically faster in water. Once the scan trend reaches the
+target, the fat aim flattens to "hold here", any cut still running eases back out, and
+the plan keeps you within about a point of it with small nudges either way — weight free
+to climb on muscle. It only starts recomposing again if body fat climbs a full point
+above the target, so one wet or dry morning can't flip it.
+
+### Does it work?
+
+`bench/closed-loop.ts` closes the loop: a simulated swimmer on the real plan, whose true
+maintenance the app doesn't know, with realistic scale and scan noise (a quarter of
+weigh-ins in the evening), reviewed every Friday for sixteen to twenty weeks, forty runs
+each.
+
+| scenario | result |
+| --- | --- |
+| A. Eating ~250 kcal a day over (weekly meal out) | cuts by week 5 in the median run, in one sized move in 36/40; fat gain over five weeks goes from 0.79 kg to 0.13 kg |
+| B. Exactly at maintenance | no cut in the median run; a big one in 3/40 |
+| C. Already recomposing as aimed | a big cut in 1/40 runs — it leaves it alone |
+| D. Eating ~300 kcal too little | eases up in 40/40, cuts in 1/40 |
+| E. Far over, past the limit | goes to −10% and says the problem is an input |
+| F. Cut running, target one point away | eases out at the target in 40/40, settles at maintenance, no big cut after |
+
+`bench/steer.ts` checks each reading against the grid above, and the cooldown.
+
+### The rest of what it reads
+
+- **Your scale's resting burn.** Averaged with the formula when the two agree to within
+  15%, as a second estimate built on this body rather than a population.
+- **Cheat meals** now count toward the intake the calibration reads — the meal they
+  replace is never ticked off, so leaving them out read a 2,500 kcal meal out as ~350 kcal
+  a day less food than was eaten.
 
 ## Meal times
 
@@ -1134,6 +1196,23 @@ they are what a sports dietitian would actually work from.
   efficacy of creatine supplementation. *J Int Soc Sports Nutr* 14:18.
 - Owens DJ, Allison R, Close GL (2018). Vitamin D and the Athlete: Current
   Perspectives and New Challenges. *Sports Med* 48(Suppl 1):3–16.
+
+**Steering a recomposition**
+- Murphy CH, Koehler K (2022). Energy deficiency impairs resistance training gains in
+  lean mass but not strength: a meta-analysis and meta-regression. *Scand J Med Sci
+  Sports* 32(1):125–137.
+- Garthe I, Raastad T, Refsnes PE, Koivisto A, Sundgot-Borgen J (2011). Effect of two
+  different weight-loss rates on body composition and strength and power-related
+  performance in elite athletes. *Int J Sport Nutr Exerc Metab* 21(2):97–104.
+- Hector AJ, Phillips SM (2018). Protein recommendations for weight loss in elite
+  athletes: a focus on body composition and performance. *Int J Sport Nutr Exerc Metab*
+  28(2):170–177.
+- Refalo MC, Trexler ET, Helms ER (2025). Effect of dietary protein on fat-free mass in
+  energy restricted, resistance-trained individuals: an updated systematic review with
+  meta-regression. *Strength Cond J*.
+- Mountjoy M, Ackerman KE, Bailey DM, et al. (2023). 2023 International Olympic
+  Committee's (IOC) consensus statement on Relative Energy Deficiency in Sport (REDs).
+  *Br J Sports Med* 57:1073–1097.
 
 **Body composition**
 - Hodgdon JA, Beckett MB (1984). Prediction of percent body fat for U.S. Navy men

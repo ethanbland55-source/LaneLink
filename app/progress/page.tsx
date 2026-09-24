@@ -5,7 +5,7 @@ import { Stat } from "../macro-ui";
 import { TrendChart } from "../trend-chart";
 import { NumberField } from "../number-field";
 import {
-  aimFor,
+  aimNow,
   buildWeekPlan,
   dayKey,
   goalDef,
@@ -28,8 +28,8 @@ import {
   type ScanMetric,
   type SegmentKey,
 } from "@/lib/scan";
-import { applyRoll, rollDelta, rollState } from "@/lib/weekly";
-import { STEER_MIN_READINGS, steerPlan, type Reading } from "@/lib/steer";
+import { reviewDow, reviewSchedule, rollState } from "@/lib/weekly";
+import { STEER_MIN_READINGS, bfNowOf, steerPlan, steerSignals, type Reading } from "@/lib/steer";
 import { Note } from "../explain";
 import { Flag } from "../flag";
 import {
@@ -78,6 +78,8 @@ export default function ProgressPage() {
   const [weight, setWeight] = useState("");
   const [atTime, setAtTime] = useState("");
   const [scan, setScan] = useState<ScanForm>(EMPTY_SCAN);
+  /** The body fat target being typed, before it's saved. */
+  const [targetDraft, setTargetDraft] = useState<number | null | undefined>(undefined);
   /** The scan form open on a day that isn't asking for it. */
   const [editing, setEditing] = useState(false);
 
@@ -119,13 +121,33 @@ export default function ProgressPage() {
     () => trend.map((p) => ({ day: p.day, value: p.weight, trend: p.trend })),
     [trend]
   );
-  const rate = useMemo(() => weightRate(entries), [entries]);
+  // The readout shows twelve weeks of scans; the steer reads six weeks of them
+  // and four of weight, with an error bar on each. See `steerSignals`.
   const comp = useMemo(() => composition(entries), [entries]);
+  const signals = useMemo(() => steerSignals(entries), [entries]);
+  const rate = signals.rate;
 
-  const steer = useMemo(
-    () => (profile && plan ? steerPlan(profile, rate, comp, plan.maintenance) : null),
-    [profile, plan, rate, comp]
+  const schedule = useMemo(
+    () => (profile ? reviewSchedule(profile, dayKey()) : null),
+    [profile]
   );
+
+  /**
+   * What the review would decide with today's data — or, once it has run, what
+   * it did decide. The staged one wins: it is the decision the shopping list is
+   * already buying for, and a preview that disagreed with it would be two
+   * answers on one screen.
+   */
+  const steer = useMemo(
+    () =>
+      profile && plan
+        ? steerPlan(profile, signals.rate, signals.comp, plan.maintenance, {
+            applyOn: schedule?.rollOn,
+          })
+        : null,
+    [profile, plan, signals, schedule]
+  );
+  const decided = profile?.next_review ?? null;
 
   const cal = useMemo(
     () => (plan ? calibrate(entries, intake, plan.maintenance) : null),
@@ -173,19 +195,15 @@ export default function ProgressPage() {
     () => (profile ? rollState(profile, entries, today) : null),
     [profile, entries, today]
   );
-  const rollMove = useMemo(
-    () => (profile && roll?.figures ? rollDelta(profile, roll.figures) : { kg: 0, bf: null }),
-    [profile, roll]
-  );
-
   /**
-   * The two days to scan on are the two days the plan already turns on: the
-   * day it rolls, and the day you shop. Nothing new to remember.
+   * Scan on the day the plan comes in and on the day next week is decided —
+   * Monday and Friday for a Saturday shop — so the freshest scan is the one
+   * the review reads, rather than arriving the morning after it.
    */
   const scanDows = useMemo(() => {
     if (!profile) return [] as number[];
     const r = profile.plan_roll_dow;
-    const s = profile.shop_start_dow;
+    const s = reviewDow(profile);
     return r === s ? [r] : [r, s].sort((a, b) => ((a + 6) % 7) - ((b + 6) % 7));
   }, [profile]);
 
@@ -244,27 +262,20 @@ export default function ProgressPage() {
   }
 
   /**
-   * Rebuild this week's targets from the trend.
+   * Work next week out now rather than waiting for review day.
    *
-   * Stamped with the roll day it is *for*, not today, so pressing it on a
-   * Tuesday still counts as this week's roll and it won't ask again until the
-   * next one comes round. The steer rides along: the snapshot and the calorie
-   * step are one decision taken at one moment, never two that can disagree.
+   * It stages for the coming roll day exactly as the automatic one does and
+   * never touches the plan in force; review day re-runs it with that day's
+   * weigh-ins.
    */
-  async function doRoll() {
-    if (!profile || !roll?.figures) return;
-    const next = applyRoll(profile, roll.figures, roll.dueOn, steer ?? undefined);
-    setProfile(next);
-    await fetch("/api/profile", {
-      method: "PUT",
-      headers: { "content-type": "application/json" },
-      body: JSON.stringify(next),
-    });
-    say(
-      steer?.moving
-        ? `Rebuilt on ${next.plan_weight_kg} kg, ${steer.kcal > 0 ? "+" : ""}${steer.kcal} kcal`
-        : `Plan rebuilt on ${next.plan_weight_kg} kg`
-    );
+  const [reviewing, setReviewing] = useState(false);
+  async function reviewNow() {
+    setReviewing(true);
+    const r = await fetch("/api/review", { method: "POST" }).then((x) => x.json());
+    setReviewing(false);
+    if (r?.error) return say(r.error);
+    await load();
+    say("Next week worked out — see the Plan page");
   }
 
   async function patch(change: Partial<Profile>, msg: string) {
@@ -283,7 +294,8 @@ export default function ProgressPage() {
     return <p className="py-24 text-center text-sm text-[var(--color-mut)]">Loading…</p>;
   }
 
-  const aim = aimFor(profile.goal, profile.pace);
+  // The aim in force — the hold-and-fuel one once the body fat target is reached.
+  const aim = aimNow(profile, bfNowOf(signals.comp), steer.atTarget);
   const showForm = editing || (scanToday && !scannedToday);
   const scanDayWords = scanDows.map((d) => DOW_LABELS[d]).join(" and ");
   const latestBmr = lastScan?.extras.bmr_kcal ?? null;
@@ -307,7 +319,10 @@ export default function ProgressPage() {
           <p className="label mr-auto">Weigh in</p>
           <p className="text-xs text-[var(--color-mut)]">{prettyDay(today)}</p>
         </div>
-        <p className="mt-1 text-xs text-[var(--color-mut)]">Every day, any time.</p>
+        <p className="mt-1 text-xs text-[var(--color-mut)]">
+          Every day. First thing — after the loo, before food or drink — is the reading that
+          counts most.
+        </p>
 
         <div className="mt-3 grid grid-cols-2 gap-3">
           <Measure label="Weight" unit="kg" value={weight} onChange={setWeight} />
@@ -339,7 +354,10 @@ export default function ProgressPage() {
         <Note label="Weighed at an odd time?">
           You don&rsquo;t have to weigh at the same time every day — say when you did and the
           reading is corrected to what it would have been first thing before it touches the trend.
-          You gain about a kilo through the day and none of it is fat.{" "}
+          You gain one to two and a half kilos through the day and none of it is fat, which is why
+          an evening number can make you feel you&rsquo;re putting weight on when you aren&rsquo;t.
+          The correction is an average and your days aren&rsquo;t, so an evening reading counts
+          about a third as much as a morning one.{" "}
           {offsets.measured
             ? `Measured on you: about ${(offsets.risePerHour * 1000).toFixed(0)} g an hour awake${
                 offsets.timed > 0
@@ -477,71 +495,156 @@ export default function ProgressPage() {
         <div className="mt-3 space-y-2.5">
           <StatusRow
             label="Weight"
-            value={rate ? `${signed(rate.kgPerWeek, 2)} kg a week` : "—"}
+            value={rate ? `${signed(rate.kgPerWeek, 2)} ±${rate.seKgPerWeek.toFixed(2)} kg/wk` : "—"}
             aimText={weightAimText(aim.weight, rate?.current ?? trendNow)}
             reading={steer.weight}
             waiting={`${rate?.readings ?? 0} of ${STEER_MIN_READINGS} weigh-ins, over two weeks`}
           />
           <StatusRow
             label="Body fat"
-            value={comp?.settled ? `${signed(comp.bfPtsPerMonth, 1)}% a month` : "—"}
+            value={
+              signals.comp?.settled
+                ? `${signed(signals.comp.bfPtsPerMonth, 1)} ±${signals.comp.bfSePtsPerMonth.toFixed(1)}%/mo`
+                : "—"
+            }
             aimText={bfAimText(aim.bf)}
             reading={steer.bf}
             waiting={
-              comp
-                ? `${comp.scans} of ${SCAN_MIN_POINTS}+ scans, ~3 weeks`
+              signals.comp
+                ? `${signals.comp.scans} of ${SCAN_MIN_POINTS}+ scans, ~2½ weeks`
                 : "starts with your first scan"
             }
           />
         </div>
 
-        <div className="mt-4 rounded-xl px-4 py-3" style={{ background: "#0e1013" }}>
-          <p
-            className="text-sm font-semibold"
-            style={{
-              color:
-                steer.tone === "good"
-                  ? "var(--color-accent)"
-                  : steer.tone === "bad"
-                    ? "var(--color-fat)"
-                    : steer.tone === "watch"
-                      ? "var(--color-carbs)"
-                      : "var(--color-fg)",
-            }}
-          >
-            {steer.headline}
-          </p>
-          <p className="mt-1.5 text-xs leading-relaxed text-[var(--color-mut)]">{steer.detail}</p>
-        </div>
+        {/* Where the recomposition stops. On the scale's own terms, because
+            that's the only body fat figure this app has — and it is a few
+            points off a lab method in one direction or the other for everyone. */}
+        {profile.goal === "recomp" && (
+          <div className="mt-4 rounded-xl px-4 py-3" style={{ background: "#0e1013" }}>
+            <div className="flex items-center gap-3">
+              <div className="min-w-0 flex-1">
+                <p className="text-sm font-semibold">Body fat target</p>
+                <p className="mt-0.5 text-xs leading-relaxed text-[var(--color-mut)]">
+                  {steer.atTarget
+                    ? "You're there. The plan now holds you in range and fuels the training."
+                    : lastScan
+                      ? `On your scale. You're at about ${lastScan.bfPct.toFixed(1)}%.`
+                      : "On your scale."}
+                </p>
+              </div>
+              <NumberField
+                step={0.5}
+                allowEmpty
+                className="w-20 px-2 py-1.5 text-right text-sm"
+                placeholder="none"
+                aria-label="Body fat target, per cent"
+                value={targetDraft === undefined ? profile.bf_target_pct : targetDraft}
+                onCommit={(v) => setTargetDraft(v)}
+              />
+              <span className="text-sm text-[var(--color-mut)]">%</span>
+            </div>
+            {targetDraft !== undefined && targetDraft !== profile.bf_target_pct && (
+              <button
+                className="btn btn-sm btn-accent mt-3 w-full"
+                onClick={async () => {
+                  await patch(
+                    { bf_target_pct: targetDraft },
+                    targetDraft == null ? "Target cleared" : `Target set to ${targetDraft}%`
+                  );
+                  setTargetDraft(undefined);
+                }}
+              >
+                Save target
+              </button>
+            )}
+            <Note label="Why a target, and why this one">
+              A recomposition is a way to get to a body, not somewhere to stay. International-level
+              male swimmers sit around 8–12% body fat on a lab scan, and leaner isn&rsquo;t
+              automatically faster in the water — buoyancy is part of it, and pre-session
+              carbohydrate matters more to a swim than the last point of fat. Once your scan trend
+              is at the target, the plan stops looking for fat loss: any cut eases back out, and it
+              holds you within about a point of the target with small nudges either way, weight
+              free to climb on muscle. It only starts recomposing again if body fat climbs a full
+              point above the target. Your scale reads a few points off a lab method for everyone,
+              so set it in the scale&rsquo;s own terms.
+            </Note>
+          </div>
+        )}
 
-        <p className="mt-3 text-xs leading-relaxed">
-          {steer.moving ? (
+        {/* The decision — the staged one once review day has been, otherwise
+            what it would be with today's data. */}
+        {(() => {
+          const shown = decided && !decided.dismissed ? decided : null;
+          const head = shown ? shown.headline : steer.headline;
+          const detail = shown ? shown.detail : steer.detail;
+          const tone = shown ? shown.tone : steer.tone;
+          const moving = shown ? shown.moving : steer.moving;
+          const kcal = shown ? shown.stepKcal : steer.kcal;
+          return (
             <>
-              <b style={{ color: "var(--color-accent)" }}>
-                {steer.kcal > 0 ? "+" : "−"}
-                {Math.abs(steer.kcal)} kcal a day
-              </b>{" "}
-              <span className="text-[var(--color-mut)]">
-                from {DOW_LABELS[profile.plan_roll_dow]}, taken evenly across every meal.
-              </span>
+              <p className="mt-4 text-[0.7rem] uppercase tracking-wide text-[var(--color-mut)]">
+                {shown
+                  ? `Decided ${prettyDay(shown.on)} for ${prettyDay(shown.applyOn)}`
+                  : schedule
+                    ? `If it were decided today · it will be ${prettyDay(schedule.reviewOn)}`
+                    : ""}
+              </p>
+              <div className="mt-1.5 rounded-xl px-4 py-3" style={{ background: "#0e1013" }}>
+                <p
+                  className="text-sm font-semibold"
+                  style={{
+                    color:
+                      tone === "good"
+                        ? "var(--color-accent)"
+                        : tone === "bad"
+                          ? "var(--color-fat)"
+                          : tone === "watch"
+                            ? "var(--color-carbs)"
+                            : "var(--color-fg)",
+                  }}
+                >
+                  {head}
+                </p>
+                <p className="mt-1.5 text-xs leading-relaxed text-[var(--color-mut)]">{detail}</p>
+              </div>
+
+              <p className="mt-3 text-xs leading-relaxed">
+                {moving ? (
+                  <>
+                    <b style={{ color: "var(--color-accent)" }}>
+                      {kcal > 0 ? "+" : "−"}
+                      {Math.abs(kcal)} kcal a day
+                    </b>{" "}
+                    <span className="text-[var(--color-mut)]">
+                      from {DOW_LABELS[profile.plan_roll_dow]}, taken evenly across every meal.
+                    </span>
+                  </>
+                ) : (
+                  <span className="text-[var(--color-mut)]">
+                    No change to the calories.
+                    {profile.recomp_adjust !== 0 &&
+                      ` Running ${steer.totalKcal > 0 ? "+" : "−"}${Math.abs(steer.totalKcal)} kcal from maintenance.`}
+                  </span>
+                )}
+              </p>
             </>
-          ) : (
-            <span className="text-[var(--color-mut)]">
-              No change on {DOW_LABELS[profile.plan_roll_dow]}.
-              {profile.recomp_adjust !== 0 &&
-                ` Running ${steer.totalKcal > 0 ? "+" : "−"}${Math.abs(steer.totalKcal)} kcal from where your goal started.`}
-            </span>
-          )}
-        </p>
+          );
+        })()}
 
         <Note label="How the adjusting works">
-          Every {DOW_LABELS[profile.plan_roll_dow]}, when the plan rebuilds, your weight trend and
-          your scans are checked against the two aims above. If both are on track nothing changes.
-          If not, the daily average moves by 1–3% — sized by how far off the weight is, and
-          halved, because the trend always lags — and the portions are re-fitted with the change
-          shared evenly across every meal. Gaining weight and fat means less; losing weight and fat
-          means more; losing weight while body fat rises means something is wrong, and it says so.
-          It never adds up to more than 12% either way: past that, something you typed in is off.
+          Every {DOW_LABELS[reviewDow(profile)]} — the day before you shop — your weight trend and
+          your scans are checked against the two aims above, each with its error bar, so a slope
+          drawn through noise can&rsquo;t move anything. If both are on track nothing changes. If
+          weight and body fat are both going up, the calories go straight to a recomposition
+          deficit — about 7% under maintenance, well short of the ~500 kcal a day past which
+          lifting stops adding muscle — in one move rather than a notch a week, and protein goes up
+          to protect the muscle. Body fat on its own has to say so on two reviews in a row first.
+          If weight and fat then come off faster than aimed, it eases back 1.5% at a time. After
+          any change it waits two to three weeks for the scale to catch up before moving again.
+          Losing weight while body fat rises means muscle is going, and that raises the calories
+          straight away. The portions are re-fitted with the change shared across every meal,
+          staged for {DOW_LABELS[profile.plan_roll_dow]}, and the shopping list buys for them.
         </Note>
 
         {/* Maintenance itself, measured. The steer sets the offset; this sets
@@ -661,29 +764,18 @@ export default function ProgressPage() {
             : `Your typed-in weight, until there are enough weigh-ins for a trend. From then on this updates itself every ${DOW_LABELS[profile.plan_roll_dow]}.`}
         </Note>
 
-        {roll.due && roll.figures ? (
-          <Flag
-            className="mt-4"
-            title="This week's targets are out of date"
-            detail={
-              `Roll day was ${prettyDay(roll.dueOn)}. You're now ` +
-              `${roll.figures.weightKg.toFixed(1)} kg` +
-              `${rollMove.kg !== 0 ? ` (${rollMove.kg > 0 ? "+" : ""}${rollMove.kg} kg)` : ""}` +
-              `${roll.figures.bodyFatPct != null ? ` at ${roll.figures.bodyFatPct}% body fat` : ""}.`
-            }
-            action={
-              <button className="btn btn-sm btn-accent" onClick={doRoll}>
-                Rebuild them
-              </button>
-            }
-          />
-        ) : (
-          <p className="mt-3 text-xs text-[#5b6270]">
-            Next update {prettyDay(roll.nextOn)}.
-            {roll.figures &&
-              ` Your trend is ${roll.figures.weightKg.toFixed(1)} kg right now, from ${roll.figures.readings} weigh-ins.`}
-          </p>
-        )}
+        <p className="mt-3 text-xs leading-relaxed text-[#5b6270]">
+          {profile.next_review
+            ? `Next week is worked out and comes in on ${prettyDay(profile.next_review.applyOn)} — it's on the Plan page.`
+            : schedule
+              ? `Next week gets worked out ${prettyDay(schedule.reviewOn)}.`
+              : ""}
+          {roll.figures &&
+            ` Your trend is ${roll.figures.weightKg.toFixed(1)} kg right now, from ${roll.figures.readings} weigh-ins.`}
+        </p>
+        <button className="btn btn-sm mt-3" disabled={reviewing} onClick={reviewNow}>
+          {reviewing ? "Working it out…" : "Work out next week now"}
+        </button>
 
         <label className="mt-4 flex items-center gap-2.5">
           <button
@@ -693,13 +785,15 @@ export default function ProgressPage() {
             onClick={() =>
               patch(
                 { auto_roll: !profile.auto_roll },
-                profile.auto_roll ? "You'll rebuild it yourself" : "Will rebuild on roll day"
+                profile.auto_roll ? "You'll work it out yourself" : "Will work it out every week"
               )
             }
           >
             {profile.auto_roll ? "✓" : ""}
           </button>
-          <span className="text-sm">Rebuild it for me on {DOW_LABELS[profile.plan_roll_dow]}</span>
+          <span className="text-sm">
+            Work out next week for me every {DOW_LABELS[reviewDow(profile)]}
+          </span>
         </label>
       </section>
 
@@ -1205,7 +1299,7 @@ function signed(n: number, dp: number): string {
 function weightAimText([lo, hi]: [number, number], kg: number): string {
   const a = (lo / 100) * kg;
   const b = (hi / 100) * kg;
-  if (lo < 0 && hi > 0) return `steady, within ${Math.max(-a, b).toFixed(1)} kg a week`;
+  if (lo < 0 && hi > 0) return `${signed(a, 2)} to ${signed(b, 2)} kg a week`;
   if (hi <= 0) return `down ${Math.abs(b).toFixed(2)}–${Math.abs(a).toFixed(2)} kg a week`;
   if (lo <= 0) return `steady, or up to ${b.toFixed(2)} kg a week`;
   return `up ${a.toFixed(2)}–${b.toFixed(2)} kg a week`;

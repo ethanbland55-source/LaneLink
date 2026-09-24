@@ -7,11 +7,10 @@
  * plan it was built from by Wednesday, and the containers in the fridge would
  * be wrong for the day they were opened.
  *
- * So the plan is built on a **snapshot**, and the snapshot is taken once a
- * week on shopping day. Between rolls the numbers hold perfectly still: what
- * you bought is what you cook is what you eat. On shopping day the trend
- * weight and the latest body fat figure are read once, the targets are rebuilt
- * around them, and that is the week you then shop for.
+ * So the plan is built on a **snapshot**, taken once a week by the review the
+ * day before shopping and brought into force on roll day (see "The weekly
+ * review" below). Between rolls the numbers hold perfectly still: what you
+ * bought is what you cook is what you eat.
  *
  * The trend, not the scale. A single reading is noise; the EWMA of the last
  * fortnight is the number that means something, and it's already corrected for
@@ -71,6 +70,105 @@ export function nextRollDay(rollDow: number, today: string = dayKey()): string {
  */
 export function planDayForShop(rollDow: number, today: string = dayKey()): string {
   return dowOf(today) === rollDow ? today : nextRollDay(rollDow, today);
+}
+
+/* ------------------------------------------------------------------ */
+/* The weekly review                                                   */
+/* ------------------------------------------------------------------ */
+
+/**
+ * When next week gets decided: the day before shopping.
+ *
+ * The decision used to be taken on roll day itself — Monday morning — which
+ * is the one day it is guaranteed to be too late for. Saturday's shop had
+ * already bought for the old portions and Sunday night's cooking had already
+ * put them in boxes, so a change made on Monday landed on food that existed at
+ * the wrong size. Ethan: *"the shopping list changes the day before it's due,
+ * so we buy the right stuff ready for when we make it"* and *"as long as it
+ * changes once we've had all our meals ticked off on the Sunday, that's
+ * fine."*
+ *
+ * So there are now three moments a week, each doing one job:
+ *
+ *   - **Review day** (Friday, for a Saturday shop): the steer reads the scale,
+ *     decides, re-fits, and stages the result for roll day. The shopping list
+ *     reads staged portions, so from here it buys for next week.
+ *   - **Shop day** (Saturday): buy it.
+ *   - **Sunday evening**, once every meal that day is ticked off, or roll day
+ *     morning if not: it comes into force, in time to cook to.
+ *
+ * Weigh-ins saved on review day re-run it, so a Friday morning scan counts.
+ */
+export function reviewDow(p: Pick<Profile, "shop_start_dow">): number {
+  return (p.shop_start_dow + 6) % 7;
+}
+
+export function rollDowOf(p: Pick<Profile, "plan_roll_dow" | "shop_start_dow">): number {
+  return p.plan_roll_dow ?? p.shop_start_dow;
+}
+
+/** The review day that belongs to a roll day: the last one before it. */
+export function reviewDayFor(p: Profile, rollOn: string): string {
+  const back = (rollDowOf(p) - reviewDow(p) + 7) % 7 || 7;
+  return addDays(rollOn, -back);
+}
+
+export type ReviewSchedule = {
+  /** The roll day the next decision is for. */
+  rollOn: string;
+  /** The day it gets made. */
+  reviewOn: string;
+  /** A decision for `rollOn` is already waiting. */
+  staged: boolean;
+  /** It should be made now. */
+  due: boolean;
+  /** When it would come into force if made now. */
+  applyOn: string;
+  /**
+   * This week's own review never happened — the app wasn't opened from review
+   * day to roll day — so the targets are a week stale. Then it runs now and
+   * comes in straight away, which is what the weekly roll always did.
+   */
+  late: boolean;
+};
+
+export function reviewSchedule(p: Profile, today: string = dayKey()): ReviewSchedule {
+  const rollDow = rollDowOf(p);
+  const rollOn = planDayForShop(rollDow, today);
+  const reviewOn = reviewDayFor(p, rollOn);
+  const current = p.plan_updated_on != null && p.plan_updated_on >= rollOn;
+  const staged =
+    p.next_apply_on === rollOn && p.next_reviewed_on != null && p.next_reviewed_on >= reviewOn;
+  const late =
+    !current &&
+    today < reviewOn &&
+    (p.plan_updated_on == null || p.plan_updated_on < lastRollDay(rollDow, today));
+  return {
+    rollOn,
+    reviewOn,
+    staged,
+    due: p.auto_roll && !current && (late || (today >= reviewOn && !staged)),
+    applyOn: late ? today : rollOn,
+    late,
+  };
+}
+
+/**
+ * The profile as next week will have it.
+ *
+ * What the shopping list and the Plan page's "next week" card are built
+ * against once a review is waiting — the food being bought is for then.
+ * Identical to `p` when nothing is.
+ */
+export function stagedProfile(p: Profile): Profile {
+  if (!p.next_apply_on) return p;
+  return {
+    ...p,
+    plan_weight_kg: p.next_plan_weight_kg ?? p.plan_weight_kg,
+    plan_bf_pct: p.next_plan_bf_pct ?? p.plan_bf_pct,
+    plan_bmr_kcal: p.next_plan_bmr_kcal ?? p.plan_bmr_kcal,
+    recomp_adjust: p.next_recomp_adjust ?? p.recomp_adjust,
+  };
 }
 
 export type RollFigures = {

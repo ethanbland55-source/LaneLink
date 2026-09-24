@@ -272,6 +272,21 @@ export function normalise(entries: WeighIn[], offsets?: Offsets): WeighIn[] {
 export type TrendPoint = { day: string; weight: number | null; trend: number };
 
 /**
+ * Where the trend starts: the middle of the first week, not the first reading.
+ *
+ * Seeding an exponential average with one reading makes that reading worth
+ * weeks of the ones after it. On real data the first weigh-in was an evening
+ * one that the time-of-day correction took 1.9 kg off, so the trend began
+ * a kilo and a half under the true weight and spent the next month climbing
+ * back up — and a trend that is climbing reads as gaining. The steer reported
+ * +0.10 kg a week while every morning reading in the window was going down.
+ *
+ * The median of the first few readings can't be dragged by any one of them.
+ */
+const SEED_READINGS = 5;
+const SEED_DAYS = 7;
+
+/**
  * The trend line, one point per calendar day between the first and last
  * weigh-in. Missing days carry the trend forward rather than inventing a
  * weight you never stood on the scale for.
@@ -287,7 +302,12 @@ export function trendLine(entriesRaw: WeighIn[], offsets?: Offsets): TrendPoint[
 
   const byDay = new Map(weights.map((w) => [w.day, w.w]));
   const out: TrendPoint[] = [];
-  let trend = weights[0].w;
+  const t0 = toDate(weights[0].day).getTime();
+  const seed = weights
+    .filter((w) => (toDate(w.day).getTime() - t0) / 86_400_000 < SEED_DAYS)
+    .slice(0, SEED_READINGS)
+    .map((w) => w.w);
+  let trend = median(seed);
 
   const start = toDate(weights[0].day);
   const end = toDate(weights[weights.length - 1].day);
@@ -319,35 +339,140 @@ function slopePerDay(points: { t: number; v: number }[]): number {
 }
 
 export type Rate = {
-  /** Change in the trend, kg per week. Negative is losing. */
+  /** Change in bodyweight, kg per week. Negative is losing. */
   kgPerWeek: number;
   /** The same as a percentage of current bodyweight. */
   pctPerWeek: number;
-  /** How many days of trend the slope was measured over. */
+  /**
+   * How far the true rate could plausibly be from `kgPerWeek` — one standard
+   * error of the slope. The steer only calls a reading outside its aim when it
+   * is outside by more than this, so a slope drawn through noise can't move
+   * the calories.
+   */
+  seKgPerWeek: number;
+  sePctPerWeek: number;
+  /** Days from the first reading in the window to the last. */
   days: number;
-  /** How many of those days you actually weighed in on. */
+  /** How many readings the slope rests on. */
   readings: number;
+  /** Trend weight at the end of the window. */
   current: number;
 };
 
-export function weightRate(entries: WeighIn[], windowDays = 21): Rate | null {
+/**
+ * How much a reading counts toward the rate, by how long you'd been up.
+ *
+ * The time-of-day correction takes the *average* day's food and water off an
+ * evening reading, but no day is average: a swim-and-gym day puts more in you
+ * than a rest day, and the evening scale sees all of it. So an evening reading
+ * is a noisier measurement of the same thing, and a fit should lean on it less.
+ * First thing counts fully; by the evening a reading counts about a third.
+ */
+export function readingWeight(hours: number): number {
+  const h = Math.max(0, Math.min(RISE_PLATEAU_HOURS, hours));
+  if (h <= 3) return 1;
+  return Math.max(0.35, 1 - ((h - 3) / (RISE_PLATEAU_HOURS - 3)) * 0.65);
+}
+
+/**
+ * Day-to-day scatter of a first-thing weight around the true one, in kg.
+ *
+ * Water, glycogen and gut contents move a morning reading by a few hundred
+ * grams on their own, more in a heavy training week. The fit estimates the
+ * scatter from the readings themselves but never believes it is smaller than
+ * this — four lucky readings in a row would otherwise make a slope look far
+ * surer than it is.
+ */
+export const WEIGHT_NOISE_KG = 0.35;
+
+/** A reading this far from the line, in scatters, is left out of the refit. */
+const OUTLIER_SDS = 2.5;
+
+/**
+ * How fast bodyweight is actually changing, and how sure that is.
+ *
+ * A straight line through the time-corrected readings themselves, weighted by
+ * how reliable each one is, over the last four weeks. It used to be the slope
+ * of the smoothed trend, which has two faults as a rate: it lags by about a
+ * week, and it inherits wherever the trend happened to start (see
+ * `SEED_READINGS`). A line through the readings has neither, and it comes with
+ * a standard error, which the smoothed line never could.
+ *
+ * Four weeks rather than three because the aims are narrow — a recomposition
+ * holds weight within about a tenth of a kilo a week — and on three weeks of
+ * mixed-time readings the uncertainty is wider than the aim.
+ */
+export function weightRate(entries: WeighIn[], windowDays = 28): Rate | null {
   const line = trendLine(entries);
   if (line.length < 8) return null;
-  const window = line.slice(-windowDays);
-  const readings = window.filter((p) => p.weight != null).length;
-  // A trend carried forward across a fortnight of missed days has no slope
-  // worth reading, however smooth it looks.
-  if (readings < 5) return null;
 
-  const slope = slopePerDay(window.map((p, i) => ({ t: i, v: p.trend })));
-  const current = window[window.length - 1].trend;
+  const corrected = normalise(entries)
+    .filter((e) => e.weight_kg != null && Number(e.weight_kg) > 0)
+    .map((e) => ({ day: e.day, w: Number(e.weight_kg), h: hoursAwake(hourOf(e)) }))
+    .sort((a, b) => a.day.localeCompare(b.day));
+  if (!corrected.length) return null;
+
+  const end = toDate(corrected[corrected.length - 1].day).getTime();
+  const pts = corrected
+    .map((c) => ({
+      t: (toDate(c.day).getTime() - end) / 86_400_000,
+      v: c.w,
+      wt: readingWeight(c.h),
+    }))
+    .filter((p) => p.t > -windowDays);
+
+  // A fortnight of missed days leaves nothing a slope could honestly be drawn
+  // through, however many readings came before it.
+  if (pts.length < 5) return null;
+
+  let fit = weightedLine(pts);
+  const sd = Math.max(WEIGHT_NOISE_KG, fit.sd);
+  const kept = pts.filter(
+    (p) => Math.abs(p.v - (fit.intercept + fit.slope * p.t)) <= OUTLIER_SDS * (sd / Math.sqrt(p.wt))
+  );
+  if (kept.length >= 5 && kept.length < pts.length) fit = weightedLine(kept);
+  const used = kept.length >= 5 ? kept : pts;
+
+  const current = line[line.length - 1].trend;
+  const se = Math.sqrt(Math.max(WEIGHT_NOISE_KG, fit.sd) ** 2 / Math.max(1e-9, fit.sxx)) * 7;
+  const days = Math.round(used[used.length - 1].t - used[0].t) + 1;
   return {
-    kgPerWeek: slope * 7,
-    pctPerWeek: current > 0 ? ((slope * 7) / current) * 100 : 0,
-    days: window.length,
-    readings,
+    kgPerWeek: fit.slope * 7,
+    pctPerWeek: current > 0 ? ((fit.slope * 7) / current) * 100 : 0,
+    seKgPerWeek: se,
+    sePctPerWeek: current > 0 ? (se / current) * 100 : 0,
+    days,
+    readings: used.length,
     current,
   };
+}
+
+/**
+ * Weighted least squares for a straight line, with the residual scatter
+ * scaled to a full-weight reading and the weighted spread of the times —
+ * everything a standard error needs.
+ */
+function weightedLine(pts: { t: number; v: number; wt: number }[]): {
+  slope: number;
+  intercept: number;
+  sd: number;
+  sxx: number;
+} {
+  const W = pts.reduce((a, p) => a + p.wt, 0);
+  const mt = pts.reduce((a, p) => a + p.wt * p.t, 0) / W;
+  const mv = pts.reduce((a, p) => a + p.wt * p.v, 0) / W;
+  let sxy = 0;
+  let sxx = 0;
+  for (const p of pts) {
+    sxy += p.wt * (p.t - mt) * (p.v - mv);
+    sxx += p.wt * (p.t - mt) ** 2;
+  }
+  const slope = sxx > 0 ? sxy / sxx : 0;
+  const intercept = mv - slope * mt;
+  let rss = 0;
+  for (const p of pts) rss += p.wt * (p.v - (intercept + slope * p.t)) ** 2;
+  const df = Math.max(1, pts.length - 2);
+  return { slope, intercept, sd: Math.sqrt(rss / df), sxx };
 }
 
 /* ------------------------------------------------------------------ */
@@ -399,12 +524,26 @@ export const SCAN_NOISE_PTS = 0.8;
 /**
  * Fewer scans than this, or a shorter span, and no slope gets reported.
  *
- * 19 days rather than a round three weeks so that scanning Monday and Saturday
- * settles on the third Saturday — in time for the Monday roll after it, rather
- * than a week later because the last scan landed a couple of days short.
+ * 17 days rather than a round three weeks so that scanning Monday and Friday
+ * settles on the third Friday — the morning of the weekly review — rather than
+ * a week later because the last scan landed a day short. The gate is only the
+ * point where a slope may be read at all; whether it is outside the aim is a
+ * separate question, answered against its standard error.
  */
 export const SCAN_MIN_POINTS = 4;
-export const SCAN_MIN_DAYS = 19;
+export const SCAN_MIN_DAYS = 17;
+
+/**
+ * Scan-to-scan scatter in body fat, in points, that a slope is never allowed
+ * to be surer than.
+ *
+ * Consumer eight-electrode scales repeat to about half a point on the same
+ * morning, and hydration adds as much again between mornings. The standard
+ * error of the slope is worked out from the scans themselves with this as a
+ * floor — so that four scans which happen to sit on a line do not make a
+ * fortnight of body fat look like a measurement.
+ */
+export const SCAN_NOISE_SD = 0.5;
 
 /**
  * How far body water may sit from your usual, as a share of lean mass, before
@@ -431,6 +570,13 @@ export type Composition = {
   bfPtsPerMonth: number;
   leanKgPerMonth: number;
   fatKgPerMonth: number;
+  /**
+   * One standard error of each slope, per 28 days. See `SCAN_NOISE_SD` — the
+   * steer reads a slope as outside its aim only when it is outside by more
+   * than this.
+   */
+  bfSePtsPerMonth: number;
+  leanSeKgPerMonth: number;
   /**
    * The scale's own muscle figure, as a slope. Null until there are enough
    * scans that carried one. Used as a second opinion on the lean slope.
@@ -553,6 +699,25 @@ export function composition(entriesRaw: WeighIn[], windowDays = 84): Composition
   const perDay = (pick: (p: ScanPoint) => number) =>
     slopePerDay(fitOn.map((p) => ({ t: at(p), v: pick(p) })));
 
+  /** Standard error of a slope per 28 days, with a floor under the scatter. */
+  const sePerMonth = (pick: (p: ScanPoint) => number, floor: number) => {
+    if (fitOn.length < 3) return Infinity;
+    const xs = fitOn.map((p) => ({ t: at(p), v: pick(p) }));
+    const m = slopePerDay(xs);
+    const mt = xs.reduce((a, x) => a + x.t, 0) / xs.length;
+    const mv = xs.reduce((a, x) => a + x.v, 0) / xs.length;
+    let rss = 0;
+    let sxx = 0;
+    for (const x of xs) {
+      rss += (x.v - (mv + m * (x.t - mt))) ** 2;
+      sxx += (x.t - mt) ** 2;
+    }
+    if (!(sxx > 0)) return Infinity;
+    const sd = Math.max(floor, Math.sqrt(rss / (xs.length - 2)));
+    return (sd / Math.sqrt(sxx)) * 28;
+  };
+  const kgNow = fitOn[fitOn.length - 1].weightKg;
+
   const withMuscle = fitOn.filter((p) => p.extras.muscle_kg != null);
   const muscleSpan =
     withMuscle.length >= 2 ? at(withMuscle[withMuscle.length - 1]) - at(withMuscle[0]) : 0;
@@ -583,6 +748,8 @@ export function composition(entriesRaw: WeighIn[], windowDays = 84): Composition
     bfPtsPerMonth: perDay((p) => p.bfPct) * 28,
     leanKgPerMonth: perDay((p) => p.leanKg) * 28,
     fatKgPerMonth: perDay((p) => p.fatKg) * 28,
+    bfSePtsPerMonth: sePerMonth((p) => p.bfPct, SCAN_NOISE_SD),
+    leanSeKgPerMonth: sePerMonth((p) => p.leanKg, (SCAN_NOISE_SD / 100) * kgNow),
     muscleKgPerMonth:
       withMuscle.length >= SCAN_MIN_POINTS && muscleSpan >= SCAN_MIN_DAYS
         ? slopePerDay(withMuscle.map((p) => ({ t: at(p), v: p.extras.muscle_kg as number }))) * 28

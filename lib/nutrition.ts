@@ -162,9 +162,40 @@ export type Profile = {
    */
   plan_weight_kg: number | null;
   plan_bf_pct: number | null;
+  /** The scale's own resting-burn figure, snapshotted with the rest. See `bmr`. */
+  plan_bmr_kcal: number | null;
   plan_updated_on: string | null;
   /** Whether shopping day rebuilds the plan by itself. */
   auto_roll: boolean;
+  /**
+   * The body fat, on your own scale, that a recomposition is heading for.
+   * Reach it and the plan switches from losing fat to holding it and fuelling
+   * the training — see `ATHLETIC_HOLD`. Null means no end point.
+   */
+  bf_target_pct: number | null;
+  /**
+   * The roll day the steer last actually moved on, and by how much. Read by
+   * the steer so it waits for one change to show on the scale before making
+   * another — see `COOLDOWN_DAYS` in lib/steer.ts.
+   */
+  steer_moved_on: string | null;
+  steer_last_step: number;
+  /**
+   * Next week, decided but not yet in force. The weekly review runs the day
+   * before shopping so the list buys the right food, and parks what it decided
+   * here until roll day — or Sunday evening, once the day's meals are ticked
+   * off. Written by the server only. See lib/review.ts.
+   */
+  next_apply_on: string | null;
+  next_reviewed_on: string | null;
+  next_plan_weight_kg: number | null;
+  next_plan_bf_pct: number | null;
+  next_plan_bmr_kcal: number | null;
+  next_recomp_adjust: number | null;
+  /** What the review said, for the Plan page to show. */
+  next_review: Review | null;
+  /** The review that is in force this week. */
+  last_review: Review | null;
   /** Lean protein and fat toward the days with training in them. */
   periodise: boolean;
   /** Off means one flat number every day, and the week grid is ignored. */
@@ -188,6 +219,73 @@ export type Macros = {
 };
 
 export const ZERO_MACROS: Macros = { kcal: 0, protein: 0, carbs: 0, fat: 0 };
+
+/**
+ * What a weekly review decided, in the form the screens show it.
+ *
+ * Stored as JSON on the profile rather than recomputed on the client, because
+ * it is a record of a decision taken on a particular day with the data of that
+ * day — recomputing it on Tuesday from Tuesday's weigh-ins would describe a
+ * decision nobody took.
+ */
+export type Review = {
+  /** The day it was worked out, and the roll day it is for. */
+  on: string;
+  applyOn: string;
+  headline: string;
+  detail: string;
+  tone: "good" | "watch" | "bad" | "neutral";
+  moving: boolean;
+  /** The one-off move to the recomposition deficit. */
+  decisive: boolean;
+  /** This week's change and the running total, in kcal a day. */
+  stepKcal: number;
+  totalKcal: number;
+  /** Held because the last change hasn't had time to show. */
+  cooldownUntil: string | null;
+  /** Weekly averages, before and after. */
+  from: ReviewTargets;
+  to: ReviewTargets;
+  /** The evidence, as the steer read it. */
+  weight: { kgPerWeek: number | null; seKgPerWeek: number | null; aimKg: [number, number]; reading: string };
+  bf: { ptsPerMonth: number | null; sePtsPerMonth: number | null; aim: [number, number]; reading: string; settled: boolean };
+  /** Portions that would have moved further than the guard allows, by name. */
+  held: string[];
+  /** What the re-fitted portions actually come to, as a weekly daily average. */
+  landsKcal: number | null;
+  /**
+   * The limits you set that stop the portions reaching the new targets, and
+   * the one-tap change that would get closer. Bounds are settings, so these
+   * are offered, never applied.
+   */
+  limits: ReviewLimit[];
+  /** Set when you chose to keep this week's plan instead. */
+  dismissed?: boolean;
+  /** At the body fat target, holding rather than cutting. */
+  atTarget?: boolean;
+};
+
+export type ReviewLimit = {
+  mealId: number;
+  slot: number;
+  meal: string;
+  name: string;
+  direction: "up" | "down";
+  from: number;
+  to: number;
+  /** Which macro it helps, and by how much, on `dayName`. */
+  key: "kcal" | "protein" | "carbs" | "fat";
+  closes: number;
+  dayName: string | null;
+};
+
+export type ReviewTargets = Macros & {
+  proteinPerKg: number;
+  proteinBasis: "bodyweight" | "lean";
+  fatPerKg: number;
+  weightKg: number;
+  bfPct: number | null;
+};
 
 /** Legacy single-multiplier levels, kept for the "flat" energy model. */
 export const ACTIVITY_LEVELS = [
@@ -277,15 +375,35 @@ export const GOALS: {
     label: "Toned maintenance",
     protein: { basis: "lean", perKg: 2.8 },
     fatPerKg: 0.8,
-    blurb: "Body fat slowly down while weight slowly climbs — muscle replacing fat.",
+    blurb: "Body fat slowly down while weight holds or climbs on muscle — built for training, not for cutting.",
     paced: true,
-    // The scale cannot go up while body fat comes down unless the extra is
-    // muscle, and muscle is slow: a trained body adds a few hundred grams a
-    // month at best. Hence weight bands that barely leave zero.
+    /*
+     * Weight holding or climbing, body fat drifting down — slowly.
+     *
+     * Ethan, on what this is for: *"the point isn't to cut and get it super
+     * quick, the point is to still be able to gain weight whilst doing it"*,
+     * fuelling a season aimed at nationals. So the weight band's floor sits
+     * just under level (a scale that holds still is on track) and its ceiling
+     * allows the slow climb a trained swimmer's muscle brings; only weight
+     * clearly FALLING reads as under-eating. The body fat band is gentle: a
+     * few tenths of a point a month is a recomposition, and anything faster
+     * is being paid for in the pool.
+     *
+     * The realistic arithmetic: lean gain alongside a full pool programme is
+     * perhaps 0.1–0.3 kg a month (concurrent training blunts it), fat coming
+     * off at half a point a month is ~0.4 kg — so a working recomposition is a
+     * scale that barely moves. Weight climbing faster than the band is still
+     * fine while body fat falls: the steer holds on "gaining quickly, and it's
+     * lean".
+     *
+     * Barakat et al. 2020 (the recomposition review) and Murphy & Koehler 2022
+     * (deficits past ~500 kcal a day stop lean gain) put the calories at
+     * maintenance or a little under.
+     */
     aims: {
-      gentle: { adjust: 0, weight: [0, 0.12], bf: [-0.6, -0.15] },
-      steady: { adjust: 0, weight: [0.05, 0.2], bf: [-0.8, -0.2] },
-      faster: { adjust: 0.02, weight: [0.1, 0.3], bf: [-1.0, -0.25] },
+      gentle: { adjust: 0, weight: [-0.05, 0.2], bf: [-0.5, -0.1] },
+      steady: { adjust: 0, weight: [-0.05, 0.2], bf: [-0.6, -0.15] },
+      faster: { adjust: -0.02, weight: [-0.15, 0.1], bf: [-0.9, -0.25] },
     },
   },
   {
@@ -309,6 +427,52 @@ export function goalDef(g: Goal) {
 
 export function aimFor(goal: Goal, pace: Pace): Aim {
   return goalDef(goal).aims[pace] ?? goalDef(goal).aims.steady;
+}
+
+/**
+ * Once the body fat you were aiming for is reached: hold it, and fuel.
+ *
+ * Ethan: *"once we hit that range, the plan can then do whatever it has to do
+ * after that."* A recomposition is a way of getting to a body, not a place to
+ * live — pushed on past a good competitive base it stops buying speed. Leaner
+ * is not automatically faster in water (buoyancy is part of it), international
+ * male swimmers sit around 8–12% body fat on DXA, and pre-session carbohydrate
+ * matters more to a swim than the last point of fat. So at the target the fat
+ * aim flattens to "hold where you are", the weight aim allows the slow climb
+ * a season of training brings, and the steer stops looking for deficits: a
+ * cut still running eases back out, a little at a time.
+ */
+export const ATHLETIC_HOLD: Aim = { adjust: 0, weight: [-0.1, 0.15], bf: [-0.3, 0.3] };
+
+/**
+ * Near enough to count as there, in points — and, once there, how far back
+ * above it body fat has to climb before the recomposition starts again.
+ *
+ * Two numbers, like a thermostat, because one isn't enough: with a single
+ * threshold a scan's worth of noise flips it back and forth, and simulated
+ * seasons that had reached the target went back to cutting in one run in six
+ * (bench/closed-loop.ts, scenario F). A full point is well clear of the noise
+ * and still early enough to matter.
+ */
+export const BF_TARGET_BAND = 0.3;
+export const BF_TARGET_LEAVE = 1.0;
+
+export function atTarget(
+  p: Pick<Profile, "goal" | "bf_target_pct">,
+  bfNow: number | null,
+  holding = false
+): boolean {
+  return (
+    p.goal === "recomp" &&
+    p.bf_target_pct != null &&
+    bfNow != null &&
+    bfNow <= p.bf_target_pct + (holding ? BF_TARGET_LEAVE : BF_TARGET_BAND)
+  );
+}
+
+/** The aim that applies to this profile now, given its current body fat. */
+export function aimNow(p: Profile, bfNow: number | null, holding = false): Aim {
+  return atTarget(p, bfNow, holding) ? ATHLETIC_HOLD : aimFor(p.goal, p.pace);
 }
 
 /**
@@ -457,8 +621,14 @@ export function leanMass(p: Profile): number | null {
   return planWeight(p) * (1 - bf.pct / 100);
 }
 
-/** Katch-McArdle if we know lean mass, otherwise Mifflin-St Jeor. */
-export function bmr(p: Profile): number {
+/**
+ * How far the scale's resting-burn figure may sit from the formula and still
+ * be listened to. Past this it is more likely a bad reading than a body.
+ */
+const SCALE_BMR_TOLERANCE = 0.15;
+
+/** The formula alone: Katch-McArdle if we know lean mass, otherwise Mifflin-St Jeor. */
+function formulaBmr(p: Profile): number {
   const lbm = leanMass(p);
   if (lbm != null) return 370 + 21.6 * lbm;
   const age = ageFromDob(p.dob);
@@ -466,8 +636,31 @@ export function bmr(p: Profile): number {
   return p.sex === "female" ? base - 161 : base + 5;
 }
 
-export function bmrMethod(p: Profile): "Katch-McArdle" | "Mifflin-St Jeor" {
-  return leanMass(p) != null ? "Katch-McArdle" : "Mifflin-St Jeor";
+/**
+ * Resting burn: the formula, averaged with the scale's own figure when there
+ * is one that agrees with it to within 15%.
+ *
+ * The scale's number is not gospel — it is its own equation run on its own
+ * impedance estimate of lean mass — but it is a second estimate built on a
+ * measurement of this body rather than a population, and two estimates that
+ * roughly agree are worth more than either. One that disagrees wildly is
+ * ignored rather than trusted, because a single dry morning can move it. The
+ * figure is the middle of the last three scans, snapshotted weekly with the
+ * rest of the plan so it can't move the targets mid-week.
+ */
+export function bmr(p: Profile): number {
+  const f = formulaBmr(p);
+  const s = p.plan_bmr_kcal;
+  if (s != null && s > 0 && Math.abs(s - f) / f <= SCALE_BMR_TOLERANCE) return (f + s) / 2;
+  return f;
+}
+
+export function bmrMethod(p: Profile): string {
+  const f = formulaBmr(p);
+  const s = p.plan_bmr_kcal;
+  const scale = s != null && s > 0 && Math.abs(s - f) / f <= SCALE_BMR_TOLERANCE;
+  const base = leanMass(p) != null ? "Katch-McArdle" : "Mifflin-St Jeor";
+  return scale ? `${base} and your scale` : base;
 }
 
 /** Everything that isn't a training session. */
@@ -519,9 +712,40 @@ export const STEER_LIMIT = 0.12;
 export const FAT_PER_KG_FLOOR = 0.6;
 /** Nor above this — past it the day is mostly fat and carbohydrate suffers. */
 export const FAT_PER_KG_CEILING = 1.3;
-/** The most the steer will add to protein, in g per kg of lean mass. */
+/**
+ * What a deficit adds to protein, in g per kg of lean mass, at the depth of
+ * the recomposition cut (`RECOMP_CUT`, 7% under maintenance).
+ *
+ * Helms, Aragon & Fitschen 2014 put protein through a deficit at 2.3–3.1 g/kg
+ * of lean mass, "scaled upwards with severity of caloric restriction and
+ * leanness", and the 2025 meta-regression (Refalo, Trexler & Helms) found the
+ * relationship linear — more protein, less lean lost. So it scales with the
+ * depth of the cut.
+ *
+ * Kept modest on purpose, because those numbers come from physique athletes
+ * and this is a swimmer. At 2.45 g/kg of lean mass he is already at 2.1 g/kg
+ * of bodyweight, inside the 1.6–2.4 g/kg that Hector & Phillips (2018) give
+ * athletes in a deficit, and every extra gram of protein on a fixed calorie
+ * budget is carbohydrate the pool doesn't get. So: +0.15 g/kg of lean at −7%
+ * (about +10 g a day), never more than +0.25.
+ */
 export const PROTEIN_LEAN_BONUS = 0.15;
-/** And the most protein may reach that way, per kg of lean. */
+export const PROTEIN_LEAN_BONUS_MAX = 0.25;
+
+/**
+ * How far under the bottom of its carbohydrate band a training day may go in
+ * a recomposition cut, in g per kg. See the fuel floor in `buildWeekPlan`.
+ */
+export const FUEL_FLOOR_MARGIN = 0.5;
+
+/** Goals whose calories start at (or within a few % of) maintenance. */
+export function goalStartsLevel(goal: Goal, pace: Pace): boolean {
+  const a = aimFor(goal, pace).adjust;
+  return a > -0.05 && a < 0.05;
+}
+/** The depth the bonus is quoted at, as a fraction of maintenance. */
+const BONUS_AT = 0.07;
+/** And the most protein may reach that way, per kg of lean — the top of Helms's range. */
 export const PROTEIN_PER_LEAN_CEILING = 3.0;
 
 export type MacroShape = {
@@ -581,10 +805,11 @@ export function shapeMacros(p: Profile): MacroShape {
   );
 
   // One-sided: a surplus does not buy less protein.
-  const deficit = steer < 0 ? Math.min(1, -steer / STEER_LIMIT) : 0;
+  const bonus =
+    steer < 0 ? Math.min(PROTEIN_LEAN_BONUS_MAX, PROTEIN_LEAN_BONUS * (-steer / BONUS_AT)) : 0;
   const proteinPerKg =
     p.protein_basis === "lean"
-      ? Math.min(PROTEIN_PER_LEAN_CEILING, p.protein_per_kg + PROTEIN_LEAN_BONUS * deficit)
+      ? Math.max(p.protein_per_kg, Math.min(PROTEIN_PER_LEAN_CEILING, p.protein_per_kg + bonus))
       : p.protein_per_kg;
 
   const round = (n: number) => Math.round(n * 1000) / 1000;
@@ -621,6 +846,8 @@ export type Targets = Macros & {
   ea: number | null;
   /** True when the energy-availability floor raised this day above what the deficit asked for. */
   eaFloored: boolean;
+  /** True when the fuel floor held this day's carbohydrate up against a cut. */
+  fuelFloored: boolean;
   /** This day's calories relative to the weekly average. */
   multiplier: number;
   sessions: Session[];
@@ -866,12 +1093,46 @@ export function buildWeekPlan(
   // the week so the figures you set still mean what they say.
   const muls = loadMultipliers(types, week, { kcalById });
 
+  const fuelGuard = goalStartsLevel(p.goal, p.pace) && aim.total < 0;
+  const fuelFloored = new Set<number>();
+
   const byId: Record<number, Targets> = {};
   for (const t of types) {
     const raw = cost.get(t.id) ?? baseline(p);
-    const kcal = kcalById.get(t.id) ?? floor;
+    let kcal = kcalById.get(t.id) ?? floor;
+    const mul = p.periodise ? muls.get(t.id) ?? undefined : undefined;
 
-    const m = macrosFor(mp, kcal, p.periodise ? muls.get(t.id) ?? undefined : undefined);
+    let m = macrosFor(mp, kcal, mul);
+
+    /*
+     * The fuel floor: a recomposition cut doesn't come out of training fuel.
+     *
+     * Ethan: *"the main thing you've got to take into account is this has to
+     * fuel me for swimming and competition ... you don't want to underfuel the
+     * performance."* The energy-availability floor above protects the body; this
+     * protects the session. On a day with real training in it, carbohydrate is
+     * held within half a gram per kg of the bottom of its band (Burke 2011;
+     * Shaw 2014 for swimmers — 6–10 g/kg for one to three hours a day), and the
+     * day is lifted by whatever that costs. The cut then comes from the rest day,
+     * from fat, and from how deep it can go — which is the right order for an
+     * athlete in season: fat can come off next month; a training block cannot be
+     * got back.
+     *
+     * Only for goals that start at maintenance and only once the week is below
+     * it. A deliberate cut has chosen to eat under the bands and says so, and at
+     * maintenance the plan's carbohydrate is whatever the food comes to — the
+     * Plan page flags a training day that is short.
+     */
+    const load = trainingLoad(t);
+    if (fuelGuard && load >= 45) {
+      const need = Math.round((carbBandFor(load).low - FUEL_FLOOR_MARGIN) * planWeight(p));
+      if (m.carbs < need) {
+        kcal += (need - m.carbs) * 4;
+        m = macrosFor(mp, kcal, mul);
+        fuelFloored.add(t.id);
+      }
+    }
+
     byId[t.id] = {
       ...m,
       dayTypeId: t.id,
@@ -885,6 +1146,7 @@ export function buildWeekPlan(
           ? Math.round(((kcal - sessionsKcal(planWeight(p), t.sessions)) / ffm) * 10) / 10
           : null,
       eaFloored: eaFloored.has(t.id),
+      fuelFloored: fuelFloored.has(t.id),
       multiplier: goalKcal > 0 ? kcal / goalKcal : 1,
       sessions: t.sessions,
     };

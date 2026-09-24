@@ -14,7 +14,7 @@ import {
   type DayType,
   type Profile,
 } from "@/lib/nutrition";
-import { planDayForShop } from "@/lib/weekly";
+import { planDayForShop, stagedProfile } from "@/lib/weekly";
 import { overlayPending, type PendingPortion } from "@/lib/pending";
 import { normaliseProfile, SHOP_DAY_OPTIONS } from "@/lib/profile";
 import { NumberField, scrollIntoViewSoon } from "../number-field";
@@ -99,8 +99,10 @@ export default function ShopPage() {
     [profile, start]
   );
 
+  // Next week's targets once the review has decided them — the list's
+  // warnings should compare the food against the week it is for.
   const plan = useMemo(
-    () => (profile ? buildWeekPlan(profile, dayTypes, { today: planDay }) : null),
+    () => (profile ? buildWeekPlan(stagedProfile(profile), dayTypes, { today: planDay }) : null),
     [profile, dayTypes, planDay]
   );
 
@@ -262,8 +264,18 @@ export default function ShopPage() {
         {pending.length > 0 && (
           <div className="mt-3 rounded-lg bg-[var(--color-surface)] px-3 py-2.5">
             <p className="text-xs text-[var(--color-mut)]">
-              Buying the <b className="text-[var(--color-fg)]">rebalanced</b> portions —{" "}
-              {pending.length} change for {pretty(pending[0].apply_on)}.
+              Buying{" "}
+              <b className="text-[var(--color-fg)]">
+                {profile?.next_review ? "next week's" : "the rebalanced"}
+              </b>{" "}
+              portions — {pending.length} change{pending.length === 1 ? "" : "s"} for{" "}
+              {pretty(pending[0].apply_on)}.
+              {profile?.next_review && profile.next_review.moving && !profile.next_review.dismissed
+                ? ` ${profile.next_review.headline}: ${profile.next_review.stepKcal > 0 ? "+" : "−"}${Math.abs(profile.next_review.stepKcal)} kcal a day.`
+                : ""}{" "}
+              <Link href="/plan" className="underline">
+                See it on the Plan page
+              </Link>
             </p>
             <Note label="Why next week's">
               The food you buy today is for the week starting {pretty(pending[0].apply_on)}, so the

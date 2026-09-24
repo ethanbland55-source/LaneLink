@@ -27,10 +27,23 @@ export const ACTIVITIES: ActivityDef[] = [
     id: "swim",
     label: "Swim",
     defaultMinutes: 90,
+    /*
+     * Swim sessions are not one thing, and the order isn't the obvious one.
+     * These are whole-session averages, rests included. A threshold or VO2 max
+     * set — long repeats on short rest — is the dearest session in the week. A
+     * speed session is the most intense and one of the cheapest: short maximal
+     * efforts, long recoveries, low metres, so over ninety minutes it averages
+     * below an aerobic main set. It still leans hardest on stored glycogen,
+     * which is why a speed day wants its pre-swim carbohydrate even though its
+     * calorie cost is modest. Compendium values for freestyle at light (5.8),
+     * moderate (8.3) and vigorous (9.8) effort; speed placed between the first
+     * two for the rest it carries.
+     */
     levels: [
       { id: "easy", label: "Technique / recovery", met: 5.8 },
-      { id: "moderate", label: "Main set", met: 8.3 },
-      { id: "hard", label: "Race pace / sprints", met: 9.8 },
+      { id: "speed", label: "Speed / sprint (lots of rest)", met: 7.0 },
+      { id: "moderate", label: "Aerobic main set", met: 8.3 },
+      { id: "hard", label: "Threshold / VO2 max", met: 9.8 },
     ],
   },
   {
@@ -117,7 +130,7 @@ export function activityLabel(s: Session): string {
 
 export function newSession(activityId: string): Session {
   const a = activityDef(activityId);
-  const mid = a.levels[Math.min(1, a.levels.length - 1)];
+  const mid = a.levels.find((l) => l.id === "moderate") ?? a.levels[Math.min(1, a.levels.length - 1)];
   return { activity: a.id, level: mid.id, met: mid.met, minutes: a.defaultMinutes };
 }
 

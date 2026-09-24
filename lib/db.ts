@@ -35,7 +35,7 @@ let schemaReady: Promise<void> | null = null;
  * a database stamped with an older number runs the whole migration again, and
  * every statement in it is `if not exists`, so running it again is harmless.
  */
-const SCHEMA_VERSION = "2026-09-17.1-segments";
+const SCHEMA_VERSION = "2026-09-24.1-weekly-review";
 
 /**
  * Creates the tables if they don't exist, adds any columns a newer version
@@ -281,6 +281,25 @@ async function createSchema() {
   await sql`alter table profile add column if not exists plan_bf_pct numeric`;
   await sql`alter table profile add column if not exists plan_updated_on date`;
   await sql`alter table profile add column if not exists auto_roll boolean not null default true`;
+  // When the steer last actually moved, and by how much, so it can wait for
+  // one change to show on the scale before making another.
+  await sql`alter table profile add column if not exists steer_moved_on date`;
+  // Where a recomposition stops: reach this body fat and the plan holds it and
+  // fuels the training instead of cutting. See ATHLETIC_HOLD in lib/nutrition.ts.
+  await sql`alter table profile add column if not exists bf_target_pct numeric`;
+  await sql`alter table profile add column if not exists steer_last_step numeric not null default 0`;
+  // Next week, decided on review day (the day before shopping) and held here
+  // until roll day — or Sunday evening once the day's meals are ticked off.
+  // Server-written only. See lib/review.ts.
+  await sql`alter table profile add column if not exists next_apply_on date`;
+  await sql`alter table profile add column if not exists next_reviewed_on date`;
+  await sql`alter table profile add column if not exists next_plan_weight_kg numeric`;
+  await sql`alter table profile add column if not exists next_plan_bf_pct numeric`;
+  await sql`alter table profile add column if not exists plan_bmr_kcal numeric`;
+  await sql`alter table profile add column if not exists next_plan_bmr_kcal numeric`;
+  await sql`alter table profile add column if not exists next_recomp_adjust numeric`;
+  await sql`alter table profile add column if not exists next_review jsonb`;
+  await sql`alter table profile add column if not exists last_review jsonb`;
   // Lean protein and fat toward the days with training in them.
   await sql`alter table profile add column if not exists periodise boolean not null default true`;
 

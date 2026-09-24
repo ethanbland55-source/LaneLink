@@ -5,8 +5,14 @@ import { requireUser } from "@/lib/session";
 export const dynamic = "force-dynamic";
 
 /**
- * Confirmed calories per day. Only confirmed entries count — a draft you added
- * and never ate would otherwise quietly inflate the calibration.
+ * Calories actually eaten per day: confirmed meals, plus cheat meals.
+ *
+ * Only confirmed entries count — a draft you added and never ate would
+ * otherwise quietly inflate the calibration. Cheat meals count in full: they
+ * are logged in their own table, and the meal a cheat replaces is simply never
+ * ticked off, so leaving them out read a week with a 2,500 kcal meal out as
+ * about 350 kcal a day less food than was eaten — and the calibration, which
+ * is intake minus what the scale did, as a maintenance that much too low.
  */
 export async function GET(req: Request) {
   await ensureSchema();
@@ -18,8 +24,13 @@ export async function GET(req: Request) {
     select to_char(day, 'YYYY-MM-DD') as day,
            sum(kcal)    as kcal,
            sum(protein) as protein
-    from log_entries
-    where user_id = ${who.id} and confirmed = true and day > current_date - ${days}::int
+    from (
+      select day, kcal, protein from log_entries
+       where user_id = ${who.id} and confirmed = true and day > current_date - ${days}::int
+      union all
+      select day, kcal, protein from cheat_meals
+       where user_id = ${who.id} and day > current_date - ${days}::int
+    ) eaten
     group by day
     order by day`;
   return NextResponse.json(

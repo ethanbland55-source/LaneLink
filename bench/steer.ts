@@ -10,8 +10,8 @@
  */
 import { normaliseProfile } from "../lib/profile";
 import { buildWeekPlan, type Goal, type Pace, type Profile } from "../lib/nutrition";
-import { STEER_LIMIT, STEER_MAX_STEP, steerPlan } from "../lib/steer";
-import { composition, weightRate, type WeighIn } from "../lib/trend";
+import { RECOMP_CUT, STEER_LIMIT, STEER_MAX_STEP, steerPlan, steerSignals } from "../lib/steer";
+import { type WeighIn } from "../lib/trend";
 import { REAL_DAY_TYPES, REAL_PROFILE } from "./real-plan";
 
 const iso = (d: number) => new Date(Date.UTC(2026, 6, 1 + d)).toISOString().slice(0, 10);
@@ -72,11 +72,11 @@ function check(
   entries: WeighIn[],
   expect: "up" | "down" | "hold",
   p: Profile = base,
-  tone?: "good" | "watch" | "bad" | "neutral"
+  tone?: "good" | "watch" | "bad" | "neutral",
+  applyOn?: string
 ) {
-  const comp = composition(entries);
-  const rate = weightRate(entries);
-  const s = steerPlan(p, rate, comp, maintenance);
+  const { rate, comp } = steerSignals(entries);
+  const s = steerPlan(p, rate, comp, maintenance, { applyOn });
   const got = !s.moving ? "hold" : s.step > 0 ? "up" : "down";
   const ok = got === expect && (!tone || s.tone === tone);
   if (!ok) failures++;
@@ -135,22 +135,125 @@ check(
   "good"
 );
 
+/** As if last week's review had read body fat high too. */
+const confirmed = (p: Profile): Profile => ({ ...p, last_review: { bf: { reading: "high" } } as any });
+
 check(
-  "weight on track, body fat not moving — trim a notch",
-  series({ kgPerWeek: 0.1, bfPtsPerWeek: 0.05 }),
-  "down"
+  "weight on track, body fat drifting up inside the noise — can't tell, hold",
+  series({ kgPerWeek: 0.05, bfPtsPerWeek: 0.05 }),
+  "hold"
 );
 
 check(
-  "weight flat, body fat coming down — nudge up for the gain",
+  "weight on track, body fat clearly rising — first time, check again next week",
+  series({ kgPerWeek: 0.05, bfPtsPerWeek: 0.15 }),
+  "hold",
+  base,
+  "watch"
+);
+
+const firm = check(
+  "weight level, body fat clearly rising, two reviews running — a small nudge, not a cut",
+  series({ kgPerWeek: 0.0, bfPtsPerWeek: 0.15 }),
+  "down",
+  confirmed(base)
+);
+if (firm.decisive || Math.abs(firm.step + 0.02) > 1e-9) {
+  failures++;
+  console.log(`  FAIL body fat alone should nudge 2%, got ${(firm.step * 100).toFixed(1)}%\n`);
+}
+
+check(
+  "weight flat, body fat coming down — that's the recomposition, leave it",
   series({ kgPerWeek: -0.02, bfPtsPerWeek: -0.12 }),
-  "up"
+  "hold",
+  base,
+  "good"
 );
 
 check(
   "steady weight, fat up, scale's muscle down — the swap running backwards",
-  series({ kgPerWeek: 0.08, bfPtsPerWeek: 0.02, muscleKgPerWeek: -0.15 }),
+  series({ kgPerWeek: 0.05, bfPtsPerWeek: 0.15, muscleKgPerWeek: -0.15 }),
+  "down",
+  confirmed(base)
+);
+
+const sure = check(
+  "gaining weight AND fat fast — the whole surplus comes off in one move",
+  series({ kgPerWeek: 0.35, bfPtsPerWeek: 0.12 }),
   "down"
+);
+if (!sure.decisive || Math.abs(sure.next - RECOMP_CUT) > 1e-9) {
+  failures++;
+  console.log(`  FAIL expected one move to ${(RECOMP_CUT * 100).toFixed(0)}%, got ${(sure.next * 100).toFixed(1)}%\n`);
+}
+
+const mild = check(
+  "gaining weight and fat slowly, fat high two reviews running — one move, sized to the smaller surplus",
+  series({ kgPerWeek: 0.22, bfPtsPerWeek: 0.12 }),
+  "down",
+  confirmed(base)
+);
+if (!mild.decisive || mild.next <= RECOMP_CUT + 1e-9) {
+  failures++;
+  console.log(`  FAIL expected a decisive move smaller than the full cut, got ${(mild.next * 100).toFixed(1)}%\n`);
+}
+
+console.log("--- at the body fat target ---\n");
+
+const target = (p: Profile, pct: number, holding = true): Profile =>
+  ({ ...p, bf_target_pct: pct, last_review: { bf: { reading: "in" }, atTarget: holding } as any }) as Profile;
+
+check(
+  "reached the target with a cut still running — ease it out",
+  series({ kgPerWeek: -0.1, bfPtsPerWeek: -0.1, startBf: 12 }),
+  "up",
+  target({ ...base, recomp_adjust: RECOMP_CUT }, 12.5),
+  "good"
+);
+
+check(
+  "at the target and steady — hold and fuel",
+  series({ kgPerWeek: 0.05, bfPtsPerWeek: 0, startBf: 12 }),
+  "hold",
+  target(base, 12.5),
+  "good"
+);
+
+check(
+  "at the target, gaining weight and fat — a routine trim, not the big move",
+  series({ kgPerWeek: 0.35, bfPtsPerWeek: 0.12, startBf: 12 }),
+  "down",
+  target(base, 12.5)
+);
+
+console.log("--- waiting for the last change to show ---\n");
+
+check(
+  "cut two weeks ago, still reading high — wait, don't cut again",
+  series({ kgPerWeek: 0.35, bfPtsPerWeek: 0.12 }),
+  "hold",
+  { ...base, recomp_adjust: RECOMP_CUT, steer_moved_on: "2026-08-03", steer_last_step: RECOMP_CUT } as Profile,
+  "watch",
+  "2026-08-17"
+);
+
+check(
+  "cut three weeks ago, still reading high — another routine step",
+  series({ kgPerWeek: 0.35, bfPtsPerWeek: 0.12 }),
+  "down",
+  { ...base, recomp_adjust: RECOMP_CUT, steer_moved_on: "2026-08-03", steer_last_step: RECOMP_CUT } as Profile,
+  undefined,
+  "2026-08-24"
+);
+
+check(
+  "cut last week, weight and body fat now dropping — muscle alarm ignores the wait",
+  series({ kgPerWeek: -0.35, bfPtsPerWeek: 0.15 }),
+  "up",
+  { ...base, recomp_adjust: RECOMP_CUT, steer_moved_on: "2026-08-03", steer_last_step: RECOMP_CUT } as Profile,
+  "bad",
+  "2026-08-10"
 );
 
 console.log("--- before the scans have settled ---\n");
@@ -213,8 +316,10 @@ console.log("=== step sizes stay small, and it stops at the limit ===\n");
 const heavy = series({ kgPerWeek: 0.5, bfPtsPerWeek: 0.2 });
 let p: Profile = base;
 for (let week = 1; week <= 8; week++) {
-  const s = steerPlan(p, weightRate(heavy), composition(heavy), maintenance);
-  if (Math.abs(s.step) > STEER_MAX_STEP + 1e-9) {
+  const sig = steerSignals(heavy);
+  const s = steerPlan(p, sig.rate, sig.comp, maintenance);
+  // The one decisive move is allowed to be bigger; every other step is not.
+  if (Math.abs(s.step) > (s.decisive ? Math.abs(RECOMP_CUT) : STEER_MAX_STEP) + 1e-9) {
     failures++;
     console.log(`  FAIL step of ${(s.step * 100).toFixed(1)}% is over the cap`);
   }

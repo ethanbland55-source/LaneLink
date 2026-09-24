@@ -12,6 +12,7 @@ import {
   type Pace,
   type Profile,
   type ProteinBasis,
+  type Review,
   type WeekMap,
   type Weekday,
 } from "./nutrition";
@@ -68,6 +69,21 @@ function isoDate(v: unknown): string | null {
   return /^\d{4}-\d{2}-\d{2}$/.test(s) ? s : null;
 }
 
+/** A stored review, or null if it isn't one — jsonb arrives parsed, text doesn't. */
+function reviewOf(v: unknown): Review | null {
+  let r: any = v;
+  if (typeof v === "string") {
+    try {
+      r = JSON.parse(v);
+    } catch {
+      return null;
+    }
+  }
+  return r && typeof r === "object" && typeof r.headline === "string" && r.from && r.to
+    ? (r as Review)
+    : null;
+}
+
 export function normaliseProfile(p: any): Profile {
   const model: EnergyModel = p?.energy_model === "flat" ? "flat" : "sessions";
   const goal: Goal = GOAL_VALUES.includes(p?.goal) ? p.goal : "maintain";
@@ -101,8 +117,30 @@ export function normaliseProfile(p: any): Profile {
     // falls back to weight_kg until shopping day has come round once.
     plan_weight_kg: optionalNum(p?.plan_weight_kg),
     plan_bf_pct: optionalNum(p?.plan_bf_pct),
+    plan_bmr_kcal: optionalNum(p?.plan_bmr_kcal),
     plan_updated_on: isoDate(p?.plan_updated_on),
     auto_roll: p?.auto_roll === undefined ? true : !!p.auto_roll,
+    // A body fat on your own scale, so 3–40% is the plausible range; anything
+    // outside it is treated as "no target" rather than a target nobody meant.
+    bf_target_pct: (() => {
+      const v = optionalNum(p?.bf_target_pct);
+      return v != null && v >= 3 && v <= 40 ? v : null;
+    })(),
+    steer_moved_on: isoDate(p?.steer_moved_on),
+    steer_last_step: num(p?.steer_last_step, 0),
+    // Next week's decision. Server-written; a client echoing these back in a
+    // PUT is ignored. See lib/review.ts.
+    next_apply_on: isoDate(p?.next_apply_on),
+    next_reviewed_on: isoDate(p?.next_reviewed_on),
+    next_plan_weight_kg: optionalNum(p?.next_plan_weight_kg),
+    next_plan_bf_pct: optionalNum(p?.next_plan_bf_pct),
+    next_plan_bmr_kcal: optionalNum(p?.next_plan_bmr_kcal),
+    next_recomp_adjust:
+      p?.next_recomp_adjust == null || p.next_recomp_adjust === ""
+        ? null
+        : Math.max(-STEER_LIMIT, Math.min(STEER_LIMIT, num(p.next_recomp_adjust, 0))),
+    next_review: reviewOf(p?.next_review),
+    last_review: reviewOf(p?.last_review),
     periodise: p?.periodise === undefined ? true : !!p.periodise,
     cycling: p?.cycling === undefined ? true : !!p.cycling,
     week: normaliseWeek(p?.week_ids ?? p?.week),

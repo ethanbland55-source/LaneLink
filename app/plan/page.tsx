@@ -3,6 +3,7 @@
 import { useEffect, useMemo, useState } from "react";
 import Link from "next/link";
 import { RecalculateDialog } from "../recalculate";
+import { NextWeek } from "../next-week";
 import { applyDayFor, type PendingPortion } from "@/lib/pending";
 import { fatCheck, lossRate, proteinVerdict } from "@/lib/fuelling";
 import { lastRollDay, nextRollDay } from "@/lib/weekly";
@@ -49,13 +50,14 @@ import {
   type Pace,
   type Profile,
   type ProteinBasis,
+  type ReviewLimit,
   type Weekday,
 } from "@/lib/nutrition";
 import { DOW_LABELS, SHOP_DAY_OPTIONS, normaliseProfile } from "@/lib/profile";
 import { Note, SectionLabel } from "../explain";
 import { Flag } from "../flag";
 import { AccountCard } from "../account-ui";
-import { lastShopDay } from "@/lib/weekly";
+import { reviewSchedule } from "@/lib/weekly";
 
 type Meal = {
   id: number;
@@ -300,11 +302,11 @@ export default function PlanPage() {
    */
   const nothingPlanned = meals.every((m) => m.ingredients.length === 0);
 
-  // The weekly roll moves the targets on shopping day; it does not touch the
-  // portions, so say which of the two moved rather than leaving a bare number.
-  const rolledThisWeek =
-    !!profile?.plan_updated_on &&
-    profile.plan_updated_on >= lastShopDay(profile.shop_start_dow);
+  /** When next week gets decided, for the line that says so. */
+  const schedule = useMemo(
+    () => (profile ? reviewSchedule(profile, todayKey) : null),
+    [profile, todayKey]
+  );
 
   /**
    * The goal says protein should be scaled by lean mass and the profile says
@@ -584,10 +586,46 @@ export default function PlanPage() {
     }
   }
 
+  const [reviewBusy, setReviewBusy] = useState(false);
+
+  /** Profile, meals and what's staged, after something server-side moved them. */
+  async function reloadStaged() {
+    const [p, m] = await Promise.all([
+      fetch("/api/profile").then((r) => r.json()),
+      fetch("/api/meals").then((r) => r.json()),
+    ]);
+    setProfile(normaliseProfile(p));
+    setMeals(
+      (m as any[]).map((x) => ({
+        ...x,
+        times_per_day: Number(x.times_per_day ?? 1),
+        day_type_ids: x.day_type_ids ?? null,
+        batch: !!x.batch,
+        share_pct: x.share_pct ?? null,
+      }))
+    );
+    await loadPending();
+  }
+
   async function discardStaged() {
+    setReviewBusy(true);
     await fetch("/api/pending", { method: "DELETE" });
-    setPending([]);
-    flash("Staged changes discarded");
+    await reloadStaged();
+    setReviewBusy(false);
+    flash("Keeping this week's plan");
+  }
+
+  /** Loosen the limit the review says is in the way, then re-run it. */
+  async function loosen(l: ReviewLimit) {
+    setReviewBusy(true);
+    const res = await fetch("/api/review", {
+      method: "PATCH",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ meal_id: l.mealId, slot: l.slot, name: l.name, to: l.to, direction: l.direction }),
+    }).then((r) => r.json());
+    await reloadStaged();
+    setReviewBusy(false);
+    flash(res?.error ?? `${l.name} can now go to ${l.to} g`);
   }
 
   /**
@@ -719,50 +757,19 @@ export default function PlanPage() {
         />
       )}
 
-      {/* Staged, not yet in force. The one thing you must be able to see at a
-          glance, because otherwise the plan on screen and the plan the shop
-          bought for disagree with nothing to explain why. One line, with the
-          detail folded away — it only needs to say that it's there. */}
-      {pending.length > 0 && (
-        <section className="card border border-[var(--color-carbs)]/30 px-5 py-4">
-          <div className="flex items-center gap-3">
-            <p className="mr-auto min-w-0 text-sm font-bold">
-              {pending.length} portion{pending.length === 1 ? "" : "s"} change on{" "}
-              {new Date(pending[0].apply_on + "T12:00:00").toLocaleDateString("en-GB", {
-                weekday: "long",
-              })}
-            </p>
-            <button className="btn btn-sm shrink-0" onClick={discardStaged}>
-              Discard
-            </button>
-          </div>
-          <details className="mt-1.5">
-            <summary className="cursor-pointer text-[0.7rem] text-[#5b6270]">
-              What changes, and when
-            </summary>
-            <ul className="mt-2 space-y-0.5">
-              {pending.map((c) => (
-                <li
-                  key={`${c.meal_id}:${c.slot}`}
-                  className="flex items-baseline gap-2 text-xs text-[var(--color-mut)]"
-                >
-                  <span className="min-w-0 truncate">
-                    {c.meal_name} · {c.name}
-                  </span>
-                  <span className="ml-auto shrink-0 tabular-nums">
-                    {c.was_grams != null ? `${Math.round(c.was_grams)} → ` : ""}
-                    <b className="text-[var(--color-fg)]">{Math.round(c.grams)}</b> g
-                  </span>
-                </li>
-              ))}
-            </ul>
-            <p className="mt-2 text-[0.7rem] leading-relaxed text-[var(--color-mut)]">
-              The plan below is what&rsquo;s in the fridge this week; the shopping list is already
-              buying for these. They come in the evening before, as soon as that day&rsquo;s meals
-              are all ticked off — so what you cook on prep night is next week&rsquo;s numbers.
-            </p>
-          </details>
-        </section>
+      {/* Next week — decided the day before shopping, in force from roll day.
+          Laid out in full rather than as a count with the list folded away:
+          the reason it's decided early is so it can be looked at. */}
+      {(pending.length > 0 || profile.next_review) && (
+        <NextWeek
+          review={profile.next_review}
+          pending={pending}
+          meals={meals}
+          applyOn={profile.next_apply_on ?? pending[0]?.apply_on ?? rollDay}
+          onDiscard={discardStaged}
+          onLoosen={loosen}
+          busy={reviewBusy}
+        />
       )}
 
       {/* Anything actually wrong.
@@ -935,13 +942,16 @@ export default function PlanPage() {
           </p>
         )}
 
-        {rolledThisWeek && weekOff && (
+        {!profile.next_review && pending.length === 0 && profile.auto_roll && (
           <p className="mt-3 text-xs leading-relaxed text-[var(--color-mut)]">
-            Your weigh-ins moved these targets on{" "}
-            {new Date(profile.plan_updated_on + "T12:00:00").toLocaleDateString(undefined, {
+            Next week&rsquo;s plan is worked out on{" "}
+            {schedule && new Date(schedule.reviewOn + "T12:00:00").toLocaleDateString("en-GB", {
               weekday: "long",
-            })}
-            . The portions are still last week's — rebalance to catch them up.
+              day: "numeric",
+              month: "short",
+            })}{" "}
+            — the day before you shop — from your weigh-ins and scans, and shown here in full
+            before anything changes.
           </p>
         )}
 

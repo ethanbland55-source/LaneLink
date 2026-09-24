@@ -4,6 +4,8 @@ import { requireUser } from "@/lib/session";
 import { parseClock, type Tag } from "@/lib/trend";
 import { plausibleBf } from "@/lib/bodyfat";
 import { EXTRA_KEYS, SEGMENT_KEYS, plausible, plausibleSegment } from "@/lib/scan";
+import { refreshReview } from "@/lib/review";
+import { dayKey } from "@/lib/nutrition";
 
 export const dynamic = "force-dynamic";
 
@@ -248,6 +250,10 @@ export async function PUT(req: Request) {
       )
       where id = ${who.id}`;
   }
+
+  // A weigh-in or scan saved on review day goes into the review that is
+  // waiting, so Friday morning's reading counts. See `refreshReview`.
+  if (sent("weight_kg") || sent("bf_pct")) await refreshReview(who.id, dayKey());
 
   return NextResponse.json(row(rows[0]));
 }

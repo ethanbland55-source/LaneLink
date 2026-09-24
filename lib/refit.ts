@@ -1,15 +1,18 @@
 /**
- * Re-fitting the plan on roll day.
+ * Re-fitting the portions to targets that have moved.
  *
- * The weekly roll snapshots your trend weight and your latest body fat figure,
- * which moves the *targets*. On its own that leaves the plan behind: the
- * portions are still the ones fitted to last month's numbers, so the targets
- * say one thing and the food in the containers says another, and the gap grows
- * every week until you happen to press Recalculate.
+ * The weekly review (lib/review.ts) moves the *targets*. On its own that
+ * leaves the plan behind: the portions are still the ones fitted to last
+ * month's numbers, so the targets say one thing and the food in the
+ * containers says another. So the review re-fits as well, and stages the
+ * result for roll day. Same solver the Rebalance button uses, same bounds,
+ * same locks — nothing here is a second opinion about what a good plan is.
  *
- * So rolling now re-fits as well. Same solver the button uses, same bounds,
- * same locks — nothing here is a second opinion about what a good plan is, it
- * just runs the fit you would have run yourself.
+ * This used to write straight to the plan on Monday morning. By then Sunday's
+ * cooking was already in the fridge at last week's sizes and Saturday's shop
+ * had bought for them, so the plan changed under food that had already been
+ * made. Staged, the shopping list buys for the new portions and the cook on
+ * Sunday night weighs them.
  *
  * It only ever touches gram amounts. Names, macros, bounds, locks, shares and
  * which days a meal appears on are all yours, and a re-fit that decided to
@@ -17,15 +20,23 @@
  */
 
 import { sql } from "./db";
-import { snapshot } from "./history";
-import { applyDuePortions, listPending, stagePortions } from "./pending";
+import { listPending, stagePortions } from "./pending";
 import { buildWeekPlan, normaliseDayType, type DayType, type Profile } from "./nutrition";
 import { fitWeek } from "./weekfit";
 import type { PlanMeal } from "./batch";
 import type { Supplement } from "./supplements";
 
-/** How far a single portion may move in one automatic re-fit, as a ratio. */
-const MAX_MOVE = 0.35;
+/**
+ * How far a single portion may move in one automatic re-fit, as a ratio.
+ *
+ * A guard, not a second solver. The bounds you set already keep portions
+ * sane; this only catches something having gone wrong upstream — a mistyped
+ * body fat figure, a target that moved by a third overnight — and then leaving
+ * that one portion where it is is the right answer. Wide enough for the
+ * recomposition cut, which can take a small portion like honey or mayonnaise
+ * down to its lower bound in one go.
+ */
+export const MAX_MOVE = 0.5;
 
 type Row = Record<string, any>;
 
@@ -109,10 +120,10 @@ export async function restagePlan(
 
 /**
  * Load the plan out of the database and fit it. Shared by the two things that
- * want a fresh fit — the weekly roll, which writes it to the plan, and a
- * settings change, which writes it to what is staged.
+ * want a fresh fit — the weekly review and a settings change — and both write
+ * the result to what is staged, never to the plan in force.
  */
-async function fitFromDb(userId: number, profile: Profile, today?: string) {
+export async function fitFromDb(userId: number, profile: Profile, today?: string) {
   const [dtRows, mealRows, ingRows, supRows] = await Promise.all([
     sql`select * from day_types where user_id = ${userId} order by sort_order, id`,
     sql`select * from meals where user_id = ${userId} order by sort_order, id`,
@@ -133,142 +144,11 @@ async function fitFromDb(userId: number, profile: Profile, today?: string) {
   })) as unknown as Supplement[];
 
   const plan = buildWeekPlan(profile, dayTypes, today ? { today } : {});
-  return fitWeek(meals, plan, { mode: "balanced", supplements, drift: "keep_close", even: true });
-}
-
-export type RefitResult = {
-  changed: number;
-  /** Portions the guard refused to move, by name. */
-  held: string[];
-};
-
-/**
- * Re-fit the stored plan against the current targets and write the new gram
- * amounts back.
- *
- * Deliberately quiet about failure. This runs off the back of a page load, and
- * a plan that didn't re-fit is last week's plan — which is the one you shopped
- * for and cooked, so it is a perfectly good thing to be left with. A page that
- * failed to load because the re-fit threw would be much worse.
- */
-export async function refitPlan(
-  userId: number,
-  profile: Profile,
-  today?: string
-): Promise<RefitResult | null> {
-  try {
-    /**
-     * A staged change beats a re-fit, and they land on the same day.
-     *
-     * Both of these fire on the first page load on or after roll day, and the
-     * page fetches `/api/profile` and `/api/meals` in the same `Promise.all` —
-     * so they run concurrently, and whichever finishes last wins. When the
-     * re-fit won it silently overwrote the portions the staged change had just
-     * applied, using grams it had read before they moved. That is the plan you
-     * looked at, approved and pressed a button for, gone, with nothing to say
-     * it ever happened.
-     *
-     * So the staged change goes first here, and if one came into force today —
-     * whether this call applied it or the other request did a moment ago — the
-     * re-fit stands down. It has nothing to add: a staged plan was already
-     * fitted to these targets, by you, on purpose.
-     *
-     * The window is two days rather than one because a staged change can come
-     * into force on the Sunday evening, as soon as that day's meals are ticked
-     * off, so that there is something to cook to. A guard that only looked at
-     * today would miss it by a few hours and overwrite it on the Monday.
-     */
-    const day = today ?? new Date().toISOString().slice(0, 10);
-    await applyDuePortions(userId, day);
-    const staged = (await sql`
-      select 1 from portion_history
-       where user_id = ${userId}
-         and reason = 'staged change' and changed_on >= ${day}::date - 2
-       limit 1`) as any[];
-    if (staged.length) return null;
-
-    const [dtRows, mealRows, ingRows, supRows] = await Promise.all([
-      sql`select * from day_types where user_id = ${userId} order by sort_order, id`,
-      sql`select * from meals where user_id = ${userId} order by sort_order, id`,
-      sql`select * from ingredients where user_id = ${userId} order by sort_order, id`,
-      sql`select * from supplements where user_id = ${userId} order by sort_order, id`.catch(
-        () => [] as Row[]
-      ),
-    ]);
-
-    const dayTypes: DayType[] = (dtRows as Row[]).map((r, i) => normaliseDayType(r, i));
-    const meals = toMeals(mealRows as Row[], ingRows as Row[]);
-    if (!meals.length || !dayTypes.length) return null;
-
-    const supplements = (supRows as Row[]).map((s) => ({
-      ...s,
-      id: Number(s.id),
-      grams: Number(s.grams ?? 0),
-    })) as unknown as Supplement[];
-
-    const plan = buildWeekPlan(profile, dayTypes, today ? { today } : {});
-    // "keep_close", always, and even. A weekly roll moves the targets by a
-    // percent or two, and a free fit is entitled to answer a 2 % change by
-    // halving the banana — same calories, different breakfast, and you'd find
-    // out at 6am on Monday. Taking the same share off every meal first, then
-    // letting the fit correct the macros from there, is what makes an
-    // automatic re-fit safe to leave switched on.
-    const res = fitWeek(meals, plan, {
-      mode: "balanced",
-      supplements,
-      drift: "keep_close",
-      even: true,
-    });
-
-    const before = new Map<number, number>();
-    for (const m of meals) {
-      for (const i of m.ingredients as any[]) before.set(i.id, Number(i.grams));
-    }
-
-    /**
-     * A guard, not a second solver. The bounds already keep portions sane, so
-     * this only catches the case where something has gone wrong upstream — a
-     * mistyped body fat figure, a target that moved by a third overnight — and
-     * in that case doing nothing is the right answer, because you can still
-     * press Recalculate and see it for yourself.
-     */
-    const writes: { id: number; grams: number }[] = [];
-    const held: string[] = [];
-    for (const m of res.meals) {
-      for (const i of m.ingredients as any[]) {
-        const was = before.get(i.id);
-        if (was == null) continue;
-        const now = Math.round(Number(i.grams) * 10) / 10;
-        if (!Number.isFinite(now) || now <= 0) continue;
-        if (Math.abs(now - was) < 0.5) continue;
-        if (was > 0 && Math.abs(now - was) / was > MAX_MOVE) {
-          held.push(i.name);
-          continue;
-        }
-        writes.push({ id: i.id, grams: now });
-      }
-    }
-
-    if (writes.length) {
-      // What they were, before they stop being what they were. This runs
-      // without anyone pressing anything, so "put it back" has to be an option
-      // afterwards — otherwise you open the app on a Monday, find the numbers
-      // have moved, and have no way to say that was fine as it was.
-      await snapshot(userId, "weekly re-fit", today);
-
-      // One statement rather than one per portion: an automatic rewrite that
-      // can stop halfway leaves a plan that is half of each.
-      await sql`
-        update ingredients i
-           set grams = v.grams
-          from (select * from jsonb_to_recordset(${JSON.stringify(writes)}::jsonb)
-                       as t(id int, grams numeric)) v
-         where i.id = v.id and i.user_id = ${userId}`;
-    }
-
-    return { changed: writes.length, held };
-  } catch (e) {
-    console.warn("weekly re-fit skipped:", e);
-    return null;
-  }
+  // "keep_close", always, and even. A weekly review moves the targets by a
+  // few percent, and a free fit is entitled to answer that by halving the
+  // banana — same calories, different breakfast. Taking the same share off
+  // every meal first, then letting the fit correct the macros from there, is
+  // what makes an automatic re-fit safe to leave switched on.
+  const res = fitWeek(meals, plan, { mode: "balanced", supplements, drift: "keep_close", even: true });
+  return Object.assign(res, { input: meals });
 }

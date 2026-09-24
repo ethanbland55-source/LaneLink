@@ -138,17 +138,30 @@ async function dayIsDoneBeforeRoll(userId: number, day: string): Promise<boolean
 export async function applyDuePortions(userId: number, today?: string): Promise<number> {
   try {
     const day = today ?? dayKey();
-    const soon = (await sql`
-      select meal_id, slot, name, grams, to_char(apply_on, 'YYYY-MM-DD') as apply_on
-        from pending_portions
-       where user_id = ${userId} and apply_on <= ${day}::date + 1`) as any[];
-    if (!soon.length) return 0;
+    const [soon, prof] = (await Promise.all([
+      sql`
+        select meal_id, slot, name, grams, to_char(apply_on, 'YYYY-MM-DD') as apply_on
+          from pending_portions
+         where user_id = ${userId} and apply_on <= ${day}::date + 1`,
+      sql`
+        select to_char(next_apply_on, 'YYYY-MM-DD') as next_apply_on
+          from profile
+         where id = ${userId} and next_apply_on <= ${day}::date + 1`,
+    ])) as any[][];
+    const targetsOn: string | null = prof[0]?.next_apply_on ?? null;
+    if (!soon.length && !targetsOn) return 0;
 
     const ready = soon.filter((r) => String(r.apply_on) <= day);
-    const tomorrow = soon.filter((r) => String(r.apply_on) > day);
+    const early = soon.some((r) => String(r.apply_on) > day) || (targetsOn != null && targetsOn > day);
+    const done = early && (await dayIsDoneBeforeRoll(userId, day));
 
-    const due =
-      tomorrow.length && (await dayIsDoneBeforeRoll(userId, day)) ? soon : ready;
+    // Next week's targets come in with next week's portions — same moment,
+    // same test — so Monday's numbers and Monday's boxes agree. It goes first
+    // because it is the one that can happen with no portions to move at all:
+    // a review that held still still rolls the weight forward.
+    if (targetsOn && (targetsOn <= day || done)) await applyStagedTargets(userId, targetsOn);
+
+    const due = done ? soon : ready;
     if (!due.length) return 0;
 
     // Everything up to and including the latest date being applied.
@@ -185,6 +198,36 @@ export async function applyDuePortions(userId: number, today?: string): Promise<
     console.warn("pending portions not applied:", e);
     return 0;
   }
+}
+
+/**
+ * Swap next week's targets in, from what the weekly review parked on the
+ * profile. One statement, conditional on the date it was parked for, so two
+ * page loads racing each other apply it once — the second finds nothing.
+ *
+ * Every right-hand side reads the row as it was before the update, which is
+ * what lets the step be recorded as `next − current` in the same breath.
+ */
+async function applyStagedTargets(userId: number, on: string): Promise<void> {
+  await sql`
+    update profile set
+      plan_weight_kg  = coalesce(next_plan_weight_kg, plan_weight_kg),
+      plan_bf_pct     = coalesce(next_plan_bf_pct, plan_bf_pct),
+      plan_bmr_kcal   = coalesce(next_plan_bmr_kcal, plan_bmr_kcal),
+      recomp_adjust   = coalesce(next_recomp_adjust, recomp_adjust),
+      steer_moved_on  = case when next_recomp_adjust is not null
+                              and abs(next_recomp_adjust - recomp_adjust) > 0.0005
+                             then next_apply_on else steer_moved_on end,
+      steer_last_step = case when next_recomp_adjust is not null
+                              and abs(next_recomp_adjust - recomp_adjust) > 0.0005
+                             then next_recomp_adjust - recomp_adjust else steer_last_step end,
+      plan_updated_on = next_apply_on,
+      last_review     = coalesce(next_review, last_review),
+      next_apply_on = null, next_reviewed_on = null, next_plan_weight_kg = null,
+      next_plan_bf_pct = null, next_plan_bmr_kcal = null, next_recomp_adjust = null,
+      next_review = null,
+      updated_at = now()
+    where id = ${userId} and next_apply_on = ${on}::date`;
 }
 
 /** Everything still waiting, in plan order, with the names to show it. */
@@ -274,9 +317,31 @@ export async function stagePortions(
   return inserted.length;
 }
 
-/** Throw away what's staged, leaving the live plan alone. */
+/**
+ * Throw away what's staged, leaving the live plan alone.
+ *
+ * If it came from the weekly review, the review is kept as a decision — to
+ * hold still — rather than deleted. Deleted, the next page load would see no
+ * review for the week and run it again, and the Discard button would appear
+ * to do nothing. Held, next week is this week: same calories, same body
+ * figures, same portions, and it says so.
+ */
 export async function discardPending(userId: number): Promise<void> {
   await sql`delete from pending_portions where user_id = ${userId}`;
+  await sql`
+    update profile set
+      next_recomp_adjust  = recomp_adjust,
+      next_plan_weight_kg = plan_weight_kg,
+      next_plan_bf_pct    = plan_bf_pct,
+      next_plan_bmr_kcal  = plan_bmr_kcal,
+      next_review = case when next_review is null then null
+                    else next_review || jsonb_build_object(
+                      'dismissed', true, 'moving', false, 'decisive', false,
+                      'stepKcal', 0, 'to', next_review -> 'from',
+                      'headline', 'Keeping this week''s plan',
+                      'detail', 'You chose to keep this week''s portions and calories for next week as well. The next review is on the usual day.')
+                    end
+    where id = ${userId} and next_apply_on is not null`;
 }
 
 /**
