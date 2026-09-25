@@ -157,7 +157,7 @@ export function CheatSheet({
         <div>
           <p className="label mb-1.5">What is it</p>
           <input
-            className="input w-full"
+            className="field w-full"
             value={name}
             placeholder="Curry with the lads"
             onChange={(e) => setName(e.target.value)}
@@ -206,7 +206,7 @@ export function CheatSheet({
             onCommit={setKcal}
             inputMode="numeric"
             placeholder="1200"
-            className="input w-full"
+            className="field w-full"
           />
         </div>
 
@@ -232,7 +232,7 @@ export function CheatSheet({
                   allowEmpty
                   onCommit={set as (n: number | null) => void}
                   inputMode="numeric"
-                  className="input w-full"
+                  className="field w-full"
                 />
               </div>
             ))}

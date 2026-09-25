@@ -214,6 +214,8 @@ async function applyStagedTargets(userId: number, on: string): Promise<void> {
       plan_weight_kg  = coalesce(next_plan_weight_kg, plan_weight_kg),
       plan_bf_pct     = coalesce(next_plan_bf_pct, plan_bf_pct),
       plan_bmr_kcal   = coalesce(next_plan_bmr_kcal, plan_bmr_kcal),
+      deficit_scale   = coalesce(next_deficit_scale, 1),
+      pace_adjust     = coalesce(next_pace_adjust, pace_adjust),
       recomp_adjust   = coalesce(next_recomp_adjust, recomp_adjust),
       steer_moved_on  = case when next_recomp_adjust is not null
                               and abs(next_recomp_adjust - recomp_adjust) > 0.0005
@@ -225,6 +227,7 @@ async function applyStagedTargets(userId: number, on: string): Promise<void> {
       last_review     = coalesce(next_review, last_review),
       next_apply_on = null, next_reviewed_on = null, next_plan_weight_kg = null,
       next_plan_bf_pct = null, next_plan_bmr_kcal = null, next_recomp_adjust = null,
+      next_deficit_scale = null, next_pace_adjust = null,
       next_review = null,
       updated_at = now()
     where id = ${userId} and next_apply_on = ${on}::date`;
@@ -334,6 +337,8 @@ export async function discardPending(userId: number): Promise<void> {
       next_plan_weight_kg = plan_weight_kg,
       next_plan_bf_pct    = plan_bf_pct,
       next_plan_bmr_kcal  = plan_bmr_kcal,
+      next_deficit_scale  = deficit_scale,
+      next_pace_adjust    = pace_adjust,
       next_review = case when next_review is null then null
                     else next_review || jsonb_build_object(
                       'dismissed', true, 'moving', false, 'decisive', false,

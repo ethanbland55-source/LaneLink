@@ -13,6 +13,8 @@ import {
   WEEKDAYS,
   addDays,
   aimNow,
+  touchesMeet,
+  weekDeficitScale,
   buildWeekPlan,
   normaliseDayType,
   planWeight,
@@ -25,7 +27,7 @@ import {
 import { normaliseProfile } from "./profile";
 import { applyDuePortions, stagePortions } from "./pending";
 import { fitFromDb, MAX_MOVE } from "./refit";
-import { bfNowOf, steerPlan, steerSignals } from "./steer";
+import { bfNowOf, paceAdjustFor, steerPlan, steerSignals } from "./steer";
 import { planningBodyFat, reviewDayFor, reviewSchedule, rollFigures } from "./weekly";
 import type { WeighIn } from "./trend";
 
@@ -44,7 +46,8 @@ export async function readProfile(userId: number): Promise<Profile | null> {
            to_char(dob, 'YYYY-MM-DD')              as dob,
            to_char(steer_moved_on, 'YYYY-MM-DD')   as steer_moved_on,
            to_char(next_apply_on, 'YYYY-MM-DD')    as next_apply_on,
-           to_char(next_reviewed_on, 'YYYY-MM-DD') as next_reviewed_on
+           to_char(next_reviewed_on, 'YYYY-MM-DD') as next_reviewed_on,
+           to_char(bf_target_by, 'YYYY-MM-DD')     as bf_target_by
       from profile where id = ${userId}`) as any[];
   return rows[0] ? normaliseProfile(rows[0]) : null;
 }
@@ -105,8 +108,13 @@ export async function runReview(
 
   const dayTypes = (dtRows as any[]).map((d, i) => normaliseDayType(d, i));
   const before = buildWeekPlan(p, dayTypes);
-  const { rate, comp } = steerSignals(entries);
-  const steer = steerPlan(p, rate, comp, before.maintenance, { applyOn });
+  const { rate, comp, returnFrom } = steerSignals(entries, p.events);
+  const steer = steerPlan(p, rate, comp, before.maintenance, { applyOn, returnFrom });
+
+  // A taper or race week carries less of the deficit, or none; the steer's own
+  // value rides through untouched. See deficitScaleOn in lib/nutrition.ts.
+  const meet = touchesMeet(p.events, applyOn, addDays(applyOn, 6));
+  const scale = weekDeficitScale(p.events, applyOn);
 
   // The scale's resting burn: the middle of the last three scans that gave one.
   const bmrs = entries
@@ -116,12 +124,17 @@ export async function runReview(
     .sort((a, b) => a - b);
   const scaleBmr = bmrs.length ? bmrs[Math.floor(bmrs.length / 2)] : p.plan_bmr_kcal;
 
+  // The deficit a target date needs, re-worked from where body fat is now.
+  const pace = paceAdjustFor(p, bfNowOf(comp), applyOn, before.maintenance);
+
   const next: Profile = {
     ...p,
+    pace_adjust: pace,
     plan_weight_kg: figures.weightKg,
     plan_bf_pct: figures.bodyFatPct ?? p.plan_bf_pct,
     plan_bmr_kcal: scaleBmr ?? null,
     recomp_adjust: steer.next,
+    deficit_scale: scale,
   };
   const after = buildWeekPlan(next, dayTypes);
 
@@ -182,16 +195,35 @@ export async function runReview(
   }
   await stagePortions(userId, rows, applyOn, "Weekly review");
 
-  const aim = aimNow(p, bfNowOf(comp), steer.atTarget);
+  const aim = aimNow(p, bfNowOf(comp), steer.atTarget, applyOn);
+
+  // What actually changes next week is the steer's move and the target pace's
+  // together — saying "no change" while the pace eases in would be untrue.
+  const paceKcal = Math.round(((pace - (p.pace_adjust ?? 0)) * before.maintenance) / 25) * 25;
+  const easingIn = paceKcal !== 0 && !steer.moving;
   const review: Review = {
     on: today,
     applyOn,
-    headline: steer.headline,
-    detail: steer.detail,
-    tone: steer.tone,
-    moving: steer.moving,
+    headline: easingIn
+      ? paceKcal < 0
+        ? "Easing into your target pace"
+        : "Easing off — ahead of your target"
+      : steer.headline,
+    detail: [
+      scale < 1
+        ? `${scale === 0 ? "No deficit" : "Half the deficit"} this week for ${meet?.name ?? "the meet"}.`
+        : "",
+      easingIn
+        ? `Your target needs about ${Math.round((((aim.needPtsPerMonth ?? 0) / 100) * planWeight(next) * 7700) / 30.44 / 5) * 5} kcal a day under maintenance; it comes in 2% a week so the food never jumps.`
+        : "",
+      steer.detail,
+    ]
+      .filter(Boolean)
+      .join(" "),
+    tone: easingIn ? "good" : steer.tone,
+    moving: steer.moving || paceKcal !== 0,
     decisive: steer.decisive,
-    stepKcal: steer.kcal,
+    stepKcal: steer.kcal + paceKcal,
     totalKcal: steer.totalKcal,
     cooldownUntil: steer.cooldownUntil,
     from: summarise(before, p),
@@ -225,6 +257,8 @@ export async function runReview(
       next_plan_weight_kg = ${next.plan_weight_kg},
       next_plan_bf_pct    = ${next.plan_bf_pct},
       next_plan_bmr_kcal  = ${next.plan_bmr_kcal},
+      next_deficit_scale  = ${scale},
+      next_pace_adjust    = ${pace},
       next_recomp_adjust  = ${next.recomp_adjust},
       next_review         = ${JSON.stringify(review)}::jsonb,
       updated_at = now()

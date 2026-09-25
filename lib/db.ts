@@ -35,7 +35,7 @@ let schemaReady: Promise<void> | null = null;
  * a database stamped with an older number runs the whole migration again, and
  * every statement in it is `if not exists`, so running it again is harmless.
  */
-const SCHEMA_VERSION = "2026-09-24.1-weekly-review";
+const SCHEMA_VERSION = "2026-09-25.1-meets-and-breaks";
 
 /**
  * Creates the tables if they don't exist, adds any columns a newer version
@@ -287,6 +287,16 @@ async function createSchema() {
   // Where a recomposition stops: reach this body fat and the plan holds it and
   // fuels the training instead of cutting. See ATHLETIC_HOLD in lib/nutrition.ts.
   await sql`alter table profile add column if not exists bf_target_pct numeric`;
+  // When to reach it by, and the meets and weeks off the plan works around.
+  await sql`alter table profile add column if not exists bf_target_by date`;
+  await sql`alter table profile add column if not exists events jsonb not null default '[]'::jsonb`;
+  // How much of the deficit a taper or race week carries; the steer's own
+  // value is kept. See deficitScaleOn in lib/nutrition.ts.
+  await sql`alter table profile add column if not exists deficit_scale numeric not null default 1`;
+  await sql`alter table profile add column if not exists next_deficit_scale numeric`;
+  // The deficit a target date needs, planned up front. See paceAdjustFor.
+  await sql`alter table profile add column if not exists pace_adjust numeric not null default 0`;
+  await sql`alter table profile add column if not exists next_pace_adjust numeric`;
   await sql`alter table profile add column if not exists steer_last_step numeric not null default 0`;
   // Next week, decided on review day (the day before shopping) and held here
   // until roll day — or Sunday evening once the day's meals are ticked off.

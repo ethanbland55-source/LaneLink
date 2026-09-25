@@ -642,6 +642,32 @@ the plan keeps you within about a point of it with small nudges either way — w
 to climb on muscle. It only starts recomposing again if body fat climbs a full point
 above the target, so one wet or dry morning can't flip it.
 
+### A target date, meets and time off
+
+Set a date on the target and the review **plans the pace up front** instead of waiting
+for a month of scans to prove it is behind. It works out the fat that has to come off
+over the days that can carry a deficit, turns that into a daily deficit (never more than
+a point of body fat a month), and brings it in at most 2% a week. Every Friday it re-works
+the pace from where body fat actually is — behind asks a little more, ahead a little
+less — while the steer corrects maintenance off the weight trend. Simulated over a
+26-week season it lands within a few tenths of the target with weight roughly level:
+about 2 kg of fat off and 1.5 kg of muscle on.
+
+**Meets** (Today → Add a meet) protect the taper by how hard you taper:
+
+| taper | week before | race week |
+| --- | --- | --- |
+| Full | no deficit (~2 weeks) | no deficit |
+| Partial (semi/half) | half the deficit | no deficit |
+| Racing through | normal | half the deficit |
+
+**Time off** (Today → Time off) turns those days into rest days — rest-day food, and a
+shopping list without the pre-swim snacks. Around either, the review holds still, and
+the weigh-ins from them and the five days after are left out of the trend: a taper, a
+carb load or a week off moves the scale by a kilo of glycogen and water that isn't fat.
+Back from time off, once that has settled, anything still gained is assumed half fat and
+comes back off over about four weeks — straight away, not after a month of scans.
+
 ### Does it work?
 
 `bench/closed-loop.ts` closes the loop: a simulated swimmer on the real plan, whose true
@@ -657,6 +683,7 @@ each.
 | D. Eating ~300 kcal too little | eases up in 40/40, cuts in 1/40 |
 | E. Far over, past the limit | goes to −10% and says the problem is an input |
 | F. Cut running, target one point away | eases out at the target in 40/40, settles at maintenance, no big cut after |
+| G. Target date, a partial and a full taper, Christmas at +1,000 kcal a day | lands at 11.8% against 11.5%, weight −0.06%/wk, never moves during a meet or time off, catches up after Christmas in 26/40 |
 
 `bench/steer.ts` checks each reading against the grid above, and the cooldown.
 

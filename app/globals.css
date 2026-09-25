@@ -93,6 +93,13 @@ body {
 
 /* Sits one step ABOVE both .card and .sunk so an input always reads as an
    input — matching either surface makes the boxes vanish into the row. */
+/* Date and time pickers draw their own icon and popup; on this dark ground they
+   need telling it's dark, or the calendar icon is black on near-black. */
+input[type="date"],
+input[type="time"] {
+  color-scheme: dark;
+}
+
 .field {
   background: #1e222a;
   border: 1px solid #2a2f38;

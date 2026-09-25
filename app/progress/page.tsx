@@ -1,12 +1,12 @@
 "use client";
 
 import { useCallback, useEffect, useMemo, useState } from "react";
-import { Stat } from "../macro-ui";
 import { TrendChart } from "../trend-chart";
 import { NumberField } from "../number-field";
 import {
   aimNow,
   buildWeekPlan,
+  planWeight,
   dayKey,
   goalDef,
   normaliseDayType,
@@ -33,19 +33,14 @@ import { STEER_MIN_READINGS, bfNowOf, steerPlan, steerSignals, type Reading } fr
 import { Note } from "../explain";
 import { Flag } from "../flag";
 import {
-  DEFAULT_RISE_PER_HOUR,
   SCAN_MIN_POINTS,
-  calibrate,
   composition,
   extraChange,
   hoursAwake,
-  isScan,
   learnOffsets,
   parseClock,
   riseAt,
   trendLine,
-  weightRate,
-  type IntakeDay,
   type WeighIn,
 } from "@/lib/trend";
 
@@ -70,7 +65,6 @@ export default function ProgressPage() {
   const [profile, setProfile] = useState<Profile | null>(null);
   const [dayTypes, setDayTypes] = useState<DayType[]>([]);
   const [entries, setEntries] = useState<WeighIn[]>([]);
-  const [intake, setIntake] = useState<IntakeDay[]>([]);
   const [loading, setLoading] = useState(true);
   const [flash, setFlash] = useState<string | null>(null);
 
@@ -80,20 +74,19 @@ export default function ProgressPage() {
   const [scan, setScan] = useState<ScanForm>(EMPTY_SCAN);
   /** The body fat target being typed, before it's saved. */
   const [targetDraft, setTargetDraft] = useState<number | null | undefined>(undefined);
+  const [dateDraft, setDateDraft] = useState<string | null | undefined>(undefined);
   /** The scan form open on a day that isn't asking for it. */
   const [editing, setEditing] = useState(false);
 
   const load = useCallback(async () => {
-    const [p, dt, w, i] = await Promise.all([
+    const [p, dt, w] = await Promise.all([
       fetch("/api/profile").then((r) => r.json()),
       fetch("/api/day-types").then((r) => r.json()),
       fetch("/api/weigh-ins?days=180").then((r) => r.json()),
-      fetch("/api/intake?days=120").then((r) => r.json()),
     ]);
     setProfile(normaliseProfile(p));
     setDayTypes((dt as any[]).map((x, n) => normaliseDayType(x, n)));
     setEntries(w);
-    setIntake(i);
     // Reload today's entry into both forms so a second save edits rather than
     // silently wipes what was taken earlier.
     const mine = (w as any[]).find((e) => e.day === dayKey());
@@ -148,11 +141,6 @@ export default function ProgressPage() {
     [profile, plan, signals, schedule]
   );
   const decided = profile?.next_review ?? null;
-
-  const cal = useMemo(
-    () => (plan ? calibrate(entries, intake, plan.maintenance) : null),
-    [entries, intake, plan]
-  );
 
   const offsets = useMemo(() => learnOffsets(entries), [entries]);
 
@@ -295,10 +283,9 @@ export default function ProgressPage() {
   }
 
   // The aim in force — the hold-and-fuel one once the body fat target is reached.
-  const aim = aimNow(profile, bfNowOf(signals.comp), steer.atTarget);
+  const aim = aimNow(profile, bfNowOf(signals.comp), steer.atTarget, schedule?.rollOn);
   const showForm = editing || (scanToday && !scannedToday);
   const scanDayWords = scanDows.map((d) => DOW_LABELS[d]).join(" and ");
-  const latestBmr = lastScan?.extras.bmr_kcal ?? null;
 
   return (
     <div className="space-y-3">
@@ -496,50 +483,68 @@ export default function ProgressPage() {
           />
         </div>
 
-        {/* Where the recomposition stops. On the scale's own terms, because
-            that's the only body fat figure this app has — and it is a few
-            points off a lab method in one direction or the other for everyone. */}
+        {/* Where the recomposition stops, and by when. On the scale's own terms,
+            because that's the only body fat figure this app has. */}
         {profile.goal === "recomp" && (
           <div className="mt-4 rounded-xl px-4 py-3" style={{ background: "#0e1013" }}>
-            <div className="flex items-center gap-3">
-              <div className="min-w-0 flex-1">
-                <p className="text-sm font-semibold">Body fat target</p>
-                <p className="mt-0.5 text-xs leading-relaxed text-[var(--color-mut)]">
-                  {steer.atTarget
-                    ? "You're there. The plan now holds you in range and fuels the training."
-                    : lastScan
-                      ? `On your scale. You're at about ${lastScan.bfPct.toFixed(1)}%.`
-                      : "On your scale."}
-                </p>
+            <p className="text-sm font-semibold">Body fat target</p>
+            <div className="mt-2 grid grid-cols-[5.5rem_1fr] items-center gap-2">
+              <div className="flex items-center gap-1.5">
+                <NumberField
+                  step={0.5}
+                  allowEmpty
+                  className="w-full px-2 py-1.5 text-right text-sm"
+                  placeholder="none"
+                  aria-label="Body fat target, per cent"
+                  value={targetDraft === undefined ? profile.bf_target_pct : targetDraft}
+                  onCommit={(v) => setTargetDraft(v)}
+                />
+                <span className="text-sm text-[var(--color-mut)]">%</span>
               </div>
-              <NumberField
-                step={0.5}
-                allowEmpty
-                className="w-20 px-2 py-1.5 text-right text-sm"
-                placeholder="none"
-                aria-label="Body fat target, per cent"
-                value={targetDraft === undefined ? profile.bf_target_pct : targetDraft}
-                onCommit={(v) => setTargetDraft(v)}
-              />
-              <span className="text-sm text-[var(--color-mut)]">%</span>
+              <label className="flex min-w-0 items-center gap-2">
+                <span className="shrink-0 text-sm text-[var(--color-mut)]">by</span>
+                <input
+                  type="date"
+                  className="field min-w-0 flex-1 px-2 py-1.5 text-sm"
+                  aria-label="Reach it by"
+                  value={(dateDraft === undefined ? profile.bf_target_by : dateDraft) ?? ""}
+                  onChange={(e) => setDateDraft(e.target.value || null)}
+                />
+              </label>
             </div>
-            {targetDraft !== undefined && targetDraft !== profile.bf_target_pct && (
+            <p className="mt-2 text-xs leading-relaxed text-[var(--color-mut)]">
+              {steer.atTarget
+                ? "You're there — holding you in range, fully fuelled."
+                : aim.needPtsPerMonth != null
+                  ? `About ${lastScan ? lastScan.bfPct.toFixed(1) : "?"}% now · needs −${aim.needPtsPerMonth.toFixed(1)} points a month, about ${Math.round((((aim.needPtsPerMonth / 100) * planWeight(profile) * 7700) / 30.44) / 5) * 5} kcal a day under maintenance.`
+                  : lastScan
+                    ? `About ${lastScan.bfPct.toFixed(1)}% now.`
+                    : "On your scale."}
+            </p>
+            {((targetDraft !== undefined && targetDraft !== profile.bf_target_pct) ||
+              (dateDraft !== undefined && dateDraft !== profile.bf_target_by)) && (
               <button
                 className="btn btn-sm btn-accent mt-3 w-full"
                 onClick={async () => {
                   await patch(
-                    { bf_target_pct: targetDraft },
-                    targetDraft == null ? "Target cleared" : `Target set to ${targetDraft}%`
+                    {
+                      ...(targetDraft !== undefined ? { bf_target_pct: targetDraft } : {}),
+                      ...(dateDraft !== undefined ? { bf_target_by: dateDraft } : {}),
+                    },
+                    "Target saved — next week re-worked"
                   );
                   setTargetDraft(undefined);
+                  setDateDraft(undefined);
+                  await load();
                 }}
               >
                 Save target
               </button>
             )}
             <Note label="What happens there">
-              At the target the plan stops cutting and holds you there, fully fuelled. International
-              swimmers sit around 8–12%.
+              The pace comes from the weeks you have left — tapers and time off count for less —
+              and is capped so it never gets too fast. At the target it holds you there, fully
+              fuelled. International swimmers sit around 8–12%.
             </Note>
           </div>
         )}
@@ -609,67 +614,29 @@ export default function ProgressPage() {
           a little back, otherwise nothing moves. Training days keep their carbs.
         </Note>
 
-        {/* Maintenance itself, measured. The steer sets the offset; this sets
-            what it's an offset from. */}
-        <details className="mt-3 border-t border-[#1c1f25] pt-3">
-          <summary className="cursor-pointer text-xs text-[var(--color-mut)]">
-            What your maintenance actually is
-          </summary>
-          {latestBmr != null && (
-            <p className="mt-3 text-xs leading-relaxed text-[var(--color-mut)]">
-              Resting burn — scale{" "}
-              <b className="text-[#f2f4f7]">{Math.round(latestBmr).toLocaleString()} kcal</b>, plan{" "}
-              {plan.bmr.toLocaleString()} ({plan.method}).
-              </p>
-          )}
-          {cal ? (
-            <>
-              <div className="mt-3 grid grid-cols-3 gap-3">
-                <Stat label="Formula" value={plan.maintenance} sub="BMR + sessions" />
-                <Stat label="Your data" value={cal.tdee} accent sub={`${cal.confidence} confidence`} />
-                <Stat
-                  label="Difference"
-                  value={`${cal.tdee - plan.maintenance >= 0 ? "+" : ""}${cal.tdee - plan.maintenance}`}
-                  sub={`${Math.round((cal.factor - 1) * 100)}%`}
-                />
-              </div>
-
-              <p className="mt-3 text-xs leading-relaxed text-[var(--color-mut)]">
-                {cal.days} days: you ate {cal.intake.toLocaleString()} kcal a day and the trend moved{" "}
-                {signed(cal.kgPerWeek, 2)} kg a week.
-                </p>
-
-              {cal.confidence === "low" && (
-                <Flag
-                  className="mt-2"
-                  title="Thin data so far"
-                  detail="More logged days before it's worth acting on."
-                />
-              )}
-
-              <button
-                className={`mt-3 w-full ${profile.use_calibration ? "btn" : "btn btn-accent"}`}
-                onClick={() =>
-                  patch(
-                    {
-                      calibrated_tdee: profile.use_calibration ? profile.calibrated_tdee : cal.tdee,
-                      use_calibration: !profile.use_calibration,
-                    },
-                    profile.use_calibration ? "Back to the formula" : "Using your own numbers"
-                  )
-                }
-              >
-                {profile.use_calibration
-                  ? "Stop using it, go back to the formula"
-                  : "Use this instead of the formula"}
-              </button>
-            </>
-          ) : (
-            <p className="mt-3 text-xs leading-relaxed text-[var(--color-mut)]">
-              Needs about two weeks of weigh-ins and logged meals.
-              </p>
-          )}
-        </details>
+        <div className="mt-4 flex flex-wrap items-center gap-3">
+          <button className="btn btn-sm" disabled={reviewing} onClick={reviewNow}>
+            {reviewing ? "Working it out…" : "Work out next week now"}
+          </button>
+          <label className="flex items-center gap-2">
+            <button
+              className="tick"
+              data-on={profile.auto_roll}
+              aria-pressed={profile.auto_roll}
+              onClick={() =>
+                patch(
+                  { auto_roll: !profile.auto_roll },
+                  profile.auto_roll ? "You'll work it out yourself" : "Will work it out every week"
+                )
+              }
+            >
+              {profile.auto_roll ? "✓" : ""}
+            </button>
+            <span className="text-xs text-[var(--color-mut)]">
+              Every {DOW_LABELS[reviewDow(profile)]}
+            </span>
+          </label>
+        </div>
       </section>
 
       {/* Trend weight — the chart, for looking at rather than acting on. */}
@@ -705,115 +672,6 @@ export default function ProgressPage() {
         </p>
       </section>
 
-      {/* What this week's plan is built on, and what it's about to do */}
-      <section className="card px-5 py-5">
-        <p className="label">This week&rsquo;s plan</p>
-        <div className="mt-2 flex flex-wrap items-baseline gap-x-3 gap-y-1">
-          <p className="num-hero text-[2.5rem]">{roll.current.weightKg.toFixed(1)}</p>
-          <p className="text-sm text-[var(--color-mut)]">
-            kg
-            {roll.current.bodyFatPct != null && ` · ${roll.current.bodyFatPct}% body fat`}
-          </p>
-        </div>
-
-        <Note label="Where this comes from">
-          {roll.current.fromSnapshot
-            ? `Your trend, fixed for the week so the shop and the cooking match.`
-            : `Your typed-in weight, until there's a trend.`}
-        </Note>
-
-        <p className="mt-3 text-xs leading-relaxed text-[#5b6270]">
-          {profile.next_review
-            ? `Next week is worked out and comes in on ${prettyDay(profile.next_review.applyOn)} — it's on the Plan page.`
-            : schedule
-              ? `Next week gets worked out ${prettyDay(schedule.reviewOn)}.`
-              : ""}
-          {roll.figures &&
-            ` Your trend is ${roll.figures.weightKg.toFixed(1)} kg right now, from ${roll.figures.readings} weigh-ins.`}
-        </p>
-        <button className="btn btn-sm mt-3" disabled={reviewing} onClick={reviewNow}>
-          {reviewing ? "Working it out…" : "Work out next week now"}
-        </button>
-
-        <label className="mt-4 flex items-center gap-2.5">
-          <button
-            className="tick"
-            data-on={profile.auto_roll}
-            aria-pressed={profile.auto_roll}
-            onClick={() =>
-              patch(
-                { auto_roll: !profile.auto_roll },
-                profile.auto_roll ? "You'll work it out yourself" : "Will work it out every week"
-              )
-            }
-          >
-            {profile.auto_roll ? "✓" : ""}
-          </button>
-          <span className="text-sm">
-            Work out next week for me every {DOW_LABELS[reviewDow(profile)]}
-          </span>
-        </label>
-      </section>
-
-      {/* The numbers, as numbers */}
-      {entries.length > 0 && (
-        <section className="card px-5 py-5">
-          <p className="label mb-3">Recent readings</p>
-          <div className="overflow-x-auto">
-            <table className="w-full text-left text-xs tabular-nums">
-              <thead>
-                <tr className="text-[var(--color-mut)]">
-                  <th className="pb-2 pr-3 font-semibold">Day</th>
-                  <th className="pb-2 pr-3 font-semibold">Weight</th>
-                  <th className="pb-2 pr-3 font-semibold">Trend</th>
-                  <th className="pb-2 pr-3 font-semibold">Body fat</th>
-                  <th className="pb-2 font-semibold">When</th>
-                </tr>
-              </thead>
-              <tbody>
-                {[...entries]
-                  .slice(-14)
-                  .reverse()
-                  .map((e) => {
-                    const t = line.find((p) => p.day === e.day);
-                    return (
-                      <tr key={e.day} className="border-t border-[#1c1f25]">
-                        <td className="py-1.5 pr-3 whitespace-nowrap">{shortDay(e.day)}</td>
-                        <td className="py-1.5 pr-3">
-                          {e.weight_kg != null ? Number(e.weight_kg).toFixed(1) : "—"}
-                        </td>
-                        <td className="py-1.5 pr-3 text-[var(--color-mut)]">
-                          {t ? t.trend.toFixed(1) : "—"}
-                        </td>
-                        <td
-                          className="py-1.5 pr-3"
-                          style={e.bf_pct != null && !isScan(e) ? { color: "#5b6270" } : undefined}
-                        >
-                          {e.bf_pct != null
-                            ? `${Number(e.bf_pct).toFixed(1)}%${isScan(e) ? "" : "*"}`
-                            : "—"}
-                        </td>
-                        <td className="py-1.5 text-[var(--color-mut)]">
-                          {e.at_time ??
-                            (e.tag === "evening"
-                              ? "evening"
-                              : e.tag === "other"
-                                ? "daytime"
-                                : "morning")}
-                        </td>
-                      </tr>
-                    );
-                  })}
-              </tbody>
-            </table>
-          </div>
-          {entries.some((e) => e.bf_pct != null && !isScan(e)) && (
-            <p className="mt-2 text-[0.7rem] leading-relaxed text-[#5b6270]">
-              * old tape estimate — not used in the trend.
-              </p>
-          )}
-        </section>
-      )}
     </div>
   );
 }
@@ -1264,14 +1122,6 @@ function bfAimText([lo, hi]: [number, number]): string {
 function prettyDay(day: string): string {
   return new Date(day + "T12:00:00").toLocaleDateString("en-GB", {
     weekday: "short",
-    day: "numeric",
-    month: "short",
-  });
-}
-
-/** "30 Aug" — for the table, where the weekday is noise. */
-function shortDay(day: string): string {
-  return new Date(day + "T12:00:00").toLocaleDateString("en-GB", {
     day: "numeric",
     month: "short",
   });

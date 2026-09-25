@@ -5,12 +5,12 @@ import Link from "next/link";
 import { Bar, MacroChips, MacroTile, Segmented } from "./macro-ui";
 import {
   addDays,
+  breakOn,
   buildWeekPlan,
   dayKey,
   dayTypeIdFor,
   itemMacros,
   normaliseDayType,
-  planWeight,
   sumMacros,
   targetsFor,
   totalFor,
@@ -18,8 +18,8 @@ import {
   type Item,
   type Profile,
 } from "@/lib/nutrition";
-import { activityLabel } from "@/lib/activities";
-import { doseSpacing } from "@/lib/protein";
+import { activityDef } from "@/lib/activities";
+import { CalendarStrip } from "./calendar-ui";
 import { NumberField } from "./number-field";
 import {
   TIMING_LABEL,
@@ -259,25 +259,6 @@ export default function TodayPage() {
     return suggested.filter((m) => m.id !== todayCheat.meal_id);
   }, [todayCheat, suggested]);
 
-  /**
-   * What the times you logged actually say. Only meals with a time can be
-   * placed, so this stays quiet until there are at least two of them.
-   */
-  const spacing = useMemo(
-    () =>
-      profile
-        ? doseSpacing(
-            entries.map((e) => ({
-              name: e.meal_name,
-              protein: totalFor(e.items).protein,
-              at: e.at_time ?? null,
-            })),
-            planWeight(profile)
-          )
-        : null,
-    [entries, profile]
-  );
-
   /** Step a day back or forward; stop auto-rollover unless we're on today. */
   function go(delta: number) {
     setDay((d) => {
@@ -454,20 +435,13 @@ export default function TodayPage() {
               options={plan.dayTypes.map((d) => ({ value: d.id, label: d.name }))}
             />
             <p className="mt-2 text-xs leading-relaxed text-[var(--color-mut)]">
-              {target.sessions.length > 0
-                ? target.sessions
-                    .map((x) => `${activityLabel(x)}, ${x.minutes} min`)
-                    .join(" · ")
-                : "Nothing on."}
-              {Math.abs(target.multiplier - 1) > 0.005 && (
-                <>
-                  {" — "}
-                  {target.multiplier > 1 ? "+" : ""}
-                  {Math.round((target.multiplier - 1) * 100)}% on your{" "}
-                  {plan.goalKcal.toLocaleString()} kcal average
-                  {target.sessionKcal > 0 && `, ${target.sessionKcal} kcal of training`}.
-                </>
-              )}
+              {breakOn(plan.events, day)
+                ? "Time off — rest-day food."
+                : target.sessions.length > 0
+                  ? target.sessions
+                      .map((x) => `${activityDef(x.activity).label} ${x.minutes} min`)
+                      .join(" · ")
+                  : "Rest day."}
             </p>
             {override != null && override !== dayTypeIdFor(plan, day) && (
               <button
@@ -485,6 +459,21 @@ export default function TodayPage() {
               </button>
             )}
           </div>
+        )}
+
+        {isToday && (
+          <CalendarStrip
+            events={profile.events}
+            today={day}
+            onSave={async (events) => {
+              const res = await fetch("/api/profile", {
+                method: "PUT",
+                headers: { "content-type": "application/json" },
+                body: JSON.stringify({ ...profile, events }),
+              });
+              if (res.ok) setProfile(normaliseProfile(await res.json()));
+            }}
+          />
         )}
       </section>
 
@@ -715,20 +704,6 @@ export default function TodayPage() {
               );
             })}
           </div>
-        </section>
-      )}
-
-      {/* What the times say */}
-      {spacing && spacing.timed.length >= 2 && spacing.notes.length > 0 && (
-        <section className="card px-5 py-4">
-          <p className="label">How the day was spread</p>
-          <ul className="mt-2 space-y-1.5">
-            {spacing.notes.map((n, i) => (
-              <li key={i} className="text-xs leading-relaxed text-[var(--color-mut)]">
-                {n}
-              </li>
-            ))}
-          </ul>
         </section>
       )}
 

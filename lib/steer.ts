@@ -65,12 +65,24 @@
  * weeks, three if it would be a second cut. See `COOLDOWN_DAYS`.
  */
 
-import { addDays, aimNow, atTarget, goalStartsLevel, STEER_LIMIT, type Profile } from "./nutrition";
+import {
+  addDays,
+  aimNow,
+  planWeight,
+  atTarget,
+  eventWindow,
+  goalStartsLevel,
+  SETTLE_DAYS,
+  STEER_LIMIT,
+  type PlanEvent,
+  type Profile,
+} from "./nutrition";
 import {
   FAT_RISE_PER_MONTH,
   LEAN_LOSS_PER_MONTH,
   SCAN_MIN_POINTS,
   composition,
+  normalise,
   weightRate,
   type Composition,
   type Rate,
@@ -177,14 +189,62 @@ export const SCAN_WINDOW_DAYS = 42;
  * twelve: after a change, a slope that was mostly last month would keep
  * voting for a decision already taken.
  */
-export function steerSignals(entries: WeighIn[]): {
+/**
+ * Coming back from time off: how much heavier than before it, once the water
+ * has had its few days to settle.
+ */
+export type ReturnFrom = { name: string; end: string; gapKg: number };
+
+export function steerSignals(
+  entries: WeighIn[],
+  events: PlanEvent[] = []
+): {
   rate: Rate | null;
   comp: Composition | null;
+  returnFrom: ReturnFrom | null;
 } {
+  // Readings from a taper, a meet or a week off — and the few days after, while
+  // the glycogen and water settle — say nothing about fat, so they're left out.
+  const quiet = events.map((e) => {
+    const w = eventWindow(e);
+    return { from: w.from, to: addDays(w.to, SETTLE_DAYS) };
+  });
+  const kept = quiet.length
+    ? entries.filter((e) => !quiet.some((q) => e.day >= q.from && e.day <= q.to))
+    : entries;
   return {
-    rate: weightRate(entries, RATE_WINDOW_DAYS),
-    comp: composition(entries, SCAN_WINDOW_DAYS),
+    rate: weightRate(kept, RATE_WINDOW_DAYS),
+    comp: composition(kept, SCAN_WINDOW_DAYS),
+    returnFrom: backFrom(entries, events),
   };
+}
+
+/**
+ * The most recent week off, if it ended in the last three weeks: the middle of
+ * the corrected weigh-ins from the week before it against the middle of the
+ * ones since the water settled. Needs two readings either side, or it says
+ * nothing — one morning is not a comparison.
+ */
+function backFrom(entries: WeighIn[], events: PlanEvent[]): ReturnFrom | null {
+  if (!entries.length) return null;
+  const last = entries.reduce((a, e) => (e.day > a ? e.day : a), entries[0].day);
+  const brk = events
+    .filter((e) => e.kind === "break" && addDays(e.end, SETTLE_DAYS) < last && addDays(e.end, 21) >= last)
+    .sort((a, b) => b.end.localeCompare(a.end))[0];
+  if (!brk) return null;
+  const corrected = normalise(entries).filter((e) => e.weight_kg != null && Number(e.weight_kg) > 0);
+  const mid = (xs: number[]) => {
+    const s = [...xs].sort((a, b) => a - b);
+    return s.length % 2 ? s[(s.length - 1) / 2] : (s[s.length / 2 - 1] + s[s.length / 2]) / 2;
+  };
+  const before = corrected
+    .filter((e) => e.day >= addDays(brk.start, -8) && e.day < brk.start)
+    .map((e) => Number(e.weight_kg));
+  const after = corrected
+    .filter((e) => e.day > addDays(brk.end, SETTLE_DAYS))
+    .map((e) => Number(e.weight_kg));
+  if (before.length < 2 || after.length < 2) return null;
+  return { name: brk.name, end: brk.end, gapKg: Math.round((mid(after) - mid(before)) * 100) / 100 };
 }
 
 /**
@@ -198,6 +258,42 @@ export function bfNowOf(comp: Composition | null): number | null {
   if (!last.length) return null;
   const s = [...last].sort((a, b) => a - b);
   return s[Math.floor(s.length / 2)];
+}
+
+/**
+ * The deficit a target date needs, as a fraction of maintenance.
+ *
+ * Working to a date, waiting for a month of scans to prove it is behind before
+ * acting is how a deadline gets missed and then crammed — simulated, it held
+ * for four months and finished at −11%. So the pace is planned up front: the
+ * fat that has to come off, over the days that can carry a deficit (a taper
+ * counts for less, a race week for none), as a daily deficit. Re-worked every
+ * week from where body fat actually is, which makes it a gentle proportional
+ * controller on the gap — behind, it asks a little more; ahead, a little less —
+ * and it moves at most `PACE_STEP` a week, so the food never jumps.
+ *
+ * The steer (`recomp_adjust`) sits on top and corrects for maintenance being
+ * wrong, off the weight trend, which is the precise signal.
+ */
+export const PACE_STEP = 0.02;
+export const PACE_MAX = 0.065;
+
+export function paceAdjustFor(
+  p: Profile,
+  bfNow: number | null,
+  applyOn: string,
+  maintenance: number
+): number {
+  const aim = aimNow(p, bfNow, !!p.last_review?.atTarget, applyOn);
+  const want =
+    aim.needPtsPerMonth == null || maintenance <= 0
+      ? 0
+      : -Math.min(
+          PACE_MAX,
+          ((aim.needPtsPerMonth / 100) * planWeight(p) * 7700) / 30.44 / maintenance
+        );
+  const from = p.pace_adjust ?? 0;
+  return Math.max(from - PACE_STEP, Math.min(from + PACE_STEP, want));
 }
 
 export type Reading = "low" | "in" | "high" | "unknown";
@@ -240,9 +336,15 @@ function round25(kcal: number): number {
  * the aim" — and is the right thing to act on, because doing nothing is what
  * the steer does with "in".
  */
-function place(v: number, se: number, [lo, hi]: [number, number], margin: number): Reading {
+function place(
+  v: number,
+  se: number,
+  [lo, hi]: [number, number],
+  margin: number,
+  zHigh = Z_CUT
+): Reading {
   const s = Number.isFinite(se) ? se : Infinity;
-  if (v - Z_CUT * s > hi + margin) return "high";
+  if (v - zHigh * s > hi + margin) return "high";
   if (v + Z_EASE * s < lo - margin) return "low";
   return "in";
 }
@@ -281,13 +383,17 @@ export function steerPlan(
   rate: Rate | null,
   comp: Composition | null,
   maintenance: number,
-  opts: { applyOn?: string } = {}
+  opts: { applyOn?: string; returnFrom?: ReturnFrom | null } = {}
 ): Steer {
   const from = p.recomp_adjust ?? 0;
   const bfNow = bfNowOf(comp);
   const holding = !!p.last_review?.atTarget;
   const arrived = atTarget(p, bfNow, holding);
-  const aim = aimNow(p, bfNow, holding);
+  const aim = aimNow(p, bfNow, holding, opts.applyOn);
+  // Working to a date, "falling, but too slowly" has to be caught, and the
+  // move it earns is small and fuel-protected — so body fat is read at half a
+  // standard error on that side too.
+  const dated = aim.needPtsPerMonth != null;
   const total = aim.adjust + from;
   const settled = !!comp && comp.settled;
 
@@ -296,7 +402,7 @@ export function steerPlan(
     ? place(rate!.pctPerWeek, rate!.sePctPerWeek, aim.weight, WEIGHT_MARGIN)
     : "unknown";
   const bf: Reading = settled
-    ? place(comp!.bfPtsPerMonth, comp!.bfSePtsPerMonth, aim.bf, BF_MARGIN)
+    ? place(comp!.bfPtsPerMonth, comp!.bfSePtsPerMonth, aim.bf, BF_MARGIN, dated ? Z_EASE : Z_CUT)
     : "unknown";
 
   const hold = (
@@ -327,6 +433,61 @@ export function steerPlan(
       "Your number, left alone",
       "You've set the calories yourself. Clear it on the Plan page to hand it back."
     );
+  }
+
+  /*
+   * Around a meet or a week off, hold still. The week itself is fuelled at
+   * maintenance (a meet) or rest days (a break), and the scale is carrying a
+   * taper, a carb load or a holiday's glycogen — nothing to steer on. The week
+   * after is held too, while it settles.
+   */
+  if (opts.applyOn) {
+    const weekEnd = addDays(opts.applyOn, 6);
+    const around = (p.events ?? []).find((e) => {
+      const w = eventWindow(e);
+      return w.from <= weekEnd && addDays(w.to, SETTLE_DAYS + 2) >= opts.applyOn!;
+    });
+    if (around) {
+      return hold(
+        around.kind === "meet" ? `Tapering for ${around.name}` : `Around ${around.name}`,
+        around.kind === "meet"
+          ? "Holding steady through the taper and the meet; it picks up again the week after."
+          : "Rest days through the time off; it picks up again the week after.",
+        "good"
+      );
+    }
+  }
+
+  /*
+   * Back from time off. The first few days' extra kilo is glycogen and water
+   * and was never read; what's still there once it has settled is partly real.
+   * Half of it is taken to be fat — a week of rest-day eating rarely adds more —
+   * and that comes off over about four weeks, in one move, straight away rather
+   * than waiting for a month of scans to agree. Only once per break: a move
+   * since it ended means this has already been done.
+   */
+  const back = opts.returnFrom;
+  if (back && back.gapKg > 0.5 && !(p.steer_moved_on && p.steer_moved_on > back.end)) {
+    const kcal = (back.gapKg * 0.5 * 7700) / 28;
+    const size =
+      maintenance > 0 ? Math.min(0.03, Math.max(STEER_MIN_STEP, kcal / maintenance)) : STEER_MIN_STEP;
+    const next = Math.max(-STEER_LIMIT, from - size);
+    return {
+      next,
+      step: next - from,
+      kcal: round25((next - from) * maintenance),
+      totalKcal: round25((aim.adjust + next) * maintenance),
+      headline: `Back from ${back.name} — catching up`,
+      detail: `About ${back.gapKg.toFixed(1)} kg up on before it, once the water settled. The likely fat comes back off over the next few weeks; training days keep their carbs.`,
+      tone: "watch",
+      moving: true,
+      atLimit: false,
+      decisive: false,
+      cooldownUntil: null,
+      atTarget: arrived,
+      weight,
+      bf,
+    };
   }
 
   if (!rate || !solid) {
@@ -481,7 +642,6 @@ export function steerPlan(
   /* --- Both readings in ----------------------------------------------------- */
   const c = comp!;
   const bfWord = `${signed(c.bfPtsPerMonth)}% a month (± ${c.bfSePtsPerMonth.toFixed(1)})`;
-  const bfAim = `${signed(aim.bf[0])} to ${signed(aim.bf[1])}`;
 
   /**
    * Lean mass leaving, and not because it's turning into fat.
@@ -519,6 +679,36 @@ export function steerPlan(
       "Muscle is slipping — eating a little more",
       `Lean mass is down ${Math.abs(c.leanKgPerMonth).toFixed(1)} kg a month across ${c.scans} scans.`,
       "watch"
+    );
+  }
+
+  /*
+   * Working to a date, the pace is planned (see `paceAdjustFor`) and the steer
+   * only corrects maintenance: weight moving faster or slower than that pace
+   * should make it means the calorie estimate is off. Body fat's own slope
+   * isn't steered on here — the plan already re-works the pace from where
+   * body fat is every week, and steering on both would count it twice.
+   */
+  if (dated) {
+    if (weight === "low") {
+      return ease(
+        "Losing faster than the pace needs — eating a little more",
+        `Weight ${wWord}; for your target it should be ${aimWord}.`
+      );
+    }
+    if (weight === "high") {
+      return move(
+        -1,
+        sized(),
+        "Weight up on the pace — trimming",
+        `Weight ${wWord}; for your target it should be ${aimWord}.`,
+        "watch"
+      );
+    }
+    return hold(
+      `On pace for ${p.bf_target_pct}% by ${prettyDay(p.bf_target_by!)}`,
+      `About −${aim.needPtsPerMonth!.toFixed(1)} points a month needed. Weight ${wWord}, body fat ${bfWord}.`,
+      "good"
     );
   }
 
@@ -601,11 +791,20 @@ export function steerPlan(
         "watch"
       );
     }
+    // Working to a date, the move is sized to how far behind the pace it is.
+    let size = FAT_NUDGE;
+    if (dated && aim.needPtsPerMonth != null) {
+      const gapPts = c.bfPtsPerMonth + aim.needPtsPerMonth;
+      const kcalDay = ((gapPts / 100) * kg * 7700) / 30.44;
+      if (maintenance > 0) size = Math.min(0.04, Math.max(FAT_NUDGE, kcalDay / maintenance));
+    }
     return move(
       -1,
-      FAT_NUDGE,
-      "Body fat isn't coming down — a small nudge",
-      `Weight on track, body fat ${bfWord} two weeks running. A 2% nudge.`,
+      size,
+      dated ? "Behind the pace for your target — trimming" : "Body fat isn't coming down — a small nudge",
+      dated
+        ? `Body fat ${bfWord}; your target needs about −${aim.needPtsPerMonth!.toFixed(1)} a month. ${Math.round(size * 100)}% off, training days still fully fuelled.`
+        : `Weight on track, body fat ${bfWord} two weeks running. A 2% nudge.`,
       "watch"
     );
   }

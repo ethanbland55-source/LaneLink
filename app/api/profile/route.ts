@@ -34,7 +34,8 @@ export async function GET() {
            to_char(dob, 'YYYY-MM-DD') as dob,
            to_char(steer_moved_on, 'YYYY-MM-DD') as steer_moved_on,
            to_char(next_apply_on, 'YYYY-MM-DD') as next_apply_on,
-           to_char(next_reviewed_on, 'YYYY-MM-DD') as next_reviewed_on
+           to_char(next_reviewed_on, 'YYYY-MM-DD') as next_reviewed_on,
+           to_char(bf_target_by, 'YYYY-MM-DD') as bf_target_by
     from profile where id = ${who.id}`;
 
   // A profile row is created with the account, but an account made before this
@@ -124,6 +125,8 @@ export async function PUT(req: Request) {
       adapt_macros = ${b.adapt_macros},
       auto_roll = ${b.auto_roll},
       bf_target_pct = ${b.bf_target_pct},
+      bf_target_by = ${b.bf_target_by},
+      events = ${JSON.stringify(b.events)}::jsonb,
       periodise = ${b.periodise},
       updated_at = now()
     where id = ${who.id}`;
@@ -179,6 +182,8 @@ function targetSignature(p: Profile): string {
     p.goal,
     p.pace,
     p.bf_target_pct,
+    p.bf_target_by,
+    p.events,
     p.protein_basis,
     p.protein_per_kg,
     p.fat_per_kg,

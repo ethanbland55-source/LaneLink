@@ -7,6 +7,7 @@
 import {
   WEEKDAYS,
   goalDef,
+  normaliseEvents,
   type EnergyModel,
   type Goal,
   type Pace,
@@ -126,6 +127,14 @@ export function normaliseProfile(p: any): Profile {
       const v = optionalNum(p?.bf_target_pct);
       return v != null && v >= 3 && v <= 40 ? v : null;
     })(),
+    bf_target_by: isoDate(p?.bf_target_by),
+    events: normaliseEvents(p?.events),
+    deficit_scale: Math.max(0, Math.min(1, num(p?.deficit_scale, 1))),
+    pace_adjust: Math.max(-0.08, Math.min(0, num(p?.pace_adjust, 0))),
+    next_pace_adjust:
+      p?.next_pace_adjust == null ? null : Math.max(-0.08, Math.min(0, num(p.next_pace_adjust, 0))),
+    next_deficit_scale:
+      p?.next_deficit_scale == null ? null : Math.max(0, Math.min(1, num(p.next_deficit_scale, 1))),
     steer_moved_on: isoDate(p?.steer_moved_on),
     steer_last_step: num(p?.steer_last_step, 0),
     // Next week's decision. Server-written; a client echoing these back in a

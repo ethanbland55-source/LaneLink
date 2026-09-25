@@ -174,6 +174,27 @@ export type Profile = {
    */
   bf_target_pct: number | null;
   /**
+   * When to be there by. The review works out the pace that gets there from
+   * the weeks that can actually carry a deficit — see `aimNow`.
+   */
+  bf_target_by: string | null;
+  /** Meets and weeks off. See `PlanEvent`. */
+  events: PlanEvent[];
+  /**
+   * How much of the steer's deficit this week carries: 1 normally, 0.5 in a
+   * partial taper, 0 in a full taper or a race week. Set by the review from
+   * the meets calendar; the steer's own value is kept either way.
+   */
+  deficit_scale: number;
+  next_deficit_scale: number | null;
+  /**
+   * The deficit a target date needs, planned up front — see `paceAdjustFor`
+   * in lib/steer.ts. Separate from `recomp_adjust`, which is the correction
+   * the scale asks for on top of it.
+   */
+  pace_adjust: number;
+  next_pace_adjust: number | null;
+  /**
    * The roll day the steer last actually moved on, and by how much. Read by
    * the steer so it waits for one change to show on the scale before making
    * another — see `COOLDOWN_DAYS` in lib/steer.ts.
@@ -329,7 +350,161 @@ export type Aim = {
   weight: [number, number];
   /** Body fat change aimed for, percentage points a month: [low, high]. */
   bf: [number, number];
+  /** When the aim was worked out from a target date: the pace it needs. */
+  needPtsPerMonth?: number;
 };
+
+/* ------------------------------------------------------------------ */
+/* Meets and weeks off                                                 */
+/* ------------------------------------------------------------------ */
+
+/**
+ * A date the plan has to plan around.
+ *
+ *  - **meet**: a competition. From `TAPER_DAYS` before it to the last race
+ *    day there is no deficit — the taper is when the work is converted into
+ *    speed, and a body short of glycogen on race day has thrown the season
+ *    away for a few hundred grams of fat.
+ *  - **break**: a week off training. Every day in it is a rest day — rest-day
+ *    targets, rest-day meals, and a shopping list that doesn't buy the
+ *    pre-swim dates.
+ *
+ * Either way the review holds still across it and for a week after, and the
+ * readings from it are left out of the trend: a taper, a carb load or a week
+ * off all move the scale by a kilo of glycogen and water that isn't fat.
+ */
+export type PlanEvent = {
+  kind: "meet" | "break";
+  name: string;
+  start: string;
+  end: string;
+  /** How hard you taper into a meet. Ignored for a break. */
+  taper?: Taper;
+};
+
+/**
+ * Three, not five. Ethan: *"I wouldn't know whether to call it a semi taper or
+ * a half taper ... they are quite similar."* So semi and half are one option,
+ * and only a full taper stops the progress toward the goal:
+ *
+ *  - **full**: about two weeks before the meet, and the meet, with no deficit
+ *    — the taper is where the season's work turns into speed, and it needs
+ *    full glycogen.
+ *  - **partial** (semi/half — easing the gym, trimming volume): the week before
+ *    keeps going toward the goal at half the deficit; the race week has none.
+ *  - **through** (racing without tapering): normal until the race week, which
+ *    runs at half the deficit.
+ */
+export type Taper = "full" | "partial" | "through";
+
+export const TAPER_DAYS: Record<Taper, number> = { full: 14, partial: 7, through: 0 };
+
+export const TAPERS: { value: Taper; label: string; hint: string }[] = [
+  { value: "full", label: "Full taper", hint: "no deficit for ~2 weeks" },
+  { value: "partial", label: "Partial", hint: "semi/half — deficit halved" },
+  { value: "through", label: "Racing through", hint: "eased on race week" },
+];
+
+/**
+ * How much of the deficit a given day carries, from the meets calendar.
+ * 1 is normal. Breaks count as normal here — rest days carry the deficit —
+ * and are handled by the day type instead.
+ */
+export function deficitScaleOn(events: PlanEvent[] | undefined, day: string): number {
+  let s = 1;
+  for (const e of events ?? []) {
+    if (e.kind !== "meet") continue;
+    const taper = e.taper ?? "partial";
+    // The race days and the two before them — the glycogen top-up. A plan week
+    // that holds any of them is the race week.
+    const raceWeek = day >= addDays(e.start, -2) && day <= e.end;
+    const taperDays = day >= addDays(e.start, -TAPER_DAYS[taper]) && day <= e.end;
+    if (taper === "full" && taperDays) s = Math.min(s, 0);
+    else if (taper === "partial" && raceWeek) s = Math.min(s, 0);
+    else if (taper === "partial" && taperDays) s = Math.min(s, 0.5);
+    else if (taper === "through" && raceWeek) s = Math.min(s, 0.5);
+  }
+  return s;
+}
+
+/** The deficit a plan week carries: the least any of its days allows. */
+export function weekDeficitScale(events: PlanEvent[] | undefined, from: string): number {
+  let s = 1;
+  for (let i = 0; i < 7; i++) s = Math.min(s, deficitScaleOn(events, addDays(from, i)));
+  return s;
+}
+
+/** Days after a meet or a break whose weigh-ins are still settling. */
+export const SETTLE_DAYS = 5;
+
+/** The days an event protects from any deficit or steer. */
+export function eventWindow(e: PlanEvent): { from: string; to: string } {
+  // A meet's window is its taper, or at least its race week — the stretch where
+  // the scale carries glycogen and water and the steer holds still.
+  const back = e.kind === "meet" ? Math.max(6, TAPER_DAYS[e.taper ?? "partial"]) : 0;
+  return { from: addDays(e.start, -back), to: e.end };
+}
+
+export function normaliseEvents(raw: unknown): PlanEvent[] {
+  let list: any = raw;
+  if (typeof raw === "string") {
+    try {
+      list = JSON.parse(raw);
+    } catch {
+      return [];
+    }
+  }
+  if (!Array.isArray(list)) return [];
+  const ok = (d: unknown) => typeof d === "string" && /^\d{4}-\d{2}-\d{2}$/.test(d);
+  return list
+    .filter((e) => e && (e.kind === "meet" || e.kind === "break") && ok(e.start) && ok(e.end))
+    .map((e) => ({
+      kind: e.kind,
+      name: String(e.name ?? "").slice(0, 60) || (e.kind === "meet" ? "Meet" : "Week off"),
+      start: e.start <= e.end ? e.start : e.end,
+      end: e.start <= e.end ? e.end : e.start,
+      ...(e.kind === "meet" ? { taper: tapered(e.taper) } : {}),
+    }))
+    .sort((a, b) => a.start.localeCompare(b.start))
+    .slice(0, 20);
+}
+
+/** Older names map onto the three that are left. */
+function tapered(t: unknown): Taper {
+  if (t === "full") return "full";
+  if (t === "through" || t === "none" || t === "light") return "through";
+  return "partial";
+}
+
+/** The break a day falls in, if any. */
+export function breakOn(events: PlanEvent[] | undefined, day: string): PlanEvent | null {
+  return (events ?? []).find((e) => e.kind === "break" && day >= e.start && day <= e.end) ?? null;
+}
+
+/** Whether any day from `from` to `to` sits in a meet's taper or the meet. */
+export function touchesMeet(events: PlanEvent[] | undefined, from: string, to: string): PlanEvent | null {
+  return (
+    (events ?? []).find((e) => {
+      if (e.kind !== "meet") return false;
+      const w = eventWindow(e);
+      return w.from <= to && w.to >= from;
+    }) ?? null
+  );
+}
+
+/**
+ * Days from `from` (inclusive) to `to` (exclusive) that carry a deficit,
+ * counting a partial taper day as half a day and a week off as half as well —
+ * rest days carry the deficit, but a holiday rarely eats to plan.
+ */
+export function activeDays(events: PlanEvent[] | undefined, from: string, to: string): number {
+  let n = 0;
+  let guard = 0;
+  for (let d = from; d < to && guard < 1000; d = addDays(d, 1), guard++) {
+    n += breakOn(events, d) ? 0.5 : deficitScaleOn(events, d);
+  }
+  return n;
+}
 
 export const GOALS: {
   value: Goal;
@@ -470,9 +645,62 @@ export function atTarget(
   );
 }
 
-/** The aim that applies to this profile now, given its current body fat. */
-export function aimNow(p: Profile, bfNow: number | null, holding = false): Aim {
-  return atTarget(p, bfNow, holding) ? ATHLETIC_HOLD : aimFor(p.goal, p.pace);
+/**
+ * The fastest a target date may ask for, in points of body fat a month.
+ *
+ * About 0.75 kg of fat a month at this bodyweight — a deficit near 6% of
+ * maintenance, weight coming down about 0.1 kg a week. Well inside the ~500
+ * kcal a day past which lifting stops adding muscle (Murphy & Koehler 2022)
+ * and the 0.7% a week past which elite athletes lose it (Garthe et al. 2011),
+ * and as far as it goes in season. A date that needs more is honoured at this
+ * pace and the Progress page says when it will actually be reached.
+ */
+export const MAX_PACE_PTS_MONTH = 1.0;
+/** And the least — slower than this is "hold", not a pace. */
+const MIN_PACE_PTS_MONTH = 0.15;
+
+/**
+ * Muscle a trained swimmer can add a month alongside a full pool programme.
+ * Used only to work out how much the scale should drift while fat comes off.
+ */
+const LEAN_GAIN_KG_MONTH = 0.2;
+
+/**
+ * The aim that applies to this profile now, given its current body fat.
+ *
+ * Three cases. At the target: hold (see `ATHLETIC_HOLD`). With a target date:
+ * the body fat aim is the pace that date needs, worked out over the days that
+ * can actually carry a deficit — the taper and the meet, and any week off,
+ * don't count — and the weight aim follows from it: fat leaving at that pace
+ * minus a realistic ~0.2 kg of muscle a month arriving. Otherwise the goal's
+ * own bands.
+ */
+export function aimNow(
+  p: Profile,
+  bfNow: number | null,
+  holding = false,
+  today?: string
+): Aim {
+  if (atTarget(p, bfNow, holding)) return ATHLETIC_HOLD;
+  const base = aimFor(p.goal, p.pace);
+  if (p.goal !== "recomp" || p.bf_target_pct == null || !p.bf_target_by || bfNow == null || !today) {
+    return base;
+  }
+
+  const months = Math.max(0.5, activeDays(p.events, today, p.bf_target_by) / 30.44);
+  const need = Math.min(
+    MAX_PACE_PTS_MONTH,
+    Math.max(MIN_PACE_PTS_MONTH, (bfNow - p.bf_target_pct) / months)
+  );
+  const kg = planWeight(p);
+  const kgMonth = -(need / 100) * kg + LEAN_GAIN_KG_MONTH;
+  const pctWeek = kg > 0 ? (kgMonth / kg / 4.345) * 100 : 0;
+  return {
+    adjust: base.adjust,
+    weight: [Math.max(-0.3, pctWeek - 0.1), pctWeek + 0.12],
+    bf: [-need * 1.35, -need * 0.7],
+    needPtsPerMonth: need,
+  };
 }
 
 /**
@@ -527,13 +755,16 @@ export type AimState = {
 
 export function aimState(p: Profile): AimState {
   const aim = aimFor(p.goal, p.pace);
-  const steer = p.recomp_adjust ?? 0;
+  const steer = (p.recomp_adjust ?? 0) + (p.pace_adjust ?? 0);
+  const total = Math.min(TOTAL_ADJUST_CEILING, Math.max(TOTAL_ADJUST_FLOOR, aim.adjust + steer));
   return {
     goal: p.goal,
     pace: p.pace,
     base: aim.adjust,
     steer,
-    total: Math.min(TOTAL_ADJUST_CEILING, Math.max(TOTAL_ADJUST_FLOOR, aim.adjust + steer)),
+    // A taper or race week carries less of the deficit, or none; the steer's
+    // value is kept, not lost, and comes back the week after.
+    total: total < 0 ? total * Math.max(0, Math.min(1, p.deficit_scale ?? 1)) : total,
     aim,
   };
 }
@@ -876,6 +1107,9 @@ export type WeekPlan = {
   /** What every non-pinned day was multiplied by to make the week balance. */
   balance: number;
   dayTypes: DayType[];
+  /** Meets and weeks off, and the day type a week off uses. */
+  events: PlanEvent[];
+  restId: number;
 };
 
 /**
@@ -1166,6 +1400,13 @@ export function buildWeekPlan(
     goalKcal: Math.round(goalKcal),
     balance,
     dayTypes: types,
+    events: p.events ?? [],
+    // The day type with the least training in it — normally the one with none.
+    restId:
+      [...types].sort(
+        (a, b) =>
+          sessionsKcal(planWeight(p), a.sessions ?? []) - sessionsKcal(planWeight(p), b.sessions ?? [])
+      )[0]?.id ?? fallbackId,
   };
 }
 
@@ -1177,6 +1418,8 @@ export function weekdayOf(dayKeyStr: string): Weekday {
 /** Which day type a calendar day falls on. */
 export function dayTypeIdFor(plan: WeekPlan, dayKeyStr: string): number {
   if (!plan.order.length) return 0;
+  // A week off is rest days, whatever the weekday usually is.
+  if (breakOn(plan.events, dayKeyStr)) return plan.restId;
   return plan.week[weekdayOf(dayKeyStr)] ?? plan.order[0];
 }
 

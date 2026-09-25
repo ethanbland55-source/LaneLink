@@ -6,7 +6,6 @@ import { RecalculateDialog } from "../recalculate";
 import { NextWeek } from "../next-week";
 import { applyDayFor, type PendingPortion } from "@/lib/pending";
 import { fatCheck, lossRate, proteinVerdict } from "@/lib/fuelling";
-import { lastRollDay, nextRollDay } from "@/lib/weekly";
 import { Bar, MACRO_COLOR, MACRO_LABEL, Segmented, Stat, type MacroKey } from "../macro-ui";
 import { type BoundedItem } from "@/lib/optimise";
 import { appliesOn, mealGroups, weekStanding, weeklyAverage, type PlanMeal } from "@/lib/weekfit";

@@ -29,8 +29,8 @@
  *    reads every body wrong by its own amount, which cancels out of a slope).
  */
 import { normaliseProfile } from "../lib/profile";
-import { WEEKDAYS, buildWeekPlan, type Profile } from "../lib/nutrition";
-import { steerPlan, steerSignals, RECOMP_CUT } from "../lib/steer";
+import { WEEKDAYS, breakOn, buildWeekPlan, weekDeficitScale, type PlanEvent, type Profile } from "../lib/nutrition";
+import { bfNowOf, paceAdjustFor, steerPlan, steerSignals, RECOMP_CUT } from "../lib/steer";
 import { rollFigures } from "../lib/weekly";
 import type { WeighIn } from "../lib/trend";
 import { REAL_DAY_TYPES, REAL_PROFILE } from "./real-plan";
@@ -59,10 +59,18 @@ type Scenario = {
   targetFromStart?: number;
   /** Where the steer starts, e.g. a cut already running. */
   startAdjust?: number;
+  /** Reach the target this many weeks in. */
+  targetByWeeks?: number;
+  /** Meets and weeks off, as day offsets from the start. */
+  events?: { kind: "meet" | "break"; start: number; end: number; taper?: "full" | "partial" | "through"; name: string }[];
+  /** Extra eaten a day during a week off — it's a holiday. */
+  holidaySurplus?: number;
 };
 
 type Result = {
-  moves: { week: number; kcal: number; decisive: boolean; headline: string }[];
+  moves: { week: number; kcal: number; decisive: boolean; headline: string; onEvent: boolean }[];
+  /** True body fat as the scale would read it, each Friday. */
+  scanBf: number[];
   fatKg: number[];
   leanKg: number[];
   weightKg: number[];
@@ -72,12 +80,21 @@ type Result = {
 
 function simulate(sc: Scenario, seed: number): Result {
   const r = rng(seed);
+  const events: PlanEvent[] = (sc.events ?? []).map((e) => ({
+    kind: e.kind,
+    name: e.name,
+    start: iso(e.start),
+    end: iso(e.end),
+    ...(e.taper ? { taper: e.taper } : {}),
+  }));
   let p: Profile = normaliseProfile({
     ...REAL_PROFILE,
     recomp_adjust: sc.startAdjust ?? 0,
     // The scan reads 1.5 points high (see below), so a target is set in the
     // scale's own terms, the way it would be in the app.
     bf_target_pct: sc.targetFromStart != null ? 13 + 1.5 + sc.targetFromStart : null,
+    bf_target_by: sc.targetByWeeks != null ? iso(sc.targetByWeeks * 7) : null,
+    events,
     steer_moved_on: null,
     steer_last_step: 0,
     plan_weight_kg: 77,
@@ -88,7 +105,9 @@ function simulate(sc: Scenario, seed: number): Result {
   let lean = 77 - fat - 0; // lean includes everything that isn't fat or glycogen-water
   let glyco = 0; // kg of glycogen + water above baseline
   const entries: WeighIn[] = [];
-  const out: Result = { moves: [], fatKg: [], leanKg: [], weightKg: [], totals: [], finalBalance: 0 };
+  const out: Result = { moves: [], scanBf: [], fatKg: [], leanKg: [], weightKg: [], totals: [], finalBalance: 0 };
+  let pendingScale = 1;
+  let pendingPace = 0;
   let pendingAdjust: number | null = null;
   let pendingReading: string | null = null;
   let pendingAtTarget = false;
@@ -109,16 +128,25 @@ function simulate(sc: Scenario, seed: number): Result {
       }
       // The review that decided this week is the one the next review reads
       // as "last week's" — see the body-fat confirmation in lib/steer.ts.
-      p = { ...p, last_review: { bf: { reading: pendingReading }, atTarget: pendingAtTarget } as any };
+      p = {
+        ...p,
+        deficit_scale: pendingScale,
+        pace_adjust: pendingPace,
+        last_review: { bf: { reading: pendingReading }, atTarget: pendingAtTarget } as any,
+      };
       pendingAdjust = null;
     }
 
     // Intake: the plan's own average, eaten faithfully, ±100 kcal of real life,
     // plus the meal out on Saturdays.
     const t = avgTargets(p);
-    const intake = t.kcal + r.n() * 100 + (dow === 5 ? sc.cheat : 0);
+    const off = !!breakOn(events, iso(d));
+    const intake = off
+      ? restTarget(p) + (sc.holidaySurplus ?? 0) + r.n() * 100
+      : t.kcal + r.n() * 100 + (dow === 5 ? sc.cheat : 0);
     const weight = fat + lean + glyco;
-    const tdee = sc.trueTdee + 30 * (weight - 77);
+    // No training on a week off: roughly the week's average session cost less.
+    const tdee = sc.trueTdee + 30 * (weight - 77) - (off ? 815 : 0);
     const e = intake - tdee;
     balance = 0.9 * balance + 0.1 * e;
 
@@ -159,18 +187,27 @@ function simulate(sc: Scenario, seed: number): Result {
       const monday = iso(d + 3);
       const seen = entries.filter((x) => x.day <= iso(d));
       const fig = rollFigures(seen, iso(d));
-      const { rate, comp } = steerSignals(seen);
+      const { rate, comp, returnFrom } = steerSignals(seen, events);
       const plan = buildWeekPlan(p, REAL_DAY_TYPES);
-      const s = steerPlan(p, rate, comp, plan.maintenance, { applyOn: monday });
+      const s = steerPlan(p, rate, comp, plan.maintenance, { applyOn: monday, returnFrom });
+      pendingScale = weekDeficitScale(events, monday);
+      pendingPace = paceAdjustFor(p, bfNowOf(comp), monday, plan.maintenance);
       if (s.moving) {
-        out.moves.push({ week: Math.floor(d / 7) + 1, kcal: s.kcal, decisive: s.decisive, headline: s.headline });
+        out.moves.push({
+          week: Math.floor(d / 7) + 1,
+          kcal: s.kcal,
+          decisive: s.decisive,
+          headline: s.headline,
+          onEvent: pendingScale < 1 || !!breakOn(events, monday),
+        });
       }
       pendingAdjust = s.next;
       pendingReading = s.bf;
       pendingAtTarget = s.atTarget;
       pendingOn = d + 3;
       if (fig) p = { ...p, plan_weight_kg: fig.weightKg, plan_bf_pct: fig.bodyFatPct ?? p.plan_bf_pct };
-      out.totals.push(p.recomp_adjust);
+      out.totals.push(p.recomp_adjust + p.pace_adjust);
+      out.scanBf.push((fat / (fat + lean + glyco)) * 100 + 1.5);
       out.fatKg.push(fat);
       out.leanKg.push(lean);
       out.weightKg.push(fat + lean + glyco);
@@ -178,6 +215,11 @@ function simulate(sc: Scenario, seed: number): Result {
   }
   out.finalBalance = balance;
   return out;
+}
+
+function restTarget(p: Profile) {
+  const plan = buildWeekPlan(p, REAL_DAY_TYPES);
+  return plan.byId[plan.restId].kcal;
 }
 
 function avgTargets(p: Profile) {
@@ -309,6 +351,39 @@ const F = run({
   expect(eased >= SEEDS * 0.8, "notices the target and eases the cut out");
   expect(finalTot > -0.03, "ends near maintenance, fuelled");
   expect(bigAfter <= SEEDS * 0.1, "only small corrections once there");
+}
+
+// G: the real season. Three points down on the scale in 26 weeks, a partial
+// taper into a meet at week 8, a full taper into winter nationals at week 12,
+// and a week off at week 14 eating 1,000 kcal a day over the rest-day plan
+// (Christmas, honestly).
+const G = run({
+  name: "G. Target date, meets and a week off",
+  trueTdee: 3121,
+  cheat: 0,
+  weeks: 26,
+  targetFromStart: -3.0,
+  targetByWeeks: 26,
+  holidaySurplus: 1000,
+  events: [
+    { kind: "meet", name: "Autumn meet", start: 7 * 7 + 5, end: 7 * 7 + 6, taper: "partial" },
+    { kind: "meet", name: "Winter nationals", start: 11 * 7 + 3, end: 11 * 7 + 6, taper: "full" },
+    { kind: "break", name: "Christmas", start: 13 * 7, end: 13 * 7 + 6 },
+  ],
+});
+{
+  const target = 13 + 1.5 - 3.0;
+  const final = G.map((r) => r.scanBf[r.scanBf.length - 1]);
+  const lossRate = G.map((r) => ((r.weightKg[r.weightKg.length - 1] - r.weightKg[0]) / r.weightKg[0] / 25) * 100);
+  const duringEvents = G.reduce((a, r) => a + r.moves.filter((m) => m.onEvent).length, 0);
+  const caughtUp = G.filter((r) => r.moves.some((m) => m.headline.startsWith("Back from"))).length;
+  console.log(
+    `  final body fat (scale terms), median ${med(final).toFixed(1)}% vs target ${target.toFixed(1)}%; weight ${med(lossRate).toFixed(2)}%/wk; moves during events: ${duringEvents}; caught up after the week off: ${caughtUp}/${SEEDS}`
+  );
+  expect(Math.abs(med(final) - target) <= 0.8, "lands within a point of the target by the date");
+  expect(med(lossRate) >= -0.3, "weight comes down gently, if at all");
+  expect(duringEvents === 0, "never moves during a taper, a meet or time off");
+  expect(caughtUp >= SEEDS * 0.6, "catches up after a week off that ran over");
 }
 
 console.log(`\nDecisive cut is ${(RECOMP_CUT * 100).toFixed(0)}% of maintenance.`);
