@@ -1026,6 +1026,22 @@ the portions in the fridge do not change because you went out on Friday.
 blowout, one with nothing swapped, and one on a Sunday with nowhere left to
 spread.
 
+### A second one in a week — a one-off, not an allowance
+
+One a week stays the rule, and the server refuses a second. The single
+exception is the plan week written into `profile.extra_cheat_week`, set by hand:
+**2026-10-05**, once, for a tea out with Ethan's girlfriend after the Arena League
+on Sat 10 Oct. There is no setting for it and it is not meant to become one.
+
+That week's second meal is paid back the week after (`paybackAdjust` in
+`lib/cheat.ts`): what it put on top of the day — its calories less the planned
+meal it replaced — comes off the next week as one even deficit, capped at 4% of
+maintenance (about 125 kcal a day). A taper doesn't cancel it, because it is a
+debt rather than the plan's own deficit; the fuel floor still protects training
+carbs. The review stages it with the rest of next week, logging or removing the
+meal re-runs that review as of the day it was first decided, and it lasts one
+week. `bench/cheat-payback.ts` checks it.
+
 ## Meal prep guide
 
 Macros don't tell you whether a day will actually fill you up. Energy density does:

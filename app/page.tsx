@@ -36,7 +36,7 @@ import { hasPrepped, servingGrams } from "@/lib/batch";
 import { normaliseProfile } from "@/lib/profile";
 import { CheatCard, CheatSheet } from "./cheat-ui";
 import { Flag } from "./flag";
-import { cheatForWeek, type CheatMeal } from "@/lib/cheat";
+import { cheatsInWeek, type CheatMeal } from "@/lib/cheat";
 import { lastRollDay, nextRollDay } from "@/lib/weekly";
 
 type Meal = {
@@ -75,7 +75,7 @@ export default function TodayPage() {
   const [supplements, setSupplements] = useState<Supplement[]>([]);
   /** How many of each supplement have been taken today. */
   const [takenMap, setTakenMap] = useState<Map<number, number>>(new Map());
-  /** Cheat meals in the plan week around `day` — at most one counts. */
+  /** Cheat meals in the plan weeks either side of `day`. */
   const [cheats, setCheats] = useState<CheatMeal[]>([]);
   const [showCheat, setShowCheat] = useState(false);
 
@@ -178,7 +178,9 @@ export default function TodayPage() {
    * The allowance is one a week and the week that matters is the plan's, not
    * the calendar's — the whole app runs Monday to Sunday off `plan_roll_dow`,
    * and a cheat meal that reset on a different boundary would let you have two
-   * in four days without either of them looking like a second one.
+   * in four days without either of them looking like a second one. The one
+   * exception is a week granted by hand in `extra_cheat_week` — a one-off,
+   * whose second meal the week after pays back. See `paybackAdjust`.
    */
   const planWeek = useMemo(() => {
     if (!profile) return null;
@@ -186,11 +188,18 @@ export default function TodayPage() {
     return { from: lastRollDay(dow, day), to: addDays(nextRollDay(dow, day), -1), dow };
   }, [profile, day]);
 
-  const weekCheat = useMemo(
-    () => (planWeek ? cheatForWeek(cheats, planWeek.from, planWeek.to) : null),
+  const weekCheats = useMemo(
+    () => (planWeek ? cheatsInWeek(cheats, planWeek.from, planWeek.to) : []),
     [cheats, planWeek]
   );
-  const todayCheat = weekCheat && weekCheat.day === day ? weekCheat : null;
+  const todayCheat = weekCheats.find((c) => c.day === day) ?? null;
+  /** This week's allowance went on another day, so one today is an extra. */
+  const extraCheat = weekCheats.length > 0 && weekCheats[0].day !== day;
+  /** The one-off: this is the week a second was allowed, and it isn't used yet. */
+  const extraAllowed =
+    !!planWeek &&
+    profile?.extra_cheat_week === planWeek.from &&
+    weekCheats.filter((c) => c.day !== day).length === 1;
 
   /**
    * What's gone in. Supplements count only once actually ticked off, the same
@@ -497,7 +506,9 @@ export default function TodayPage() {
               ? (meals.find((m) => m.id === todayCheat.meal_id)?.name ?? null)
               : null
           }
-          used={!!weekCheat && weekCheat.day !== day}
+          used={weekCheats.some((c) => c.day !== day)}
+          extra={extraCheat}
+          extraAllowed={extraAllowed}
           onOpen={() => setShowCheat(true)}
           onClear={clearCheat}
         />
@@ -508,6 +519,7 @@ export default function TodayPage() {
           day={day}
           meals={suggested as any}
           existing={todayCheat}
+          extra={extraCheat}
           onClose={() => setShowCheat(false)}
           onSave={saveCheat}
         />

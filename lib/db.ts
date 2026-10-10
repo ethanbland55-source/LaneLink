@@ -35,7 +35,7 @@ let schemaReady: Promise<void> | null = null;
  * a database stamped with an older number runs the whole migration again, and
  * every statement in it is `if not exists`, so running it again is harmless.
  */
-const SCHEMA_VERSION = "2026-09-25.1-meets-and-breaks";
+const SCHEMA_VERSION = "2026-10-10.1-cheat-payback";
 
 /**
  * Creates the tables if they don't exist, adds any columns a newer version
@@ -297,6 +297,11 @@ async function createSchema() {
   // The deficit a target date needs, planned up front. See paceAdjustFor.
   await sql`alter table profile add column if not exists pace_adjust numeric not null default 0`;
   await sql`alter table profile add column if not exists next_pace_adjust numeric`;
+  // A week's payback for an extra cheat meal the week before. See paybackAdjust.
+  await sql`alter table profile add column if not exists payback_adjust numeric not null default 0`;
+  await sql`alter table profile add column if not exists next_payback_adjust numeric`;
+  // The one week a second cheat meal was allowed in. A one-off, set by hand.
+  await sql`alter table profile add column if not exists extra_cheat_week date`;
   await sql`alter table profile add column if not exists steer_last_step numeric not null default 0`;
   // Next week, decided on review day (the day before shopping) and held here
   // until roll day — or Sunday evening once the day's meals are ticked off.

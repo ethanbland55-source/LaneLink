@@ -667,10 +667,64 @@ export function daysAfter(
   return out;
 }
 
-/** One cheat meal a week. Which one is in force on a given day. */
-export function cheatForWeek(all: CheatMeal[], from: string, to: string): CheatMeal | null {
-  const inWeek = all
+/** The cheat meals in a plan week, earliest first. */
+export function cheatsInWeek(all: CheatMeal[], from: string, to: string): CheatMeal[] {
+  return all
     .filter((c) => c.day >= from && c.day <= to)
     .sort((a, b) => a.day.localeCompare(b.day));
-  return inWeek[inWeek.length - 1] ?? null;
+}
+
+/* ------------------------------------------------------------------ */
+/* A second one, and the week after it                                 */
+/* ------------------------------------------------------------------ */
+
+/**
+ * One a week is the allowance, and the plan already carries it: the steer
+ * reads a scale that has had a meal out on it every week, so the first one is
+ * priced in. A second one is not. Ethan, on race day with a tea out on offer:
+ * *"under the condition that you change it, so next week ... makes us just
+ * under, so that we're not going to put anything on ... maybe lose, but at a
+ * very, very slow rate."*
+ *
+ * So the second one is allowed, and next week pays for it. What it costs is
+ * what it put on top of the day — its calories less the planned meal it stood
+ * in for — and the week after takes that off as one small, even deficit
+ * rather than a hard day or two. Even, because the week after is often the
+ * one with the racing in it, and a race is the last place to put a hole.
+ *
+ * Capped at `PAYBACK_CAP` of maintenance a day, about 125 kcal on his week:
+ * a tenth of a kilo, not a cut. A bigger meal than a week of that can hold is
+ * not chased into the week after — the rest is left to the scale, which the
+ * steer reads anyway. It also rides through a taper: the taper takes the
+ * plan's own deficit away, not this one, which is a debt rather than a plan.
+ */
+export const PAYBACK_CAP = 0.04;
+
+/**
+ * What the extra cheat meals in a week put on top of it, in kcal.
+ *
+ * `mealKcal` is the planned size of each meal, by id — what a cheat meal that
+ * stood in for one took off the day. The first meal of the week is the
+ * allowance and costs nothing here.
+ */
+export function cheatDebt(
+  all: CheatMeal[],
+  mealKcal: Map<number, number>,
+  from: string,
+  to: string
+): { kcal: number; extras: CheatMeal[] } {
+  const extras = cheatsInWeek(all, from, to).slice(1);
+  let kcal = 0;
+  for (const c of extras) {
+    const replaced = c.meal_id != null ? (mealKcal.get(c.meal_id) ?? 0) : 0;
+    kcal += Math.max(0, (Number(c.kcal) || 0) - replaced);
+  }
+  return { kcal: Math.round(kcal), extras };
+}
+
+/** The week's payback as a fraction of maintenance: zero or below. */
+export function paybackAdjust(debtKcal: number, maintenance: number): number {
+  if (!(debtKcal > 0) || !(maintenance > 0)) return 0;
+  const perDay = Math.min(debtKcal / 7, maintenance * PAYBACK_CAP);
+  return -Math.round((perDay / maintenance) * 10000) / 10000;
 }

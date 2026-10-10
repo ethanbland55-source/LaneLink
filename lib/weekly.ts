@@ -170,6 +170,7 @@ export function stagedProfile(p: Profile): Profile {
     recomp_adjust: p.next_recomp_adjust ?? p.recomp_adjust,
     deficit_scale: p.next_deficit_scale ?? p.deficit_scale,
     pace_adjust: p.next_pace_adjust ?? p.pace_adjust,
+    payback_adjust: p.next_payback_adjust ?? 0,
   };
 }
 

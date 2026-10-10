@@ -28,6 +28,7 @@ import { normaliseProfile } from "./profile";
 import { applyDuePortions, stagePortions } from "./pending";
 import { fitFromDb, MAX_MOVE } from "./refit";
 import { bfNowOf, paceAdjustFor, steerPlan, steerSignals } from "./steer";
+import { cheatDebt, paybackAdjust, PAYBACK_CAP, type CheatMeal } from "./cheat";
 import { planningBodyFat, reviewDayFor, reviewSchedule, rollFigures } from "./weekly";
 import type { WeighIn } from "./trend";
 
@@ -47,7 +48,8 @@ export async function readProfile(userId: number): Promise<Profile | null> {
            to_char(steer_moved_on, 'YYYY-MM-DD')   as steer_moved_on,
            to_char(next_apply_on, 'YYYY-MM-DD')    as next_apply_on,
            to_char(next_reviewed_on, 'YYYY-MM-DD') as next_reviewed_on,
-           to_char(bf_target_by, 'YYYY-MM-DD')     as bf_target_by
+           to_char(bf_target_by, 'YYYY-MM-DD')     as bf_target_by,
+           to_char(extra_cheat_week, 'YYYY-MM-DD') as extra_cheat_week
       from profile where id = ${userId}`) as any[];
   return rows[0] ? normaliseProfile(rows[0]) : null;
 }
@@ -62,6 +64,35 @@ async function readEntries(userId: number, today: string): Promise<WeighIn[]> {
      where user_id = ${userId}
        and day > ${today}::date - 180 and day <= ${today}::date
      order by day`) as WeighIn[];
+}
+
+/**
+ * What the week before `applyOn` owes for its extra cheat meals.
+ *
+ * The plan week that ends the day before roll day — the one the review sits
+ * at the end of. Each meal is priced at what it put on top of the day, so the
+ * meal it stood in for is read at its planned size.
+ */
+export async function readCheatDebt(userId: number, applyOn: string) {
+  const from = addDays(applyOn, -7);
+  const to = addDays(applyOn, -1);
+  const [cheats, sizes] = await Promise.all([
+    sql`select to_char(day, 'YYYY-MM-DD') as day, meal_id, name, kcal, protein, carbs, fat
+          from cheat_meals
+         where user_id = ${userId} and day between ${from}::date and ${to}::date
+         order by day`,
+    sql`select meal_id, sum(grams * kcal_100 / 100) as kcal
+          from ingredients where user_id = ${userId} group by meal_id`,
+  ]);
+  const mealKcal = new Map<number, number>(
+    (sizes as any[]).map((r) => [Number(r.meal_id), Number(r.kcal) || 0])
+  );
+  const list = (cheats as any[]).map((c) => ({
+    ...c,
+    meal_id: c.meal_id == null ? null : Number(c.meal_id),
+    kcal: Number(c.kcal),
+  })) as CheatMeal[];
+  return cheatDebt(list, mealKcal, from, to);
 }
 
 /** The week's average day, and the per-kilo settings behind it. */
@@ -98,9 +129,10 @@ export async function runReview(
   today: string,
   applyOn: string
 ): Promise<Review | null> {
-  const [entries, dtRows] = await Promise.all([
+  const [entries, dtRows, debt] = await Promise.all([
     readEntries(userId, today),
     sql`select * from day_types where user_id = ${userId} order by sort_order, id`,
+    readCheatDebt(userId, applyOn),
   ]);
 
   const figures = rollFigures(entries, today);
@@ -127,6 +159,11 @@ export async function runReview(
   // The deficit a target date needs, re-worked from where body fat is now.
   const pace = paceAdjustFor(p, bfNowOf(comp), applyOn, before.maintenance);
 
+  // An extra cheat meal last week: a small, even deficit this week pays it
+  // back, taper or no taper. See paybackAdjust in lib/cheat.ts.
+  const payback = paybackAdjust(debt.kcal, before.maintenance);
+  const paybackKcal = Math.round((-payback * before.maintenance) / 5) * 5;
+
   const next: Profile = {
     ...p,
     pace_adjust: pace,
@@ -135,6 +172,7 @@ export async function runReview(
     plan_bmr_kcal: scaleBmr ?? null,
     recomp_adjust: steer.next,
     deficit_scale: scale,
+    payback_adjust: payback,
   };
   const after = buildWeekPlan(next, dayTypes);
 
@@ -201,6 +239,8 @@ export async function runReview(
   // together — saying "no change" while the pace eases in would be untrue.
   const paceKcal = Math.round(((pace - (p.pace_adjust ?? 0)) * before.maintenance) / 25) * 25;
   const easingIn = paceKcal !== 0 && !steer.moving;
+  const paybackStep =
+    Math.round(((payback - (p.payback_adjust ?? 0)) * before.maintenance) / 25) * 25;
   const review: Review = {
     on: today,
     applyOn,
@@ -211,7 +251,10 @@ export async function runReview(
       : steer.headline,
     detail: [
       scale < 1
-        ? `${scale === 0 ? "No deficit" : "Half the deficit"} this week for ${meet?.name ?? "the meet"}.`
+        ? `${scale === 0 ? "No planned deficit" : "Half the planned deficit"} this week for ${meet?.name ?? "the meet"}.`
+        : "",
+      paybackKcal > 0
+        ? `About ${paybackKcal} kcal a day under to pay back ${debt.extras.map((c) => c.name).join(" and ")} (${debt.kcal} kcal over last week)${payback <= -PAYBACK_CAP + 1e-4 ? ", which is the cap: a slow loss, not a cut" : ""}.`
         : "",
       easingIn
         ? `Your target needs about ${Math.round((((aim.needPtsPerMonth ?? 0) / 100) * planWeight(next) * 7700) / 30.44 / 5) * 5} kcal a day under maintenance; it comes in 2% a week so the food never jumps.`
@@ -221,9 +264,9 @@ export async function runReview(
       .filter(Boolean)
       .join(" "),
     tone: easingIn ? "good" : steer.tone,
-    moving: steer.moving || paceKcal !== 0,
+    moving: steer.moving || paceKcal !== 0 || paybackStep !== 0,
     decisive: steer.decisive,
-    stepKcal: steer.kcal + paceKcal,
+    stepKcal: steer.kcal + paceKcal + paybackStep,
     totalKcal: steer.totalKcal,
     cooldownUntil: steer.cooldownUntil,
     from: summarise(before, p),
@@ -248,6 +291,9 @@ export async function runReview(
     landsKcal,
     limits,
     atTarget: steer.atTarget,
+    ...(paybackKcal > 0
+      ? { payback: { kcal: debt.kcal, perDay: paybackKcal, meals: debt.extras.map((c) => c.name) } }
+      : {}),
   };
 
   await sql`
@@ -259,6 +305,7 @@ export async function runReview(
       next_plan_bmr_kcal  = ${next.plan_bmr_kcal},
       next_deficit_scale  = ${scale},
       next_pace_adjust    = ${pace},
+      next_payback_adjust = ${payback},
       next_recomp_adjust  = ${next.recomp_adjust},
       next_review         = ${JSON.stringify(review)}::jsonb,
       updated_at = now()

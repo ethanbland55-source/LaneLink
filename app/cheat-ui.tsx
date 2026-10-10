@@ -21,19 +21,29 @@ import type { PlanMeal } from "@/lib/batch";
  * anything. Now it is recorded against the day, in place of the meal it
  * replaced, and nothing else moves — the trend on the Progress page is what
  * says whether it made a difference.
+ *
+ * A second one in a week happens once, by arrangement: the week named in
+ * `extra_cheat_week` allows it, and the week after runs a little under to pay
+ * for it. See `paybackAdjust` in lib/cheat.ts.
  */
 export function CheatCard({
   cheat,
   replaced,
   used,
+  extra,
+  extraAllowed,
   onOpen,
   onClear,
 }: {
   cheat: CheatMeal | null;
   /** The planned meal it took the place of, by name. */
   replaced: string | null;
-  /** Whether this plan week already has one. */
+  /** Whether this plan week already has one on another day. */
   used: boolean;
+  /** Whether one today is past the week's allowance. */
+  extra: boolean;
+  /** This is the one-off week a second is allowed in, and it's still free. */
+  extraAllowed: boolean;
   onOpen: () => void;
   onClear: () => void;
 }) {
@@ -45,14 +55,16 @@ export function CheatCard({
             {used ? "This week's cheat meal is used" : "Cheat meal"}
           </p>
           <p className="mt-0.5 text-xs text-[var(--color-mut)]">
-            {used
-              ? "One a week. It's on another day this week — nothing to do here."
-              : "Log a meal out in place of one of yours. Nothing else changes."}
+            {used && extraAllowed
+              ? "A one-off second is allowed this week. Next week runs a little under to pay it back."
+              : used
+                ? "One a week. It's on another day this week — nothing to do here."
+                : "Log a meal out in place of one of yours. Nothing else changes."}
           </p>
         </div>
-        {!used && (
+        {(!used || extraAllowed) && (
           <button className="btn btn-sm shrink-0" onClick={onOpen}>
-            Add
+            {used ? "Add another" : "Add"}
           </button>
         )}
       </section>
@@ -81,9 +93,10 @@ export function CheatCard({
       </div>
 
       <p className="mt-2 text-xs leading-relaxed text-[var(--color-mut)]">
-        {replaced ? `Logged instead of ${replaced}.` : "Logged on top of the day."} The rest of
-        the day and the week stay as planned — your weigh-ins and scans will show whether it made a
-        difference.
+        {replaced ? `Logged instead of ${replaced}.` : "Logged on top of the day."}{" "}
+        {extra
+          ? "A one-off second this week, so next week runs a little under to pay it back — up to about 125 kcal a day, taper or not. The Plan page shows next week's numbers."
+          : "The rest of the day and the week stay as planned — your weigh-ins and scans will show whether it made a difference."}
       </p>
     </section>
   );
@@ -106,12 +119,15 @@ export function CheatSheet({
   day,
   meals,
   existing,
+  extra,
   onClose,
   onSave,
 }: {
   day: string;
   meals: PlanMeal[];
   existing: CheatMeal | null;
+  /** This week's allowance is already used, so this one gets paid back. */
+  extra: boolean;
   onClose: () => void;
   onSave: (c: Omit<CheatMeal, "id">) => Promise<void>;
 }) {
@@ -147,9 +163,13 @@ export function CheatSheet({
   return (
     <Sheet onClose={onClose} label="Cheat meal">
       <div className="shrink-0 px-5 pb-3 pt-2 sm:pt-5">
-        <h2 className="text-lg font-bold tracking-tight">Cheat meal</h2>
+        <h2 className="text-lg font-bold tracking-tight">
+          {extra ? "Another cheat meal" : "Cheat meal"}
+        </h2>
         <p className="mt-0.5 text-xs text-[var(--color-mut)]">
-          One a week. Logged as it was — nothing else in the plan moves to make room.
+          {extra
+            ? "A one-off second this week. Today stays as it is; next week runs a little under to pay it back."
+            : "One a week. Logged as it was — nothing else in the plan moves to make room."}
         </p>
       </div>
 

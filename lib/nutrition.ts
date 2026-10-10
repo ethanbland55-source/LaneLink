@@ -195,6 +195,21 @@ export type Profile = {
   pace_adjust: number;
   next_pace_adjust: number | null;
   /**
+   * A one-week deficit paying back an extra cheat meal from the week before —
+   * zero or below, a fraction of maintenance. Unlike the plan's own deficit a
+   * taper doesn't take it away. Set by the review; see `paybackAdjust` in
+   * lib/cheat.ts.
+   */
+  payback_adjust: number;
+  next_payback_adjust: number | null;
+  /**
+   * The one plan week, by its roll day, that may hold a second cheat meal.
+   * A one-off, granted by hand — 2026-10-05, for a tea out after the Arena
+   * League — not a standing allowance: every other week stays at one, and
+   * the server refuses a second. Not writable through the profile PUT.
+   */
+  extra_cheat_week: string | null;
+  /**
    * The roll day the steer last actually moved on, and by how much. Read by
    * the steer so it waits for one change to show on the scale before making
    * another — see `COOLDOWN_DAYS` in lib/steer.ts.
@@ -284,6 +299,8 @@ export type Review = {
   dismissed?: boolean;
   /** At the body fat target, holding rather than cutting. */
   atTarget?: boolean;
+  /** Paying back last week's extra cheat meals: what they put on, and the daily cut. */
+  payback?: { kcal: number; perDay: number; meals: string[] };
 };
 
 export type ReviewLimit = {
@@ -757,14 +774,17 @@ export function aimState(p: Profile): AimState {
   const aim = aimFor(p.goal, p.pace);
   const steer = (p.recomp_adjust ?? 0) + (p.pace_adjust ?? 0);
   const total = Math.min(TOTAL_ADJUST_CEILING, Math.max(TOTAL_ADJUST_FLOOR, aim.adjust + steer));
+  // A taper or race week carries less of the deficit, or none; the steer's
+  // value is kept, not lost, and comes back the week after.
+  const scaled = total < 0 ? total * Math.max(0, Math.min(1, p.deficit_scale ?? 1)) : total;
+  // An extra cheat meal's payback goes on after the taper, not before it.
+  const payback = Math.min(0, p.payback_adjust ?? 0);
   return {
     goal: p.goal,
     pace: p.pace,
     base: aim.adjust,
     steer,
-    // A taper or race week carries less of the deficit, or none; the steer's
-    // value is kept, not lost, and comes back the week after.
-    total: total < 0 ? total * Math.max(0, Math.min(1, p.deficit_scale ?? 1)) : total,
+    total: Math.max(TOTAL_ADJUST_FLOOR, scaled + payback),
     aim,
   };
 }
