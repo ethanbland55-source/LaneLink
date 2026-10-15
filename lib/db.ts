@@ -35,7 +35,7 @@ let schemaReady: Promise<void> | null = null;
  * a database stamped with an older number runs the whole migration again, and
  * every statement in it is `if not exists`, so running it again is harmless.
  */
-const SCHEMA_VERSION = "2026-10-10.1-cheat-payback";
+const SCHEMA_VERSION = "2026-10-15.1-gala-days";
 
 /**
  * Creates the tables if they don't exist, adds any columns a newer version
@@ -574,7 +574,21 @@ async function createSchema() {
   await sql`create unique index if not exists pantry_user_name_idx on pantry(user_id, name)`;
 
   await sql`alter table cheat_meals drop constraint if exists cheat_meals_day_key`;
-  await sql`create unique index if not exists cheat_meals_user_day_idx on cheat_meals(user_id, day)`;
+  // One a day, except on a gala day, which may hold as many as were eaten:
+  // ordinary days keep using slot 0, so "replace today's" still means one row.
+  await sql`alter table cheat_meals add column if not exists slot int not null default 0`;
+  await sql`drop index if exists cheat_meals_user_day_idx`;
+  await sql`create unique index if not exists cheat_meals_user_day_slot_idx on cheat_meals(user_id, day, slot)`;
+
+  // A race day eaten at a quarter more carbohydrate, and the kind of day it
+  // was built on. Read by Today, the cheat meal rules and the steer.
+  await sql`create table if not exists gala_days (
+    user_id          int  not null,
+    day              date not null,
+    base_day_type_id int,
+    created_at       timestamptz not null default now(),
+    primary key (user_id, day)
+  )`;
 
   await sql`create index if not exists pending_apply_idx on pending_portions(apply_on)`;
   await sql`create index if not exists portion_history_idx on portion_history(changed_on desc)`;

@@ -671,7 +671,7 @@ export function daysAfter(
 export function cheatsInWeek(all: CheatMeal[], from: string, to: string): CheatMeal[] {
   return all
     .filter((c) => c.day >= from && c.day <= to)
-    .sort((a, b) => a.day.localeCompare(b.day));
+    .sort((a, b) => a.day.localeCompare(b.day) || (a.id ?? 0) - (b.id ?? 0));
 }
 
 /* ------------------------------------------------------------------ */
@@ -701,19 +701,34 @@ export function cheatsInWeek(all: CheatMeal[], from: string, to: string): CheatM
 export const PAYBACK_CAP = 0.04;
 
 /**
+ * The week's one free meal out.
+ *
+ * The first one not on a gala day, because that is the meal the week was
+ * always going to have. A week whose only meals out were at a gala gets its
+ * first gala one free instead — the allowance is per week, not per occasion.
+ */
+export function weekAllowance(inWeek: CheatMeal[], gala: Set<string> = new Set()): CheatMeal | null {
+  return inWeek.find((c) => !gala.has(c.day)) ?? inWeek[0] ?? null;
+}
+
+/**
  * What the extra cheat meals in a week put on top of it, in kcal.
  *
  * `mealKcal` is the planned size of each meal, by id — what a cheat meal that
- * stood in for one took off the day. The first meal of the week is the
- * allowance and costs nothing here.
+ * stood in for one took off the day. The week's allowance (see
+ * `weekAllowance`) costs nothing here. Gala days have no limit on how many, so
+ * every other meal out on one is a debt the week after pays.
  */
 export function cheatDebt(
   all: CheatMeal[],
   mealKcal: Map<number, number>,
   from: string,
-  to: string
+  to: string,
+  gala: Set<string> = new Set()
 ): { kcal: number; extras: CheatMeal[] } {
-  const extras = cheatsInWeek(all, from, to).slice(1);
+  const inWeek = cheatsInWeek(all, from, to);
+  const free = weekAllowance(inWeek, gala);
+  const extras = inWeek.filter((c) => c !== free);
   let kcal = 0;
   for (const c of extras) {
     const replaced = c.meal_id != null ? (mealKcal.get(c.meal_id) ?? 0) : 0;

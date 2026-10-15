@@ -13,6 +13,9 @@ import {
   WEEKDAYS,
   addDays,
   aimNow,
+  dayKey,
+  dayTypeIdFor,
+  targetsFor,
   touchesMeet,
   weekDeficitScale,
   buildWeekPlan,
@@ -31,6 +34,7 @@ import { bfNowOf, paceAdjustFor, steerPlan, steerSignals } from "./steer";
 import { cheatDebt, paybackAdjust, PAYBACK_CAP, type CheatMeal } from "./cheat";
 import { planningBodyFat, reviewDayFor, reviewSchedule, rollFigures } from "./weekly";
 import type { WeighIn } from "./trend";
+import { applyGalaSkew, galaExtraCarbs, type GalaDay } from "./gala";
 
 /**
  * The profile row, with every date column formatted in SQL.
@@ -76,23 +80,111 @@ async function readEntries(userId: number, today: string): Promise<WeighIn[]> {
 export async function readCheatDebt(userId: number, applyOn: string) {
   const from = addDays(applyOn, -7);
   const to = addDays(applyOn, -1);
-  const [cheats, sizes] = await Promise.all([
-    sql`select to_char(day, 'YYYY-MM-DD') as day, meal_id, name, kcal, protein, carbs, fat
+  const [cheats, sizes, gala] = await Promise.all([
+    sql`select id, to_char(day, 'YYYY-MM-DD') as day, meal_id, name, kcal, protein, carbs, fat
           from cheat_meals
          where user_id = ${userId} and day between ${from}::date and ${to}::date
-         order by day`,
+         order by day, slot, id`,
     sql`select meal_id, sum(grams * kcal_100 / 100) as kcal
           from ingredients where user_id = ${userId} group by meal_id`,
+    readGalaDates(userId, from, to),
   ]);
   const mealKcal = new Map<number, number>(
     (sizes as any[]).map((r) => [Number(r.meal_id), Number(r.kcal) || 0])
   );
   const list = (cheats as any[]).map((c) => ({
     ...c,
+    id: Number(c.id),
     meal_id: c.meal_id == null ? null : Number(c.meal_id),
     kcal: Number(c.kcal),
   })) as CheatMeal[];
-  return cheatDebt(list, mealKcal, from, to);
+  return cheatDebt(list, mealKcal, from, to, new Set(gala.map((g) => g.day)));
+}
+
+/** The gala days between two dates, and the kind of day each was built on. */
+export async function readGalaDates(
+  userId: number,
+  from: string,
+  to: string
+): Promise<{ day: string; base_day_type_id: number | null }[]> {
+  const rows = (await sql`
+    select to_char(day, 'YYYY-MM-DD') as day, base_day_type_id
+      from gala_days
+     where user_id = ${userId} and day between ${from}::date and ${to}::date
+     order by day`) as any[];
+  return rows.map((r) => ({
+    day: r.day,
+    base_day_type_id: r.base_day_type_id == null ? null : Number(r.base_day_type_id),
+  }));
+}
+
+/**
+ * Gala days with the carbohydrate they carried over a normal day.
+ *
+ * Logged meals that were ticked off plus every meal out, against the target of
+ * the kind of day the gala was built on. See `galaExtraCarbs` for what happens
+ * when a day wasn't logged.
+ */
+export async function readGalaDays(
+  userId: number,
+  from: string,
+  to: string,
+  plan: WeekPlan
+): Promise<(GalaDay & { base_day_type_id: number | null; loggedCarbs: number })[]> {
+  const [dates, eaten] = await Promise.all([
+    readGalaDates(userId, from, to),
+    sql`select to_char(day, 'YYYY-MM-DD') as day, sum(carbs) as carbs
+          from (
+            select day, carbs from log_entries
+             where user_id = ${userId} and confirmed = true
+               and day between ${from}::date and ${to}::date
+               and day in (select day from gala_days where user_id = ${userId})
+            union all
+            select day, carbs from cheat_meals
+             where user_id = ${userId}
+               and day between ${from}::date and ${to}::date
+               and day in (select day from gala_days where user_id = ${userId})
+          ) x
+         group by day`,
+  ]);
+  const byDay = new Map((eaten as any[]).map((r) => [r.day as string, Number(r.carbs) || 0]));
+  return dates.map((g) => {
+    const base = targetsFor(plan, g.base_day_type_id ?? dayTypeIdFor(plan, g.day));
+    const logged = byDay.get(g.day) ?? 0;
+    return {
+      day: g.day,
+      base_day_type_id: g.base_day_type_id,
+      loggedCarbs: Math.round(logged),
+      extraCarbs: Math.round(galaExtraCarbs(logged, base.carbs)),
+    };
+  });
+}
+
+/**
+ * Re-decide the week that pays for extra cheat meals, if it is waiting.
+ *
+ * The week's free meal changes nothing, so the review is only re-run when there
+ * is a debt to pay or one to clear. It is the same re-run a settings change
+ * gets — see app/api/profile/route.ts — and for the same reason: staged
+ * portions describe the targets they were fitted to. Not after you chose to
+ * keep this week's plan; that was a decision too.
+ *
+ * Re-run as of the day it was first decided, so the only thing that changes
+ * is the payback: a weigh-in since then doesn't get to move the plan after
+ * the shop, which is the rule `refreshReview` keeps too.
+ */
+export async function restageForCheat(userId: number, day: string): Promise<void> {
+  try {
+    const today = dayKey();
+    const p = await readProfile(userId);
+    if (!p?.next_apply_on || p.next_apply_on <= today || p.next_review?.dismissed) return;
+    if (day < addDays(p.next_apply_on, -7) || day >= p.next_apply_on) return;
+    const debt = await readCheatDebt(userId, p.next_apply_on);
+    if (debt.kcal <= 0 && !(p.next_payback_adjust ?? 0)) return;
+    await runReview(userId, p, p.next_reviewed_on ?? today, p.next_apply_on);
+  } catch (e) {
+    console.warn("cheat payback re-run skipped:", e);
+  }
 }
 
 /** The week's average day, and the per-kilo settings behind it. */
@@ -135,12 +227,16 @@ export async function runReview(
     readCheatDebt(userId, applyOn),
   ]);
 
-  const figures = rollFigures(entries, today);
-  if (!figures) return null;
-
   const dayTypes = (dtRows as any[]).map((d, i) => normaliseDayType(d, i));
   const before = buildWeekPlan(p, dayTypes);
-  const { rate, comp, returnFrom } = steerSignals(entries, p.events);
+
+  // Gala days count, with their glycogen water taken off. See lib/gala.ts.
+  const gala = await readGalaDays(userId, addDays(today, -180), today, before);
+
+  const figures = rollFigures(applyGalaSkew(entries, gala), today);
+  if (!figures) return null;
+
+  const { rate, comp, returnFrom } = steerSignals(entries, p.events, gala);
   const steer = steerPlan(p, rate, comp, before.maintenance, { applyOn, returnFrom });
 
   // A taper or race week carries less of the deficit, or none; the steer's own

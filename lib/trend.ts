@@ -53,6 +53,12 @@ export type WeighIn = {
    * scans — see `isScan`.
    */
   bf_method?: string | null;
+  /**
+   * How much this reading counts toward the rate, 0–1, on top of the time-of-
+   * day weighting. Never stored: set while reading, for mornings in a gala's
+   * wake or a taper, where water is moving for reasons other than fat.
+   */
+  trust?: number;
 } & ScanExtras;
 
 /**
@@ -408,7 +414,12 @@ export function weightRate(entries: WeighIn[], windowDays = 28): Rate | null {
 
   const corrected = normalise(entries)
     .filter((e) => e.weight_kg != null && Number(e.weight_kg) > 0)
-    .map((e) => ({ day: e.day, w: Number(e.weight_kg), h: hoursAwake(hourOf(e)) }))
+    .map((e) => ({
+      day: e.day,
+      w: Number(e.weight_kg),
+      h: hoursAwake(hourOf(e)),
+      trust: Math.max(0.05, Math.min(1, e.trust ?? 1)),
+    }))
     .sort((a, b) => a.day.localeCompare(b.day));
   if (!corrected.length) return null;
 
@@ -417,7 +428,7 @@ export function weightRate(entries: WeighIn[], windowDays = 28): Rate | null {
     .map((c) => ({
       t: (toDate(c.day).getTime() - end) / 86_400_000,
       v: c.w,
-      wt: readingWeight(c.h),
+      wt: readingWeight(c.h) * c.trust,
     }))
     .filter((p) => p.t > -windowDays);
 

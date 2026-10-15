@@ -102,6 +102,79 @@ export function CheatCard({
   );
 }
 
+/**
+ * Several meals out on one day — a gala day, where there's no limit.
+ *
+ * A list rather than the single card: each one is its own row to edit or
+ * remove, and adding another is always there. Past the week's one free meal,
+ * the week after pays them back; see `cheatDebt` in lib/cheat.ts.
+ */
+export function CheatList({
+  cheats,
+  mealName,
+  gala,
+  onAdd,
+  onEdit,
+  onRemove,
+}: {
+  cheats: CheatMeal[];
+  /** The planned meal a cheat meal stood in for, by id. */
+  mealName: (id: number | null) => string | null;
+  gala: boolean;
+  onAdd: () => void;
+  onEdit: (c: CheatMeal) => void;
+  onRemove: (c: CheatMeal) => void;
+}) {
+  return (
+    <section className="card px-5 py-4">
+      <div className="flex items-center gap-3">
+        <div className="mr-auto min-w-0">
+          <p className="text-sm font-bold">{gala ? "Meals out · gala day" : "Meals out"}</p>
+          <p className="mt-0.5 text-xs text-[var(--color-mut)]">
+            {gala
+              ? "No limit today. Past the week's free one, next week pays it back."
+              : `${cheats.length} logged today.`}
+          </p>
+        </div>
+        {gala && (
+          <button className="btn btn-sm shrink-0" onClick={onAdd}>
+            Add
+          </button>
+        )}
+      </div>
+
+      {cheats.length > 0 && (
+        <div className="mt-3 space-y-1.5">
+          {cheats.map((c) => {
+            const replaced = mealName(c.meal_id);
+            return (
+              <div key={c.id ?? c.name} className="sunk flex items-center gap-2 px-3.5 py-2.5">
+                <span className="min-w-0 flex-1">
+                  <span className="block truncate text-sm font-semibold">{c.name}</span>
+                  <span className="block truncate text-xs tabular-nums text-[var(--color-mut)]">
+                    {Math.round(c.kcal)} kcal · {Math.round(c.protein)}P {Math.round(c.carbs)}C{" "}
+                    {Math.round(c.fat)}F{replaced ? ` · for ${replaced}` : ""}
+                  </span>
+                </span>
+                <button className="btn btn-sm shrink-0" onClick={() => onEdit(c)}>
+                  Edit
+                </button>
+                <button
+                  className="btn btn-sm btn-quiet shrink-0 px-2"
+                  aria-label={`Remove ${c.name}`}
+                  onClick={() => onRemove(c)}
+                >
+                  ✕
+                </button>
+              </div>
+            );
+          })}
+        </div>
+      )}
+    </section>
+  );
+}
+
 /* ------------------------------------------------------------------ */
 /* Entering one                                                        */
 /* ------------------------------------------------------------------ */
@@ -120,6 +193,7 @@ export function CheatSheet({
   meals,
   existing,
   extra,
+  gala = false,
   onClose,
   onSave,
 }: {
@@ -128,8 +202,10 @@ export function CheatSheet({
   existing: CheatMeal | null;
   /** This week's allowance is already used, so this one gets paid back. */
   extra: boolean;
+  /** A gala day: no limit, and it's added rather than replacing today's. */
+  gala?: boolean;
   onClose: () => void;
-  onSave: (c: Omit<CheatMeal, "id">) => Promise<void>;
+  onSave: (c: CheatMeal) => Promise<void>;
 }) {
   const [name, setName] = useState(existing?.name ?? "");
   const [mealId, setMealId] = useState<number | null>(existing?.meal_id ?? meals.at(-1)?.id ?? null);
@@ -149,6 +225,7 @@ export function CheatSheet({
   async function save() {
     setSaving(true);
     await onSave({
+      ...(existing?.id != null ? { id: existing.id } : {}),
       day,
       meal_id: mealId,
       name: name.trim() || "Cheat meal",
@@ -164,12 +241,14 @@ export function CheatSheet({
     <Sheet onClose={onClose} label="Cheat meal">
       <div className="shrink-0 px-5 pb-3 pt-2 sm:pt-5">
         <h2 className="text-lg font-bold tracking-tight">
-          {extra ? "Another cheat meal" : "Cheat meal"}
+          {gala ? "Meal out" : extra ? "Another cheat meal" : "Cheat meal"}
         </h2>
         <p className="mt-0.5 text-xs text-[var(--color-mut)]">
-          {extra
-            ? "A one-off second this week. Today stays as it is; next week runs a little under to pay it back."
-            : "One a week. Logged as it was — nothing else in the plan moves to make room."}
+          {gala
+            ? "Gala day — log as many as you have. Past the week's free one, next week pays it back."
+            : extra
+              ? "A one-off second this week. Today stays as it is; next week runs a little under to pay it back."
+              : "One a week. Logged as it was — nothing else in the plan moves to make room."}
         </p>
       </div>
 

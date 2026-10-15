@@ -203,6 +203,7 @@ export async function deleteAccount(
   await ran(await sql`delete from pending_portions where user_id = ${userId} returning 1`);
   await ran(await sql`delete from portion_history where user_id = ${userId} returning 1`);
   await ran(await sql`delete from cheat_meals where user_id = ${userId} returning 1`);
+  await ran(await sql`delete from gala_days where user_id = ${userId} returning 1`);
   await ran(await sql`delete from supplement_log where user_id = ${userId} returning 1`);
   await ran(await sql`delete from supplements where user_id = ${userId} returning 1`);
   await ran(await sql`delete from log_entries where user_id = ${userId} returning 1`);
@@ -243,6 +244,8 @@ export async function orphanedRows(): Promise<{ table: string; n: number }[]> {
     union all select 'portion_history', count(*)::int from portion_history x
       where not exists (select 1 from users u where u.id = x.user_id)
     union all select 'cheat_meals', count(*)::int from cheat_meals x
+      where not exists (select 1 from users u where u.id = x.user_id)
+    union all select 'gala_days', count(*)::int from gala_days x
       where not exists (select 1 from users u where u.id = x.user_id)
     union all select 'profile', count(*)::int from profile p
       where not exists (select 1 from users u where u.id = p.id)`) as any[];

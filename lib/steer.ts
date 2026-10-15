@@ -88,6 +88,7 @@ import {
   type Rate,
   type WeighIn,
 } from "./trend";
+import { applyGalaSkew, type GalaDay } from "./gala";
 
 /** The smallest move worth making, as a fraction of maintenance. */
 export const STEER_MIN_STEP = 0.01;
@@ -195,27 +196,55 @@ export const SCAN_WINDOW_DAYS = 42;
  */
 export type ReturnFrom = { name: string; end: string; gapKg: number };
 
+/**
+ * How much a reading from a taper or a meet counts toward the rate. A taper
+ * fills glycogen without any extra food — less training burns less of it — so
+ * the scale carries some water it wouldn't otherwise; the reading still counts,
+ * at half.
+ */
+export const MEET_TRUST = 0.5;
+
 export function steerSignals(
   entries: WeighIn[],
-  events: PlanEvent[] = []
+  events: PlanEvent[] = [],
+  gala: GalaDay[] = []
 ): {
   rate: Rate | null;
   comp: Composition | null;
   returnFrom: ReturnFrom | null;
 } {
-  // Readings from a taper, a meet or a week off — and the few days after, while
-  // the glycogen and water settle — say nothing about fat, so they're left out.
-  const quiet = events.map((e) => {
-    const w = eventWindow(e);
-    return { from: w.from, to: addDays(w.to, SETTLE_DAYS) };
-  });
-  const kept = quiet.length
-    ? entries.filter((e) => !quiet.some((q) => e.day >= q.from && e.day <= q.to))
-    : entries;
+  // Gala days count, with their glycogen water taken off. See lib/gala.ts.
+  const skewed = applyGalaSkew(entries, gala);
+
+  // A week off is read after the fact, not during: rest-day eating, no
+  // training, a holiday's glycogen. Those readings and the few days after are
+  // left out, and `backFrom` compares either side once it has settled.
+  const away = events
+    .filter((e) => e.kind === "break")
+    .map((e) => {
+      const w = eventWindow(e);
+      return { from: w.from, to: addDays(w.to, SETTLE_DAYS) };
+    });
+  // A taper and a meet are kept — the days are real, and so is anything eaten
+  // on them — but trusted less while the water settles.
+  const racing = events
+    .filter((e) => e.kind === "meet")
+    .map((e) => {
+      const w = eventWindow(e);
+      return { from: w.from, to: addDays(w.to, SETTLE_DAYS) };
+    });
+  const within = (day: string, ws: { from: string; to: string }[]) =>
+    ws.some((q) => day >= q.from && day <= q.to);
+
+  const kept = skewed
+    .filter((e) => !within(e.day, away))
+    .map((e) =>
+      within(e.day, racing) ? { ...e, trust: Math.min(e.trust ?? 1, MEET_TRUST) } : e
+    );
   return {
     rate: weightRate(kept, RATE_WINDOW_DAYS),
     comp: composition(kept, SCAN_WINDOW_DAYS),
-    returnFrom: backFrom(entries, events),
+    returnFrom: backFrom(skewed, events),
   };
 }
 

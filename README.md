@@ -1042,6 +1042,28 @@ carbs. The review stages it with the rest of next week, logging or removing the
 meal re-runs that review as of the day it was first decided, and it lasts one
 week. `bench/cheat-payback.ts` checks it.
 
+### Gala days — race day, carbs up a quarter
+
+**Gala +25%** on Today marks the day as a gala day (`gala_days`, with the kind
+of day it's built on). Every meal is on offer, each with its carbohydrate up
+by a quarter (`galaMeal` in `lib/gala.ts`): the starches in a meal rise
+together, pure sugars like honey never pass their usual top, other foods may go
+a quarter past theirs, and fixed portions don't move. The day's carbohydrate
+target goes up a quarter with it. Meals out are unlimited on a gala day; the
+week's first meal out is still free and every other one goes into the next
+week's payback.
+
+The same switch on the Plan page shows the whole week at gala size, for
+prepping a race weekend. It is a view and changes nothing.
+
+Gala days still count toward the steer. Each gram of carbohydrate over a normal
+day is taken as about 0.8 g of glycogen water on the next morning's scale,
+fading by 40% a day (Fernández-Elías 2015; Shiose 2016; Jones 2026). That comes
+off the weight and off the scan's muscle, the scan's body fat is corrected for
+it, and those readings count half. Meets are no longer left out of the steer —
+taper readings count half. Only time off is still read after the fact.
+`bench/gala.ts` checks it.
+
 ## Meal prep guide
 
 Macros don't tell you whether a day will actually fill you up. Energy density does:

@@ -57,6 +57,9 @@ import { Note, SectionLabel } from "../explain";
 import { Flag } from "../flag";
 import { AccountCard } from "../account-ui";
 import { reviewSchedule } from "@/lib/weekly";
+import { GALA_CARB_UPLIFT, galaMeal, galaPlan } from "@/lib/gala";
+
+const GALA_VIEW_KEY = "mealhub.galaView";
 
 type Meal = {
   id: number;
@@ -146,6 +149,41 @@ export default function PlanPage() {
     [profile, dayTypes]
   );
 
+  /**
+   * The gala switch: every meal and every kind of day with carbohydrate a
+   * quarter up, so a race weekend can be seen — and prepped for — in full.
+   * A view, not a change: off again and nothing has moved.
+   */
+  const [gala, setGala] = useState(false);
+  useEffect(() => {
+    try {
+      setGala(localStorage.getItem(GALA_VIEW_KEY) === "1");
+    } catch {
+      /* private mode — starts off */
+    }
+  }, []);
+  function toggleGala() {
+    setGala((g) => {
+      try {
+        localStorage.setItem(GALA_VIEW_KEY, g ? "0" : "1");
+      } catch {
+        /* the choice just won't survive a refresh */
+      }
+      return !g;
+    });
+  }
+  const galaReach = useMemo(
+    () => new Map(meals.map((m) => [m.id, galaMeal(m.ingredients)])),
+    [meals]
+  );
+  const viewMeals = useMemo(
+    () =>
+      gala ? meals.map((m) => ({ ...m, ingredients: galaReach.get(m.id)?.items ?? m.ingredients })) : meals,
+    [gala, meals, galaReach]
+  );
+  /** What the week and day readouts compare against. The checks keep `plan`. */
+  const viewPlan = useMemo(() => (plan && gala ? galaPlan(plan) : plan), [plan, gala]);
+
   const todayKey = useMemo(() => dayKey(), []);
 
   /**
@@ -205,12 +243,15 @@ export default function PlanPage() {
     setPlanFor(best ? best[0] : plan.order[0] ?? 0);
   }, [plan, planFor]);
 
-  const target = useMemo(() => (plan ? targetsFor(plan, planFor) : null), [plan, planFor]);
+  const target = useMemo(
+    () => (viewPlan ? targetsFor(viewPlan, planFor) : null),
+    [viewPlan, planFor]
+  );
 
   const activeMeals = useMemo(
     () =>
-      meals.filter((m) => !profile?.cycling || appliesOn(m, planFor, dayTypes.length)),
-    [meals, profile, planFor, dayTypes.length]
+      viewMeals.filter((m) => !profile?.cycling || appliesOn(m, planFor, dayTypes.length)),
+    [viewMeals, profile, planFor, dayTypes.length]
   );
 
   const planTotal = useMemo(
@@ -232,15 +273,15 @@ export default function PlanPage() {
    * time is exactly how that goes unnoticed.
    */
   const standing = useMemo(
-    () => (plan ? weekStanding(meals, plan, supplements) : []),
-    [meals, plan, supplements]
+    () => (viewPlan ? weekStanding(viewMeals, viewPlan, supplements) : []),
+    [viewMeals, viewPlan, supplements]
   );
   const weekAvg = useMemo(
     () =>
-      plan
-        ? weeklyAverage(meals, plan, supplements)
+      viewPlan
+        ? weeklyAverage(viewMeals, viewPlan, supplements)
         : { planned: ZERO_MACROS, target: ZERO_MACROS },
-    [meals, plan, supplements]
+    [viewMeals, viewPlan, supplements]
   );
   const unusedTypes = standing.filter((d) => d.days === 0);
 
@@ -847,8 +888,25 @@ export default function PlanPage() {
       )}
 
       {/* The week — what each kind of day should be, and what it is */}
-      <section className="card px-5 py-6">
-        <p className="label">Your week, on average</p>
+      <section
+        className="card px-5 py-6"
+        style={gala ? { boxShadow: "inset 0 0 0 1px var(--color-accent)" } : undefined}
+      >
+        <div className="flex items-center gap-3">
+          <p className="label mr-auto">{gala ? "Gala week, on average" : "Your week, on average"}</p>
+          <button
+            className={gala ? "btn btn-sm btn-accent shrink-0" : "btn btn-sm shrink-0"}
+            aria-pressed={gala}
+            onClick={toggleGala}
+          >
+            Gala +25%
+          </button>
+        </div>
+        {gala && (
+          <p className="mt-1 text-xs text-[var(--color-mut)]">
+            Every meal with its carbs up a quarter. Off again and nothing has changed.
+          </p>
+        )}
 
         {nothingPlanned ? (
           <>
@@ -940,13 +998,15 @@ export default function PlanPage() {
             </p>
         )}
 
-        <button
-          className={`${weekOff && !nothingPlanned ? "btn btn-accent" : "btn"} mt-5 w-full`}
-          onClick={() => setShowRecalc(true)}
-          disabled={nothingPlanned}
-        >
-          Rebalance the week
-        </button>
+        {!gala && (
+          <button
+            className={`${weekOff && !nothingPlanned ? "btn btn-accent" : "btn"} mt-5 w-full`}
+            onClick={() => setShowRecalc(true)}
+            disabled={nothingPlanned}
+          >
+            Rebalance the week
+          </button>
+        )}
       </section>
 
       {/* One kind of day in detail */}
@@ -979,8 +1039,67 @@ export default function PlanPage() {
         </p>
       </section>
 
-      {/* Meals */}
-      {meals.map((meal) => {
+      {/* Meals — on the gala switch, each one at its race-day size, read-only */}
+      {gala &&
+        meals.map((meal) => {
+          const g = galaReach.get(meal.id);
+          const items = g?.items ?? meal.ingredients;
+          const before = totalFor(meal.ingredients);
+          const after = totalFor(items);
+          const hidden = profile.cycling && !appliesOn(meal, planFor, dayTypes.length);
+          return (
+            <section
+              key={meal.id}
+              className="card px-4 py-4 sm:px-5"
+              style={hidden ? { opacity: 0.5 } : undefined}
+            >
+              <div className="flex items-baseline gap-2">
+                <p className="mr-auto min-w-0 truncate font-semibold">{meal.name}</p>
+                <span className="num shrink-0 text-sm">{Math.round(after.kcal)}</span>
+                <span className="shrink-0 text-xs text-[var(--color-mut)]">kcal</span>
+              </div>
+              <p className="mt-0.5 text-xs tabular-nums text-[var(--color-mut)]">
+                Carbs {Math.round(before.carbs)} → {Math.round(after.carbs)} g ·{" "}
+                <span
+                  style={{
+                    color:
+                      (g?.uplift ?? 0) >= GALA_CARB_UPLIFT - 0.03
+                        ? "var(--color-accent)"
+                        : "var(--color-carbs)",
+                  }}
+                >
+                  +{Math.round((g?.uplift ?? 0) * 100)}%
+                </span>
+                {(g?.uplift ?? 0) < GALA_CARB_UPLIFT - 0.03 && " — the rest is at its limit"}
+              </p>
+              <div className="mt-3 space-y-1">
+                {items.map((it, i) => {
+                  const was = Number(meal.ingredients[i]?.grams) || 0;
+                  const now = Number(it.grams) || 0;
+                  const up = now !== was;
+                  return (
+                    <div key={i} className="flex items-baseline gap-2 text-sm">
+                      <span className="mr-auto min-w-0 truncate">{it.name}</span>
+                      {up && (
+                        <span className="shrink-0 text-xs tabular-nums text-[var(--color-mut)]">
+                          {Math.round(was)} →
+                        </span>
+                      )}
+                      <span
+                        className="num w-14 shrink-0 text-right"
+                        style={{ color: up ? "var(--color-accent)" : undefined }}
+                      >
+                        {Math.round(now)} g
+                      </span>
+                    </div>
+                  );
+                })}
+              </div>
+            </section>
+          );
+        })}
+
+      {!gala && meals.map((meal) => {
         const t = totalFor(meal.ingredients);
         const hidden = profile.cycling && !appliesOn(meal, planFor, dayTypes.length);
         return (
@@ -1109,14 +1228,16 @@ export default function PlanPage() {
         );
       })}
 
-      <div className="flex gap-2">
-        <button className="btn flex-1" onClick={addMeal}>
-          + Add meal
-        </button>
-        <button className="btn" onClick={() => setAdvanced((a) => !a)}>
-          {advanced ? "Hide limits" : "Show limits"}
-        </button>
-      </div>
+      {!gala && (
+        <div className="flex gap-2">
+          <button className="btn flex-1" onClick={addMeal}>
+            + Add meal
+          </button>
+          <button className="btn" onClick={() => setAdvanced((a) => !a)}>
+            {advanced ? "Hide limits" : "Show limits"}
+          </button>
+        </div>
+      )}
 
       {/* Supplements */}
       <section className="card px-4 py-4 sm:px-5">

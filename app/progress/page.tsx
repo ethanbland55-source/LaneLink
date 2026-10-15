@@ -4,6 +4,7 @@ import { useCallback, useEffect, useMemo, useState } from "react";
 import { TrendChart } from "../trend-chart";
 import { NumberField } from "../number-field";
 import {
+  addDays,
   aimNow,
   buildWeekPlan,
   planWeight,
@@ -13,6 +14,7 @@ import {
   type DayType,
   type Profile,
 } from "@/lib/nutrition";
+import { applyGalaSkew, type GalaDay } from "@/lib/gala";
 import { DOW_LABELS, normaliseProfile } from "@/lib/profile";
 import { BF_MAX, BF_MIN, SCAN_ERROR, fromScan } from "@/lib/bodyfat";
 import {
@@ -65,6 +67,8 @@ export default function ProgressPage() {
   const [profile, setProfile] = useState<Profile | null>(null);
   const [dayTypes, setDayTypes] = useState<DayType[]>([]);
   const [entries, setEntries] = useState<WeighIn[]>([]);
+  /** Gala days, whose glycogen water the steer takes off. See lib/gala.ts. */
+  const [gala, setGala] = useState<GalaDay[]>([]);
   const [loading, setLoading] = useState(true);
   const [flash, setFlash] = useState<string | null>(null);
 
@@ -79,14 +83,18 @@ export default function ProgressPage() {
   const [editing, setEditing] = useState(false);
 
   const load = useCallback(async () => {
-    const [p, dt, w] = await Promise.all([
+    const [p, dt, w, ga] = await Promise.all([
       fetch("/api/profile").then((r) => r.json()),
       fetch("/api/day-types").then((r) => r.json()),
       fetch("/api/weigh-ins?days=180").then((r) => r.json()),
+      fetch(`/api/gala?from=${addDays(dayKey(), -180)}&to=${dayKey()}`)
+        .then((r) => r.json())
+        .catch(() => []),
     ]);
     setProfile(normaliseProfile(p));
     setDayTypes((dt as any[]).map((x, n) => normaliseDayType(x, n)));
     setEntries(w);
+    setGala(Array.isArray(ga) ? ga : []);
     // Reload today's entry into both forms so a second save edits rather than
     // silently wipes what was taken earlier.
     const mine = (w as any[]).find((e) => e.day === dayKey());
@@ -116,8 +124,11 @@ export default function ProgressPage() {
   );
   // The readout shows twelve weeks of scans; the steer reads six weeks of them
   // and four of weight, with an error bar on each. See `steerSignals`.
-  const comp = useMemo(() => composition(entries), [entries]);
-  const signals = useMemo(() => steerSignals(entries), [entries]);
+  const comp = useMemo(() => composition(applyGalaSkew(entries, gala)), [entries, gala]);
+  const signals = useMemo(
+    () => steerSignals(entries, profile?.events ?? [], gala),
+    [entries, gala, profile]
+  );
   const rate = signals.rate;
 
   const schedule = useMemo(

@@ -34,10 +34,11 @@ import { appliesOn } from "@/lib/shopping";
 import { hasPrepped, servingGrams } from "@/lib/batch";
 
 import { normaliseProfile } from "@/lib/profile";
-import { CheatCard, CheatSheet } from "./cheat-ui";
+import { CheatCard, CheatList, CheatSheet } from "./cheat-ui";
 import { Flag } from "./flag";
 import { cheatsInWeek, type CheatMeal } from "@/lib/cheat";
 import { lastRollDay, nextRollDay } from "@/lib/weekly";
+import { galaMeal, galaTargets } from "@/lib/gala";
 
 type Meal = {
   id: number;
@@ -78,10 +79,14 @@ export default function TodayPage() {
   /** Cheat meals in the plan weeks either side of `day`. */
   const [cheats, setCheats] = useState<CheatMeal[]>([]);
   const [showCheat, setShowCheat] = useState(false);
+  /** The meal out being edited, or null for a new one. */
+  const [editingCheat, setEditingCheat] = useState<CheatMeal | null>(null);
+  /** Gala days in the same window, and the kind of day each was built on. */
+  const [galaDays, setGalaDays] = useState<{ day: string; base_day_type_id: number | null }[]>([]);
 
   const load = useCallback(async (d: string) => {
     try {
-      const [p, m, l, dt, su, sl, ch] = await Promise.all([
+      const [p, m, l, dt, su, sl, ch, ga] = await Promise.all([
         fetch("/api/profile").then((r) => r.json()),
         fetch("/api/meals").then((r) => r.json()),
         fetch(`/api/log?day=${d}`).then((r) => r.json()),
@@ -91,8 +96,12 @@ export default function TodayPage() {
         fetch(`/api/cheat?from=${addDays(d, -7)}&to=${addDays(d, 7)}`)
           .then((r) => r.json())
           .catch(() => []),
+        fetch(`/api/gala?from=${addDays(d, -7)}&to=${addDays(d, 7)}`)
+          .then((r) => r.json())
+          .catch(() => []),
       ]);
       setCheats(Array.isArray(ch) ? ch : []);
+      setGalaDays(Array.isArray(ga) ? ga : []);
       setProfile(normaliseProfile(p));
       setMeals(m);
       setEntries(l);
@@ -131,6 +140,25 @@ export default function TodayPage() {
     } catch {
       /* private mode — the choice just won't survive a refresh */
     }
+    // A gala day remembers the kind of day it's built on, for the scale.
+    if (galaToday) saveGala(true, dt);
+  }
+
+  /* --- gala day ---------------------------------------------------------- */
+
+  const galaToday = galaDays.find((g) => g.day === day) ?? null;
+  const isGala = !!galaToday;
+
+  async function saveGala(on: boolean, base: number) {
+    setGalaDays((list) => [
+      ...list.filter((g) => g.day !== day),
+      ...(on ? [{ day, base_day_type_id: base }] : []),
+    ]);
+    await fetch("/api/gala", {
+      method: "PUT",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ day, on, base_day_type_id: base }),
+    });
   }
 
   // The logging day turns over at 03:00; catch it without a refresh — but
@@ -151,12 +179,23 @@ export default function TodayPage() {
 
   const dayTypeId = useMemo(() => {
     if (!plan) return 0;
-    return override && plan.byId[override] ? override : dayTypeIdFor(plan, day);
-  }, [override, plan, day]);
+    if (override && plan.byId[override]) return override;
+    const base = galaToday?.base_day_type_id;
+    if (base && plan.byId[base]) return base;
+    return dayTypeIdFor(plan, day);
+  }, [override, plan, day, galaToday]);
 
-  const target = useMemo(
-    () => (plan ? targetsFor(plan, dayTypeId) : null),
-    [plan, dayTypeId]
+  /** On a gala day, the same kind of day with its carbohydrate a quarter up. */
+  const target = useMemo(() => {
+    if (!plan) return null;
+    const t = targetsFor(plan, dayTypeId);
+    return isGala ? galaTargets(t) : t;
+  }, [plan, dayTypeId, isGala]);
+
+  /** Every meal's gala version, so any of them can be logged on a race day. */
+  const galaItems = useMemo(
+    () => new Map(meals.map((m) => [m.id, galaMeal(m.ingredients as any[]).items as Item[]])),
+    [meals]
   );
 
   const todaysSupps = useMemo(
@@ -165,9 +204,10 @@ export default function TodayPage() {
   );
 
 
+  // A race day doesn't follow the plan's list, so a gala day offers everything.
   const suggested = useMemo(
-    () => meals.filter((m) => appliesOn(m, dayTypeId, dayTypes.length)),
-    [meals, dayTypeId, dayTypes.length]
+    () => (isGala ? meals : meals.filter((m) => appliesOn(m, dayTypeId, dayTypes.length))),
+    [meals, dayTypeId, dayTypes.length, isGala]
   );
 
   /* --- the cheat meal ---------------------------------------------------- */
@@ -192,14 +232,20 @@ export default function TodayPage() {
     () => (planWeek ? cheatsInWeek(cheats, planWeek.from, planWeek.to) : []),
     [cheats, planWeek]
   );
-  const todayCheat = weekCheats.find((c) => c.day === day) ?? null;
+  const galaSet = useMemo(() => new Set(galaDays.map((g) => g.day)), [galaDays]);
+  /** Meals out on gala days are unlimited and don't use the week's allowance. */
+  const ordinaryCheats = weekCheats.filter((c) => !galaSet.has(c.day));
+  const todayCheats = weekCheats.filter((c) => c.day === day);
+  const todayCheat = todayCheats[0] ?? null;
   /** This week's allowance went on another day, so one today is an extra. */
-  const extraCheat = weekCheats.length > 0 && weekCheats[0].day !== day;
+  const extraCheat = !isGala && ordinaryCheats.length > 0 && ordinaryCheats[0].day !== day;
   /** The one-off: this is the week a second was allowed, and it isn't used yet. */
   const extraAllowed =
     !!planWeek &&
     profile?.extra_cheat_week === planWeek.from &&
-    weekCheats.filter((c) => c.day !== day).length === 1;
+    ordinaryCheats.filter((c) => c.day !== day).length === 1;
+  /** A list of them, rather than the one card: a gala day, or a day that has several. */
+  const cheatList = isGala || todayCheats.length > 1;
 
   /**
    * What's gone in. Supplements count only once actually ticked off, the same
@@ -225,28 +271,42 @@ export default function TodayPage() {
      * you haven't eaten. You do not enter a meal out speculatively. Entering it
      * *is* the record.
      */
-    if (todayCheat) {
-      food.kcal += Number(todayCheat.kcal) || 0;
-      food.protein += Number(todayCheat.protein) || 0;
-      food.carbs += Number(todayCheat.carbs) || 0;
-      food.fat += Number(todayCheat.fat) || 0;
+    for (const c of todayCheats) {
+      food.kcal += Number(c.kcal) || 0;
+      food.protein += Number(c.protein) || 0;
+      food.carbs += Number(c.carbs) || 0;
+      food.fat += Number(c.fat) || 0;
     }
     return food;
-  }, [entries, todaysSupps, takenMap, todayCheat]);
+  }, [entries, todaysSupps, takenMap, todayCheats]);
 
-  async function saveCheat(c: Omit<CheatMeal, "id">) {
-    const saved = await fetch("/api/cheat", {
+  async function saveCheat(c: CheatMeal) {
+    const res = await fetch("/api/cheat", {
       method: "PUT",
       headers: { "content-type": "application/json" },
       body: JSON.stringify(c),
-    }).then((r) => r.json());
-    setCheats((list) => [...list.filter((x) => x.day !== saved.day), saved]);
+    });
+    const saved = await res.json();
+    if (!res.ok) {
+      setError(saved?.error ?? "Couldn't save that meal out.");
+      setShowCheat(false);
+      return;
+    }
+    setCheats((list) => [...list.filter((x) => x.id !== saved.id), saved]);
     setShowCheat(false);
+    setEditingCheat(null);
   }
 
-  async function clearCheat() {
-    await fetch(`/api/cheat?day=${day}`, { method: "DELETE" });
-    setCheats((list) => list.filter((x) => x.day !== day));
+  async function removeCheat(c: CheatMeal) {
+    await fetch(c.id != null ? `/api/cheat?id=${c.id}` : `/api/cheat?day=${c.day}`, {
+      method: "DELETE",
+    });
+    setCheats((list) => list.filter((x) => (c.id != null ? x.id !== c.id : x.day !== c.day)));
+  }
+
+  function openCheat(c: CheatMeal | null) {
+    setEditingCheat(c);
+    setShowCheat(true);
   }
 
   /**
@@ -264,9 +324,9 @@ export default function TodayPage() {
    * tap invites you to count it twice.
    */
   const menu = useMemo<Meal[]>(() => {
-    if (!todayCheat || todayCheat.meal_id == null) return suggested;
-    return suggested.filter((m) => m.id !== todayCheat.meal_id);
-  }, [todayCheat, suggested]);
+    const replaced = new Set(todayCheats.map((c) => c.meal_id).filter((id) => id != null));
+    return replaced.size ? suggested.filter((m) => !replaced.has(m.id)) : suggested;
+  }, [todayCheats, suggested]);
 
   /** Step a day back or forward; stop auto-rollover unless we're on today. */
   function go(delta: number) {
@@ -283,7 +343,8 @@ export default function TodayPage() {
    * scoop of the same one.
    */
   function itemsFor(meal: Meal): Item[] {
-    return meal.ingredients.map(stripItem);
+    const items = isGala ? (galaItems.get(meal.id) ?? meal.ingredients) : meal.ingredients;
+    return items.map(stripItem);
   }
 
   /**
@@ -470,6 +531,20 @@ export default function TodayPage() {
           </div>
         )}
 
+        {/* Race day: every meal on offer, each with its carbs a quarter up. */}
+        <div className="mt-3 flex items-center gap-3">
+          <button
+            className={isGala ? "btn btn-sm btn-accent shrink-0" : "btn btn-sm shrink-0"}
+            aria-pressed={isGala}
+            onClick={() => saveGala(!isGala, dayTypeId)}
+          >
+            Gala +25%
+          </button>
+          <span className="min-w-0 text-xs leading-snug text-[var(--color-mut)]">
+            {isGala ? "Every meal, carbs up a quarter. Meals out unlimited." : "Race day? Carbs up a quarter."}
+          </span>
+        </div>
+
         {isToday && (
           <CalendarStrip
             events={profile.events}
@@ -498,29 +573,43 @@ export default function TodayPage() {
       {/* The cheat meal. Below the macros because it is a thing that happens to
           a day rather than a thing you do every day, and above the meal list
           because what it does to that list is the point. */}
-      {meals.length > 0 && (
-        <CheatCard
-          cheat={todayCheat}
-          replaced={
-            todayCheat?.meal_id != null
-              ? (meals.find((m) => m.id === todayCheat.meal_id)?.name ?? null)
-              : null
-          }
-          used={weekCheats.some((c) => c.day !== day)}
-          extra={extraCheat}
-          extraAllowed={extraAllowed}
-          onOpen={() => setShowCheat(true)}
-          onClear={clearCheat}
-        />
-      )}
+      {meals.length > 0 &&
+        (cheatList ? (
+          <CheatList
+            cheats={todayCheats}
+            gala={isGala}
+            mealName={(id) => (id != null ? (meals.find((m) => m.id === id)?.name ?? null) : null)}
+            onAdd={() => openCheat(null)}
+            onEdit={(c) => openCheat(c)}
+            onRemove={removeCheat}
+          />
+        ) : (
+          <CheatCard
+            cheat={todayCheat}
+            replaced={
+              todayCheat?.meal_id != null
+                ? (meals.find((m) => m.id === todayCheat.meal_id)?.name ?? null)
+                : null
+            }
+            used={ordinaryCheats.some((c) => c.day !== day)}
+            extra={extraCheat}
+            extraAllowed={extraAllowed}
+            onOpen={() => openCheat(todayCheat)}
+            onClear={() => todayCheat && removeCheat(todayCheat)}
+          />
+        ))}
 
       {showCheat && (
         <CheatSheet
           day={day}
           meals={suggested as any}
-          existing={todayCheat}
+          existing={editingCheat}
           extra={extraCheat}
-          onClose={() => setShowCheat(false)}
+          gala={isGala}
+          onClose={() => {
+            setShowCheat(false);
+            setEditingCheat(null);
+          }}
           onSave={saveCheat}
         />
       )}
@@ -546,7 +635,7 @@ export default function TodayPage() {
 
           {/* Said here, where you are about to tap something, so the missing
               meal in the list below doesn't look like a fault. */}
-          {todayCheat && (
+          {todayCheats.length === 1 && todayCheat && (
             <Flag
               tone="info"
               className="mb-3"
@@ -556,6 +645,16 @@ export default function TodayPage() {
                   ? "In place of its meal. Everything else below is as planned."
                   : "On top of the day. Everything below is as planned."
               }
+            />
+          )}
+          {todayCheats.length > 1 && (
+            <Flag
+              tone="info"
+              className="mb-3"
+              title={`${todayCheats.length} meals out logged — ${Math.round(
+                todayCheats.reduce((a, c) => a + (Number(c.kcal) || 0), 0)
+              )} kcal`}
+              detail="Any meal they stood in for is off the list below."
             />
           )}
 
