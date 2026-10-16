@@ -215,6 +215,26 @@ input[type="time"] {
 .btn-accent:active {
   background: #bce646;
 }
+/* A gala day: its own kind of day rather than one of the four, so it gets its
+   own look — outlined until it's on, then the whole bar lights up. */
+.btn-gala {
+  background: transparent;
+  color: var(--color-accent);
+  box-shadow: inset 0 0 0 1.5px rgba(201, 242, 77, 0.5);
+}
+@media (hover: hover) and (pointer: fine) {
+  .btn-gala:hover {
+    background: rgba(201, 242, 77, 0.08);
+  }
+}
+.btn-gala:active {
+  background: rgba(201, 242, 77, 0.14);
+}
+.btn-gala[aria-pressed="true"] {
+  background: var(--color-accent);
+  color: #10160a;
+  box-shadow: none;
+}
 .btn-quiet {
   background: transparent;
   color: var(--color-mut);

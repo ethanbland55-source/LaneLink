@@ -49,18 +49,22 @@ const ing = (
   carbs_100: number,
   fat_100: number,
   min_grams: number | null,
-  max_grams: number | null
-) => ({ name, grams, kcal_100, protein_100, carbs_100, fat_100, min_grams, max_grams, locked: false });
+  max_grams: number | null,
+  gala_max_grams: number | null = null
+) => ({ name, grams, kcal_100, protein_100, carbs_100, fat_100, min_grams, max_grams, gala_max_grams, locked: false });
 
 const LIVE = [
   {
+    // Gala maxes as Ethan set them on 16 Oct 2026: one more rice cake, not
+    // four; honey a little past its usual top to go with them; the shake may
+    // grow, milk in 25 g pours.
     name: "Breakfast",
     ingredients: [
-      ing("Rice Cakes", 63, 394, 8.5, 82.3, 2.8, 49, 77),
+      ing("Rice Cakes", 63, 394, 8.5, 82.3, 2.8, 49, 77, 70),
       ing("Banana", 105, 89, 1.1, 22.8, 0.3, 105, 105),
-      ing("Honey", 50, 325, 0, 81.2, 0, 21, 50),
-      ing("Milk", 250, 50, 3.6, 4.8, 1.8, 250, 250),
-      ing("Protein Powder", 26, 394, 72, 11.5, 6.1, 24, 26),
+      ing("Honey", 50, 325, 0, 81.2, 0, 21, 50, 65),
+      ing("Milk", 250, 50, 3.6, 4.8, 1.8, 250, 250, 300),
+      ing("Protein Powder", 26, 394, 72, 11.5, 6.1, 24, 26, 33),
     ],
   },
   {
@@ -124,6 +128,13 @@ for (const [label, meals] of [
     );
     for (const [i, it] of g.items.entries()) {
       const src = m.ingredients[i] as any;
+      // An ingredient's own gala max replaces the general rules below.
+      if (src.gala_max_grams != null) {
+        if (it.grams > src.gala_max_grams) {
+          check(`${m.name}: ${it.name} stays under its gala max`, false, `${it.grams} > ${src.gala_max_grams}`);
+        }
+        continue;
+      }
       if (src.min_grams != null && src.min_grams === src.max_grams && it.grams !== src.grams) {
         check(`${m.name}: ${it.name} is fixed and stays put`, false, `${src.grams} → ${it.grams}`);
       }
@@ -143,6 +154,13 @@ const granola = post.items.find((i) => i.name === "Protein Grenola")!;
 check("Post Swim: honey stays at or under 26 g", honey.grams <= 26, `${honey.grams} g`);
 check("Post Swim: the granola takes most of the rise", granola.grams - 81 > (honey.grams - 20) * 2, `${granola.grams} g`);
 check("Post Swim reaches the full quarter", post.uplift >= 0.22, `+${Math.round(post.uplift * 100)}%`);
+
+const bk = galaMeal(LIVE[0].ingredients);
+const g = (n: string) => bk.items.find((i) => i.name === n)!.grams;
+check("Breakfast: ten rice cakes at most", g("Rice Cakes") <= 70, `${g("Rice Cakes")} g`);
+check("Breakfast: honey up with them, to its gala max", g("Honey") > 50 && g("Honey") <= 65, `${g("Honey")} g`);
+check("Breakfast: milk in 25 g pours", [250, 275, 300].includes(g("Milk")), `${g("Milk")} g`);
+check("Breakfast: powder up to 33 g", g("Protein Powder") > 26 && g("Protein Powder") <= 33, `${g("Protein Powder")} g`);
 
 const lunch = galaMeal(LIVE[1].ingredients);
 check("Lunch reaches the full quarter on pasta", lunch.uplift >= 0.22, `+${Math.round(lunch.uplift * 100)}%`);

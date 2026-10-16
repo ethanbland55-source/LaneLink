@@ -6,7 +6,7 @@ import { RecalculateDialog } from "../recalculate";
 import { NextWeek } from "../next-week";
 import { applyDayFor, type PendingPortion } from "@/lib/pending";
 import { fatCheck, lossRate, proteinVerdict } from "@/lib/fuelling";
-import { Bar, MACRO_COLOR, MACRO_LABEL, Segmented, Stat, type MacroKey } from "../macro-ui";
+import { Bar, GalaIcon, MACRO_COLOR, MACRO_LABEL, Segmented, Stat, type MacroKey } from "../macro-ui";
 import { type BoundedItem } from "@/lib/optimise";
 import { appliesOn, mealGroups, weekStanding, weeklyAverage, type PlanMeal } from "@/lib/weekfit";
 import { dayVolume, volumeHeadline } from "@/lib/prep";
@@ -722,6 +722,23 @@ export default function PlanPage() {
     setMeals((list) => list.map((m) => (m.id === id ? { ...m, ...patch } : m)));
   }
 
+  /**
+   * A gala max, saved straight away. It is a limit, not a portion — nothing
+   * on a normal day moves — so there is nothing to stage or rebalance.
+   */
+  async function setGalaMax(mealId: number, idx: number, v: number | null) {
+    const meal = meals.find((m) => m.id === mealId);
+    if (!meal) return;
+    const next = {
+      ...meal,
+      ingredients: meal.ingredients.map((it, i) =>
+        i === idx ? { ...it, gala_max_grams: v != null && v > 0 ? v : null } : it
+      ),
+    };
+    setMeals((list) => list.map((m) => (m.id === mealId ? next : m)));
+    await saveMeal(next);
+  }
+
   function patchItem(mealId: number, idx: number, patch: Partial<BoundedItem>) {
     setMeals((list) =>
       list.map((m) =>
@@ -895,10 +912,11 @@ export default function PlanPage() {
         <div className="flex items-center gap-3">
           <p className="label mr-auto">{gala ? "Gala week, on average" : "Your week, on average"}</p>
           <button
-            className={gala ? "btn btn-sm btn-accent shrink-0" : "btn btn-sm shrink-0"}
+            className="btn btn-sm btn-gala shrink-0"
             aria-pressed={gala}
             onClick={toggleGala}
           >
+            <GalaIcon />
             Gala +25%
           </button>
         </div>
@@ -1058,39 +1076,56 @@ export default function PlanPage() {
                 <span className="num shrink-0 text-sm">{Math.round(after.kcal)}</span>
                 <span className="shrink-0 text-xs text-[var(--color-mut)]">kcal</span>
               </div>
-              <p className="mt-0.5 text-xs tabular-nums text-[var(--color-mut)]">
-                Carbs {Math.round(before.carbs)} → {Math.round(after.carbs)} g ·{" "}
+              <div className="mt-1 flex items-center gap-2 text-xs tabular-nums text-[var(--color-mut)]">
+                <span>
+                  Carbs {Math.round(before.carbs)} → {Math.round(after.carbs)} g
+                </span>
                 <span
-                  style={{
-                    color:
-                      (g?.uplift ?? 0) >= GALA_CARB_UPLIFT - 0.03
-                        ? "var(--color-accent)"
-                        : "var(--color-carbs)",
-                  }}
+                  className="rounded-full px-2 py-0.5 text-[0.68rem] font-bold"
+                  style={
+                    (g?.uplift ?? 0) >= GALA_CARB_UPLIFT - 0.03
+                      ? { background: "var(--color-accent)", color: "#10160a" }
+                      : { background: "var(--color-raised)", color: "var(--color-carbs)" }
+                  }
                 >
                   +{Math.round((g?.uplift ?? 0) * 100)}%
                 </span>
-                {(g?.uplift ?? 0) < GALA_CARB_UPLIFT - 0.03 && " — the rest is at its limit"}
-              </p>
-              <div className="mt-3 space-y-1">
+                {(g?.uplift ?? 0) < GALA_CARB_UPLIFT - 0.03 && <span>at its limits</span>}
+              </div>
+              {/* Usual, gala, and the most it may be on a gala day — the last
+                  one yours to set, saved as soon as you leave the box. */}
+              <div className="mt-3 flex items-center gap-2 px-1 text-[0.65rem] font-semibold uppercase tracking-wider text-[#5b6270]">
+                <span className="mr-auto">Ingredient</span>
+                <span className="w-12 text-right">Usual</span>
+                <span className="w-14 text-right">Gala</span>
+                <span className="w-[3.6rem] text-right">Max</span>
+              </div>
+              <div className="mt-1 space-y-1">
                 {items.map((it, i) => {
-                  const was = Number(meal.ingredients[i]?.grams) || 0;
+                  const src = meal.ingredients[i];
+                  const was = Number(src?.grams) || 0;
                   const now = Number(it.grams) || 0;
                   const up = now !== was;
                   return (
-                    <div key={i} className="flex items-baseline gap-2 text-sm">
+                    <div key={i} className="sunk flex items-center gap-2 px-2.5 py-1.5 text-sm">
                       <span className="mr-auto min-w-0 truncate">{it.name}</span>
-                      {up && (
-                        <span className="shrink-0 text-xs tabular-nums text-[var(--color-mut)]">
-                          {Math.round(was)} →
-                        </span>
-                      )}
+                      <span className="num w-12 shrink-0 text-right text-xs text-[var(--color-mut)]">
+                        {Math.round(was)}
+                      </span>
                       <span
-                        className="num w-14 shrink-0 text-right"
-                        style={{ color: up ? "var(--color-accent)" : undefined }}
+                        className="num w-14 shrink-0 text-right font-semibold"
+                        style={{ color: up ? "var(--color-accent)" : "var(--color-mut)" }}
                       >
                         {Math.round(now)} g
                       </span>
+                      <NumberField
+                        className="w-[3.6rem] shrink-0 px-1.5 py-1 text-right text-xs"
+                        placeholder="auto"
+                        allowEmpty
+                        title="The most this may be on a gala day"
+                        value={src?.gala_max_grams ?? null}
+                        onCommit={(v) => setGalaMax(meal.id, i, v)}
+                      />
                     </div>
                   );
                 })}
@@ -2036,6 +2071,17 @@ function IngredientRow({
                   allowEmpty
                   value={it.max_grams}
                   onCommit={(v) => onPatch({ max_grams: v })}
+                />
+              </span>
+              <span className="flex items-center gap-1 text-[#5b6270]">
+                gala max
+                <NumberField
+                  className="w-[3.4rem] px-1.5 py-0.5 text-right text-[0.68rem]"
+                  placeholder="auto"
+                  allowEmpty
+                  title="The most this may be on a gala day"
+                  value={it.gala_max_grams ?? null}
+                  onCommit={(v) => onPatch({ gala_max_grams: v != null && v > 0 ? v : null })}
                 />
               </span>
               {/* Share of this meal's calories. Only means anything where the

@@ -1044,12 +1044,21 @@ week. `bench/cheat-payback.ts` checks it.
 
 ### Gala days — race day, carbs up a quarter
 
-**Gala +25%** on Today marks the day as a gala day (`gala_days`, with the kind
-of day it's built on). Every meal is on offer, each with its carbohydrate up
-by a quarter (`galaMeal` in `lib/gala.ts`): the starches in a meal rise
-together, pure sugars like honey never pass their usual top, other foods may go
-a quarter past theirs, and fixed portions don't move. The day's carbohydrate
-target goes up a quarter with it. Meals out are unlimited on a gala day; the
+**Gala day** on Today is its own kind of day, not one of the four: turning it
+on clears the day-type choice, and picking a day type ends it. It is stored in
+`gala_days` with the kind of day its targets are built on — the plan's
+swim-only day, since a race day is one. Every meal is on offer, each with its
+carbohydrate up by a quarter (`galaMeal` in `lib/gala.ts`): the starches in a
+meal rise together, pure sugars like honey never pass their usual top, other
+foods may go a quarter past theirs, and fixed portions don't move. The day's
+carbohydrate target goes up a quarter with it.
+
+Any ingredient can have its own **gala max** (`ingredients.gala_max_grams`),
+set in the Max column of the Plan page's gala view or beside the limits. It
+beats every rule above and lets the ingredient rise with the starches even if
+it isn't one — so breakfast takes one more rice cake (70 g) rather than four,
+honey goes to 65 g with them, and the shake's milk and powder grow to 300 g and
+33 g. A normally fixed pour like milk moves in 25 g steps. Meals out are unlimited on a gala day; the
 week's first meal out is still free and every other one goes into the next
 week's payback.
 

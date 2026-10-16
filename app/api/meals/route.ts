@@ -41,6 +41,7 @@ export async function GET() {
           fat_100: Number(i.fat_100),
           min_grams: i.min_grams == null ? null : Number(i.min_grams),
           max_grams: i.max_grams == null ? null : Number(i.max_grams),
+          gala_max_grams: i.gala_max_grams == null ? null : Number(i.gala_max_grams),
           share_pct: i.share_pct == null ? null : Number(i.share_pct),
           locked: !!i.locked,
           prepped: !!i.prepped,
@@ -155,6 +156,8 @@ export async function PUT(req: Request) {
       pack_grams: cls.packGrams,
       min_grams: i.min_grams == null ? null : num(i.min_grams),
       max_grams: i.max_grams == null ? null : num(i.max_grams),
+      // The most it may be on a gala day. See lib/gala.ts.
+      gala_max_grams: i.gala_max_grams == null || i.gala_max_grams === "" ? null : num(i.gala_max_grams),
       locked: !!i.locked,
       // Cooked and boxed on prep day. Free to the fit, fixed on the day.
       prepped: !!i.prepped,
@@ -167,16 +170,16 @@ export async function PUT(req: Request) {
     await sql`
       insert into ingredients
         (user_id, meal_id, name, grams, kcal_100, protein_100, carbs_100, fat_100,
-         food_class, aisle, pack_grams, min_grams, max_grams, locked,
+         food_class, aisle, pack_grams, min_grams, max_grams, gala_max_grams, locked,
          prepped, share_pct, sort_order)
       select user_id, meal_id, name, grams, kcal_100, protein_100, carbs_100, fat_100,
-             food_class, aisle, pack_grams, min_grams, max_grams, locked,
+             food_class, aisle, pack_grams, min_grams, max_grams, gala_max_grams, locked,
              prepped, share_pct, sort_order
         from jsonb_to_recordset(${JSON.stringify(rows)}::jsonb)
           as t(user_id int, meal_id int, name text, grams numeric, kcal_100 numeric,
                protein_100 numeric, carbs_100 numeric, fat_100 numeric,
                food_class text, aisle text, pack_grams numeric,
-               min_grams numeric, max_grams numeric, locked boolean,
+               min_grams numeric, max_grams numeric, gala_max_grams numeric, locked boolean,
                prepped boolean, share_pct numeric, sort_order int)`;
   }
   return NextResponse.json({ ok: true });

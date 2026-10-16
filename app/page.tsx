@@ -2,7 +2,7 @@
 
 import { useCallback, useEffect, useMemo, useState } from "react";
 import Link from "next/link";
-import { Bar, MacroChips, MacroTile, Segmented } from "./macro-ui";
+import { Bar, GalaIcon, MacroChips, MacroTile, Segmented } from "./macro-ui";
 import {
   addDays,
   breakOn,
@@ -140,8 +140,8 @@ export default function TodayPage() {
     } catch {
       /* private mode — the choice just won't survive a refresh */
     }
-    // A gala day remembers the kind of day it's built on, for the scale.
-    if (galaToday) saveGala(true, dt);
+    // A gala day is its own kind of day: picking one of the others ends it.
+    if (galaToday) saveGala(false, dt);
   }
 
   /* --- gala day ---------------------------------------------------------- */
@@ -177,13 +177,31 @@ export default function TodayPage() {
     [profile, dayTypes]
   );
 
+  /**
+   * What a gala day's targets are built on: a swim day, because a race day is
+   * one — warm-up, heats, swim-down — whatever the weekday usually is. The
+   * plan's swim-only kind of day if it has one, otherwise the usual day.
+   */
+  const galaBase = useMemo(() => {
+    if (!plan) return 0;
+    const swimOnly = plan.dayTypes
+      .filter((d) => d.sessions.length > 0 && d.sessions.every((s) => s.activity === "swim"))
+      .sort(
+        (a, b) =>
+          b.sessions.reduce((n, s) => n + s.minutes, 0) - a.sessions.reduce((n, s) => n + s.minutes, 0)
+      )[0];
+    return swimOnly?.id ?? dayTypeIdFor(plan, day);
+  }, [plan, day]);
+
   const dayTypeId = useMemo(() => {
     if (!plan) return 0;
+    if (galaToday) {
+      const base = galaToday.base_day_type_id;
+      return base && plan.byId[base] ? base : galaBase;
+    }
     if (override && plan.byId[override]) return override;
-    const base = galaToday?.base_day_type_id;
-    if (base && plan.byId[base]) return base;
     return dayTypeIdFor(plan, day);
-  }, [override, plan, day, galaToday]);
+  }, [override, plan, day, galaToday, galaBase]);
 
   /** On a gala day, the same kind of day with its carbohydrate a quarter up. */
   const target = useMemo(() => {
@@ -495,25 +513,44 @@ export default function TodayPage() {
           <Bar value={eaten.kcal} target={target.kcal} color="var(--color-accent)" height={8} />
         </div>
 
-        {profile.cycling && plan.dayTypes.length > 0 && (
-          <div className="mt-5">
-            <p className="label mb-2">Today</p>
+        <div className="mt-5">
+          <p className="label mb-2">Today</p>
+          {profile.cycling && plan.dayTypes.length > 0 && (
             <Segmented
               size="sm"
-              value={dayTypeId}
+              value={isGala ? -1 : dayTypeId}
               onChange={chooseDayType}
               options={plan.dayTypes.map((d) => ({ value: d.id, label: d.name }))}
             />
-            <p className="mt-2 text-xs leading-relaxed text-[var(--color-mut)]">
-              {breakOn(plan.events, day)
+          )}
+
+          {/* Race day: its own kind of day, not one of the four — every meal
+              on offer, each with its carbs a quarter up. */}
+          <button
+            className="btn btn-gala mt-2 w-full"
+            aria-pressed={isGala}
+            onClick={() => saveGala(!isGala, galaBase)}
+          >
+            <GalaIcon />
+            {isGala ? "Gala day · carbs +25%" : "Gala day"}
+          </button>
+
+          <p className="mt-2 text-xs leading-relaxed text-[var(--color-mut)]">
+            {isGala
+              ? "Every meal on offer, carbs up a quarter. Meals out unlimited."
+              : breakOn(plan.events, day)
                 ? "Time off — rest-day food."
                 : target.sessions.length > 0
                   ? target.sessions
                       .map((x) => `${activityDef(x.activity).label} ${x.minutes} min`)
                       .join(" · ")
                   : "Rest day."}
-            </p>
-            {override != null && override !== dayTypeIdFor(plan, day) && (
+          </p>
+        </div>
+
+        {profile.cycling && plan.dayTypes.length > 0 && (
+          <div>
+            {!isGala && override != null && override !== dayTypeIdFor(plan, day) && (
               <button
                 className="btn btn-sm btn-quiet mt-2"
                 onClick={() => {
@@ -530,20 +567,6 @@ export default function TodayPage() {
             )}
           </div>
         )}
-
-        {/* Race day: every meal on offer, each with its carbs a quarter up. */}
-        <div className="mt-3 flex items-center gap-3">
-          <button
-            className={isGala ? "btn btn-sm btn-accent shrink-0" : "btn btn-sm shrink-0"}
-            aria-pressed={isGala}
-            onClick={() => saveGala(!isGala, dayTypeId)}
-          >
-            Gala +25%
-          </button>
-          <span className="min-w-0 text-xs leading-snug text-[var(--color-mut)]">
-            {isGala ? "Every meal, carbs up a quarter. Meals out unlimited." : "Race day? Carbs up a quarter."}
-          </span>
-        </div>
 
         {isToday && (
           <CalendarStrip
@@ -700,7 +723,10 @@ export default function TodayPage() {
                         </span>
                         <span className="block truncate text-xs tabular-nums text-[var(--color-mut)]">
                           {Math.round(t.kcal)} kcal · {Math.round(t.protein)}P{" "}
-                          {Math.round(t.carbs)}C {Math.round(t.fat)}F
+                          <span style={isGala ? { color: "var(--color-accent)" } : undefined}>
+                            {Math.round(t.carbs)}C
+                          </span>{" "}
+                          {Math.round(t.fat)}F
                           {m.batch ? ` · weigh ${Math.round(servingGrams(m as any))} g` : ""}
                         </span>
                       </span>

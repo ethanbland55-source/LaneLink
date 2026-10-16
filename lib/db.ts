@@ -35,7 +35,7 @@ let schemaReady: Promise<void> | null = null;
  * a database stamped with an older number runs the whole migration again, and
  * every statement in it is `if not exists`, so running it again is harmless.
  */
-const SCHEMA_VERSION = "2026-10-15.1-gala-days";
+const SCHEMA_VERSION = "2026-10-16.1-gala-max";
 
 /**
  * Creates the tables if they don't exist, adds any columns a newer version
@@ -214,6 +214,10 @@ async function createSchema() {
   // Weighed, cooked and portioned into containers on prep day, rather than
   // plated the morning you eat it. See lib/batch.ts.
   await sql`alter table ingredients add column if not exists prepped boolean not null default false`;
+  // The most a portion may be on a gala day, when the usual limits are wrong
+  // for it — a race-day breakfast still wants only one more rice cake. See
+  // lib/gala.ts. Null leaves it to the general rule.
+  await sql`alter table ingredients add column if not exists gala_max_grams numeric`;
 
   // --- Food knowledge, shopping ------------------------------------------
   // fibre_100 / fibre_estimated are still created for databases that predate

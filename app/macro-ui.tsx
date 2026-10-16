@@ -123,6 +123,20 @@ export function Segmented<T extends string | number>({
   );
 }
 
+/** The race flag on the gala day switch, on Today and the Plan page alike. */
+export function GalaIcon() {
+  return (
+    <svg width="14" height="14" viewBox="0 0 24 24" fill="none" aria-hidden="true">
+      <path d="M5 21V4" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" />
+      <path
+        d="M5 4.5c4-2 7 2 11 0 1-.5 2-.5 3-.5v9c-1 0-2 0-3 .5-4 2-7-2-11 0"
+        fill="currentColor"
+        fillOpacity="0.9"
+      />
+    </svg>
+  );
+}
+
 /** Small labelled statistic in a sunken well. */
 export function Stat({
   label,

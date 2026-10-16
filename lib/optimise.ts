@@ -44,6 +44,8 @@ export const KEYS: MacroKey[] = ["kcal", "protein", "carbs", "fat"];
 export type BoundedItem = Item & {
   min_grams?: number | null;
   max_grams?: number | null;
+  /** The most it may be on a gala day. Only lib/gala.ts reads it. */
+  gala_max_grams?: number | null;
   locked?: boolean;
   /**
    * Share of its meal's calories, 0-100, or null to let the fit decide.

@@ -27,7 +27,13 @@
  * their usual top: past that a meal turns sickly, and Ethan has said as much
  * about honey. Everything else may go a quarter past its usual top, because a
  * gala portion is a quarter bigger by definition. Fixed portions (exactly
- * 250 g of milk, one banana, whole units) do not move at all.
+ * 250 g of milk, one banana) do not move at all.
+ *
+ * Unless the ingredient has its own **gala max** (`gala_max_grams`), which
+ * beats every rule above in both directions: ten rice cakes rather than
+ * thirteen, honey a little past its usual top to go with them, the shake's
+ * milk and powder allowed to grow. An ingredient with one rises alongside the
+ * starches even if it isn't one.
  */
 import { boundsFor, type BoundedItem } from "./optimise";
 import { sumMacros, totalFor, type Item, type Targets, type WeekPlan } from "./nutrition";
@@ -86,7 +92,12 @@ export function galaMeal<T extends BoundedItem>(items: T[], uplift = GALA_CARB_U
   if (!(c0 > 0) || !(uplift > 0)) return { items, uplift: 0 };
 
   const bounds = items.map((it) => boundsFor(it));
+  /** A gala max you set wins over every general rule, fixed portions included. */
+  const own = items.map((it) =>
+    it.gala_max_grams != null && Number(it.gala_max_grams) > 0 ? Number(it.gala_max_grams) : null
+  );
   const caps = items.map((it, i) => {
+    if (own[i] != null) return Math.max(grams[i], own[i] as number);
     const b = bounds[i];
     if (it.locked || b.max <= b.min) return grams[i];
     const top = Math.max(b.max, grams[i]);
@@ -95,7 +106,11 @@ export function galaMeal<T extends BoundedItem>(items: T[], uplift = GALA_CARB_U
 
   const next = [...grams];
   let need = uplift * c0;
-  const tiers = [(i: number) => isCarbFood(items[i]), (i: number) => isMixedCarb(items[i])];
+  // Anything you gave a gala max to rises with the starches: you said it can.
+  const tiers = [
+    (i: number) => isCarbFood(items[i]) || own[i] != null,
+    (i: number) => isMixedCarb(items[i]),
+  ];
   for (const inTier of tiers) {
     let free = items
       .map((_, i) => i)
@@ -121,12 +136,21 @@ export function galaMeal<T extends BoundedItem>(items: T[], uplift = GALA_CARB_U
 
   // Whole units (rice cakes, wraps) move a whole unit at a time, and only
   // within the cap — half a rice cake is not a portion.
+  // A portion that reached its cap lands on it exactly — a cap is an amount
+  // someone chose, so it is already a weighable one.
   const out = items.map((it, i) => {
     if (Math.abs(next[i] - grams[i]) < 1e-9) return it;
-    const step = bounds[i].step || 1;
-    let g = Math.round(next[i] / step) * step;
-    if (g > caps[i] + 1e-9) g = Math.floor(caps[i] / step) * step;
-    g = Math.max(grams[i], g);
+    // A pour that's normally fixed (250 g of milk) grows by the 25 g you'd
+    // actually measure, not by the gram.
+    const pour = own[i] != null && bounds[i].max <= bounds[i].min && grams[i] >= 100;
+    const step = pour ? 25 : bounds[i].step || 1;
+    let g: number;
+    if (next[i] >= caps[i] - 1e-6) g = caps[i];
+    else {
+      g = Math.round(next[i] / step) * step;
+      if (g > caps[i] + 1e-9) g = Math.floor(caps[i] / step) * step;
+    }
+    g = Math.max(grams[i], Math.round(g * 10) / 10);
     return g === grams[i] ? it : { ...it, grams: g };
   });
   const c1 = totalFor(out).carbs;
